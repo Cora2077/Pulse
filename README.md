@@ -4,6 +4,10 @@
 
 **Website:** [www.pulseticker.app](https://www.pulseticker.app/)
 
+> **Pulse is now a paid app.** Starting with 0.15.9, Pulse includes a 30-day full-feature trial followed by a one-time purchase. Download it and see pricing at [pulseticker.app](https://www.pulseticker.app/buy), or get it from the [Mac App Store](https://apps.apple.com/app/id6812160110).
+>
+> This repository keeps the source of the free versions up to **0.15.8** under the MIT license. Development of newer versions continues privately; this repository still hosts the installers and the update feed.
+
 Pulse is a lightweight market-watching app, not a trading terminal. It solves exactly one problem: seeing how the symbols you care about are doing — and whether your positions are up or down — in the shortest possible time, without leaving what you're working on.
 
 | Watchlist | Quote Detail | Record Trade |
@@ -38,7 +42,7 @@ Tools cover listing groups and positions, searching symbols, creating/renaming/d
 
 ## Installation
 
-Download the latest `Pulse-*.dmg` from [GitHub Releases](https://github.com/fatwang2/Pulse/releases), open it, and drag `Pulse.app` to Applications before launching. The `Pulse-*.zip` asset is used by Sparkle for automatic updates.
+Download Pulse from [pulseticker.app](https://www.pulseticker.app/), open the disk image, and drag `Pulse.app` to Applications. Pulse updates itself from inside the app. Installers for every release, including the last free version 0.15.8, remain on [GitHub Releases](https://github.com/fatwang2/Pulse/releases).
 
 ## Support & Feedback
 
@@ -74,6 +78,8 @@ no advertising or cross-app tracking. The complete event boundary is intentional
 [`PulseTelemetry.swift`](PulseMac/Sources/PulseTelemetry.swift) so the implementation can be audited.
 
 ## Building
+
+The source in this repository builds the free **0.15.8** release; newer versions are not published here.
 
 Requires **Xcode 26+** and [XcodeGen](https://github.com/yonaskolb/XcodeGen). `Pulse.xcodeproj` is generated from `project.yml` and is not checked in.
 
@@ -113,128 +119,7 @@ PULSE_LIVE_TESTS=1 swift test
 
 ## Releasing
 
-**Releases are built and published by GitHub Actions only.** The pipeline still
-lives in `scripts/release-mac.sh` — it archives, signs, notarizes, packages,
-and uploads Pulse together with its Sparkle appcast — but it uploads only when
-`PULSE_RELEASE_UPLOAD=1` on a real Actions runner. Run it on a Mac and it
-builds and verifies the identical artifacts, then stops before publishing.
-Version-specific GitHub Release copy lives in `.github/release-notes/<version>.md`,
-tracked so a release can be reproduced from the repository.
-
-The version's entry in `website/src/data/releases.ts` is the authored source
-for everything a release says: the site's changelog page, the localized
-descriptions inlined into the appcast, and — generated from its English
-highlights — the release notes file itself. Write the entry in all four
-languages, then produce the notes file:
-
-```bash
-node scripts/release-notes-from-changelog.mjs <version>
-```
-
-The run refuses to publish a version that has no changelog entry, so a missing
-entry fails the build instead of silently shipping English-only notes.
-
-To ship a version:
-
-1. Write the version's entry in `website/src/data/releases.ts`, bump
-   `MARKETING_VERSION` in `project.yml`, run the generator above, and merge to
-   `main`.
-2. Actions → *Release Pulse* → *Run workflow*.
-3. Approve the deployment when the run asks.
-
-Nothing is left to do by hand afterwards. The run also points the website's
-download mirror at the release it just built, committing the new version, size
-and checksum to `website/src/download.ts`; Cloudflare deploys the site from
-that push, so the download page follows the release on its own.
-
-`dry_run` builds, signs, notarizes, and verifies without publishing.
-`allow_republish` is needed only to replace a version that is already fully
-released; without it the run refuses before the build, which is the guard
-working — a released version's assets are what installed copies already
-verified against the appcast.
-
-### The build toolchain
-
-The workflow pins Xcode explicitly rather than taking the runner image's
-default, and installs both Rust targets, because a release build of the
-Longbridge plugin is universal and the image ships only its host target.
-
-Building in the cloud is also what pins down which compilers the code actually
-supports. Xcode 16.4 rejects `CompositeProvider`, and every stable Swift
-through 6.3.3 crashed on `SymbolID`'s storage accessors until they were marked
-`@inline(never)` — the 6.4 beta toolchain on one Mac had been quietly covering
-for that. Bump the pin deliberately, and expect a run to tell you when the
-codebase has drifted onto something only a beta compiler accepts.
-
-### The approval gate
-
-The release job runs in the `release` environment, which requires a human
-approval before its first step. That gate exists for one secret in particular:
-Sparkle's EdDSA key signs every update, it has no revocation path, and its
-public half is already compiled into every installed copy of Pulse. A Developer
-ID certificate Apple can revoke; a leaked Sparkle key would let anyone hand all
-existing users an update they would accept. Approving a run is the moment to
-notice one you did not start.
-
-### What counts as released
-
-`scripts/release-status.mjs` holds the definition, and both the pre-build gate
-and the post-publish check read it. A version is released only when its GitHub
-Release is published (not a draft, not a pre-release) with both
-`Pulse-<version>.zip` and `Pulse-<version>.dmg`, **and** the appcast on the
-stable `appcast` tag advertises that version with an enclosure pointing at that
-version's own tag. The two halves matter: assets that uploaded without an
-appcast entry are invisible to every installed copy — published by GitHub's
-reckoning, unreleased by Sparkle's. A run that failed halfway leaves the
-version incomplete, so simply running the workflow again repairs it on the
-existing tag.
-
-### Secrets
-
-| Secret | Content |
-|---|---|
-| `CSC_LINK` | Base64 of the Developer ID Application `.p12` |
-| `CSC_KEY_PASSWORD` | Password of that `.p12` |
-| `APPLE_API_KEY_P8` | Contents of the App Store Connect API key `.p8` |
-| `APPLE_API_KEY_ID` | Key ID of that API key |
-| `APPLE_API_ISSUER` | Issuer ID of that API key |
-| `SPARKLE_PRIVATE_KEY` | The EdDSA key exported with `generate_keys -x` |
-| `TELEMETRYDECK_APP_ID` | Optional; analytics are disabled when absent |
-
-`CSC_LINK` and `CSC_KEY_PASSWORD` are one pair, not two settings: re-exporting
-the `.p12` gives it a new password, so set both from the same export. Updating
-one alone fails at signing with `MAC verification failed during PKCS12 import`,
-the identical error a genuinely wrong password produces.
-
-The signing identity and team id are not configured here — they are read back
-out of the imported certificate, so the certificate is the only source of truth
-for who signs.
-
-Export the Sparkle key from the keychain that holds it (the tool lives in the
-Sparkle artifact SwiftPM resolves, so build once first), and delete the export
-afterwards:
-
-```sh
-generate_keys -x sparkle_key.txt          # prompts for keychain access
-gh secret set SPARKLE_PRIVATE_KEY < sparkle_key.txt
-rm sparkle_key.txt
-```
-
-On the runner that key is piped to `generate_appcast` on standard input, so it
-never lands on disk and never enters a keychain there.
-
-### The installer DMG layout
-
-The DMG's window bounds, icon positions, and background reference live in the
-volume's `.DS_Store`, which only Finder can write and Finder needs a GUI
-session no runner has. `assets/dmg/DS_Store` is therefore committed and copied
-in verbatim, so every build gets the identical layout without scripting Finder.
-After changing `assets/dmg/background.tiff` or the icon positions, rebuild the
-styled DMG on a Mac and re-capture it:
-
-```sh
-scripts/capture-dmg-layout.sh build/release/dist/Pulse-<version>.dmg
-```
+Releases are built privately and published to this repository's [Releases](https://github.com/fatwang2/Pulse/releases), together with the update feed. The workflows in `.github/workflows` are kept for reference and are disabled.
 
 ## Architecture
 
@@ -252,4 +137,4 @@ Out of the box, Pulse uses Binance's public Spot market-data API for cryptocurre
 
 ## License
 
-[MIT](LICENSE)
+The source in this repository (versions up to 0.15.8) is available under the [MIT License](LICENSE). Later versions of Pulse are commercial software.
