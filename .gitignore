@@ -66,7 +66,6 @@ xcuserdata/
 /.context/
 /.workbuddy/
 /.impeccable.md
-/SYNC-HANDOFF.md
 
 # Cached Rust build products for the Longbridge plugin (CI restores these).
 .cache/
