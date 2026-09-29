@@ -113,7 +113,11 @@
 
 "metric.changePercent" = "등락률";
 "metric.todayPnL" = "당일 손익";
-"metric.totalPnL" = "총 손익";
+"metric.totalPnL" = "평가 손익";
+"position.combinedPnL" = "누적 손익";
+"position.costBasis.average" = "평균 매입가";
+"position.costBasis.diluted" = "손익분기 단가";
+"position.costBasisHelp" = "평균 매입가와 손익분기 단가 전환";
 
 "position.indexLegacyNotice" = "이 지수에는 이전 버전에서 기록된 보유 정보가 남아 있습니다. 지수는 직접 거래할 수 없어, 삭제하면 다시 추가할 수 없습니다.";
 
@@ -337,6 +341,9 @@
 "trade.confirmSell" = "매도 확인";
 "trade.confirmSellHelp" = "매도 확인 (Return)";
 "trade.price" = "체결가";
+"trade.fee" = "수수료";
+"trade.feeAmount" = "수수료 %@";
+"position.totalFees" = "누적 수수료";
 "trade.editTitle" = "거래 편집";
 "trade.date" = "날짜";
 "trade.dateToday" = "오늘";

@@ -113,7 +113,11 @@
 
 "metric.changePercent" = "Change %";
 "metric.todayPnL" = "Day P&L";
-"metric.totalPnL" = "Total P&L";
+"metric.totalPnL" = "Position P&L";
+"position.combinedPnL" = "All-time P&L";
+"position.costBasis.average" = "Average Cost";
+"position.costBasis.diluted" = "Break-even Cost";
+"position.costBasisHelp" = "Switch between average cost and break-even cost";
 
 "position.indexLegacyNotice" = "This index contains legacy position data. Indices aren’t directly tradable; once removed, it can’t be added again.";
 
@@ -337,6 +341,9 @@
 "trade.confirmSell" = "Confirm Sell";
 "trade.confirmSellHelp" = "Confirm Sell (Return)";
 "trade.price" = "Price";
+"trade.fee" = "Fee";
+"trade.feeAmount" = "Fee %@";
+"position.totalFees" = "Total Fees";
 "trade.editTitle" = "Edit Trade";
 "trade.date" = "Date";
 "trade.dateToday" = "Today";

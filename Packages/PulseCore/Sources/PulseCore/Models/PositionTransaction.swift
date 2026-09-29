@@ -62,6 +62,27 @@ public struct PositionTransaction: Codable, Sendable, Hashable, Identifiable {
 /// average short price and buys cover, realizing (average cost − price) ×
 /// quantity. A trade crossing zero closes the open side first, then opens
 /// the opposite side at the trade price with the remainder.
+/// Which cost the position summary reports.
+///
+/// Both describe the same holding and agree on the total P&L — they only
+/// disagree about which column the closed-out result sits in. The weighted
+/// average keeps the purchase price and books a round trip as realized P&L;
+/// the diluted cost nets it into the break-even price. Traders who work one
+/// position intraday tend to expect the second, which is what their brokerage
+/// shows.
+public enum PositionCostBasis: String, Codable, CaseIterable, Sendable {
+    case average
+    case diluted
+
+    /// Localization key for the picker entry and for the cost cell's own label.
+    public var labelKey: String {
+        switch self {
+        case .average: "position.costBasis.average"
+        case .diluted: "position.costBasis.diluted"
+        }
+    }
+}
+
 public struct PositionLedger: Sendable, Hashable {
     /// A transaction annotated with its replay outcome, in replay order.
     public struct Entry: Sendable, Hashable, Identifiable {
@@ -86,30 +107,51 @@ public struct PositionLedger: Sendable, Hashable {
     public var costBasis: Double
     /// Cumulative realized P&L across all sells, surviving a flat position.
     public var realizedPnL: Double
+    /// What the trades in `entries` cost in fees, added up. A calibration is
+    /// not a trade and never contributes.
+    public var totalFees: Double
+    /// The break-even price for what is still held: every buy and every sell
+    /// that led here, netted, over the remaining quantity.
+    ///
+    /// This is the cost a brokerage shows (often called the diluted or holding
+    /// cost). It differs from `averageCost`, which keeps the original purchase
+    /// price and books the closed-out result separately, so a round trip that
+    /// makes money lowers this one and leaves `averageCost` alone. Both
+    /// describe the same position and both add up to the same total P&L; they
+    /// only disagree about which column the result belongs in.
+    public var dilutedCost: Double
 
     public init(transactions: [PositionTransaction]) {
         var entries: [Entry] = []
         var quantity = 0.0
         var averageCost = 0.0
         var realizedPnL = 0.0
+        var totalFees = 0.0
+        var buyTurnover = 0.0
+        var sellTurnover = 0.0
 
         for transaction in Self.replayOrdered(transactions) {
             var entryRealized: Double?
             switch transaction.kind {
             case .buy:
                 let bought = max(transaction.quantity, 0)
+                let fee = transaction.fee ?? 0
                 if quantity >= 0 {
                     let newQuantity = quantity + bought
                     if newQuantity > 0 {
-                        averageCost = (averageCost * quantity + transaction.price * bought) / newQuantity
+                        // The fee rides in the cost basis: what the position
+                        // actually cost is the turnover plus what buying it was
+                        // charged, so the average cost covers both.
+                        averageCost = (averageCost * quantity + transaction.price * bought + fee) / newQuantity
                     }
                     quantity = newQuantity
                 } else {
                     // Buying against a short covers first, realizing
-                    // (average short price − buy price) × covered; anything
-                    // past flat flips into a long opened at the trade price.
+                    // (average short price − buy price) × covered less what the
+                    // covering trade was charged; anything past flat flips into
+                    // a long opened at the trade price.
                     let covered = min(bought, -quantity)
-                    let realized = (averageCost - transaction.price) * covered
+                    let realized = (averageCost - transaction.price) * covered - fee
                     realizedPnL += realized
                     entryRealized = realized
                     quantity += bought
@@ -119,14 +161,18 @@ public struct PositionLedger: Sendable, Hashable {
                         averageCost = 0
                     }
                 }
+                totalFees += fee
+                buyTurnover += transaction.price * bought + fee
             case .sell:
                 let sold = max(transaction.quantity, 0)
+                let fee = transaction.fee ?? 0
                 if quantity > 0 {
                     // Selling closes the long first, realizing (price −
-                    // average cost) × closed; anything past flat flips into
-                    // a short opened at the trade price.
+                    // average cost) × closed less what the sale was charged;
+                    // anything past flat flips into a short opened at the
+                    // trade price.
                     let closed = min(sold, quantity)
-                    let realized = (transaction.price - averageCost) * closed
+                    let realized = (transaction.price - averageCost) * closed - fee
                     realizedPnL += realized
                     entryRealized = realized
                     quantity -= sold
@@ -136,17 +182,25 @@ public struct PositionLedger: Sendable, Hashable {
                         averageCost = 0
                     }
                 } else {
-                    // Selling while flat or short opens/extends the short;
-                    // the average blends the short entry prices.
+                    // Selling while flat or short opens/extends the short; the
+                    // average blends the short entry prices, and a fee lowers
+                    // what the short actually raised.
                     let short = -quantity + sold
                     if short > 0 {
-                        averageCost = (averageCost * -quantity + transaction.price * sold) / short
+                        averageCost = (averageCost * -quantity + transaction.price * sold - fee) / short
                     }
                     quantity = -short
                 }
+                totalFees += fee
+                sellTurnover += transaction.price * sold - fee
             case .adjustment:
                 quantity = transaction.quantity
                 averageCost = quantity != 0 ? max(transaction.price, 0) : 0
+                // A calibration replaces the history rather than adding to it,
+                // so the diluted cost restarts from the calibrated basis
+                // instead of carrying turnover the user has just overridden.
+                buyTurnover = averageCost * quantity
+                sellTurnover = 0
             }
             entries.append(Entry(
                 transaction: transaction,
@@ -161,6 +215,8 @@ public struct PositionLedger: Sendable, Hashable {
         self.averageCost = averageCost
         self.costBasis = averageCost * quantity
         self.realizedPnL = realizedPnL
+        self.totalFees = totalFees
+        self.dilutedCost = quantity != 0 ? (buyTurnover - sellTurnover) / quantity : 0
     }
 
     public var hasOpenPosition: Bool { quantity != 0 }

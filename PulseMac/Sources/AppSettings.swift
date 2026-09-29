@@ -104,6 +104,12 @@ final class AppSettings {
         }
     }
 
+    /// Which cost the position summary reports. A display choice only: the two
+    /// bases describe the same holding and agree on the total P&L.
+    var positionCostBasis: PositionCostBasis = .average {
+        didSet { save() }
+    }
+
     /// Anonymous product analytics only. Event definitions live in PulseTelemetry and
     /// intentionally never include symbols, watchlists, positions, or search content.
     var shareAnonymousUsageData: Bool = true {
@@ -211,6 +217,7 @@ final class AppSettings {
             pinnedWindowTopLeft = snapshot.pinnedWindowTopLeft
             showPriceInMenuBar = snapshot.showPriceInMenuBar ?? false
             languagePreference = snapshot.languagePreference ?? .system
+            positionCostBasis = snapshot.positionCostBasis ?? .average
             shareAnonymousUsageData = snapshot.shareAnonymousUsageData ?? true
             UserDefaults.standard.set(languagePreference.rawValue, forKey: PulseLocalization.languagePreferenceKey)
         } else {
@@ -241,6 +248,7 @@ final class AppSettings {
         var pinnedWindowTopLeft: CGPoint?
         var showPriceInMenuBar: Bool?
         var languagePreference: PulseLanguagePreference?
+        var positionCostBasis: PositionCostBasis?
         var providerPollIntervals: [String: TimeInterval]?
         var shareAnonymousUsageData: Bool?
     }
@@ -261,6 +269,7 @@ final class AppSettings {
                                 pinnedWindowTopLeft: pinnedWindowTopLeft,
                                 showPriceInMenuBar: showPriceInMenuBar,
                                 languagePreference: languagePreference,
+                                positionCostBasis: positionCostBasis,
                                 providerPollIntervals: providerPollIntervals,
                                 shareAnonymousUsageData: shareAnonymousUsageData)
         if let data = try? JSONEncoder().encode(snapshot) {

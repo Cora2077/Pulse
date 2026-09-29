@@ -6,6 +6,21 @@ import PulseUI
 /// holding. Pushed from the detail page (or list); buy/sell/log/quick-set
 /// pages push from here and pop back here.
 struct PositionHubView: View {
+    /// How many trades the summary lists before the full log takes over. The
+    /// page height in `PopoverRootView` is budgeted from the same number, so
+    /// the two have to move together.
+    static let visibleTransactionCount = 6
+
+    /// One `TransactionRow`: an 11pt line plus its 5pt vertical padding.
+    static let transactionRowHeight: CGFloat = 24
+
+    /// Everything above the trade rows on a held position — header, P&L cells,
+    /// stats, separators, the trade buttons, and the section title — measured
+    /// from the shipped layout. The old fixed 420pt page left 40pt of dead
+    /// space under three rows; the page height is now this plus one
+    /// `transactionRowHeight` per row actually shown.
+    static let summaryHeightAboveTrades: CGFloat = 312
+
     @Environment(AppState.self) private var appState
     @Environment(\.pulseHost) private var host
     let symbol: SymbolID
@@ -59,17 +74,36 @@ struct PositionHubView: View {
 
     @ViewBuilder
     private func openPositionBody(_ item: WatchItem) -> some View {
+        let basis = appState.settings.positionCostBasis
+        let quote = self.quote
+        let metrics = quote.flatMap { PositionMetrics(item: item, quote: $0) }
+        // Realized plus unrealized: what a brokerage reports as the position's
+        // total result. The sum is the same under either cost basis, which is
+        // why this one does not move with the switch.
+        let combinedPnL = metrics.map { $0.totalPnL + item.realizedPnL }
         VStack(alignment: .leading, spacing: 0) {
-            if let quote, let metrics = PositionMetrics(item: item, quote: quote) {
+            if let quote, let metrics {
+                // The two bases describe the same holding; only the split
+                // between cost and realized P&L moves. Everything below is
+                // computed from whichever basis is selected.
+                let costValue = basis == .diluted
+                    ? item.ledger?.dilutedCost ?? metrics.averageCost
+                    : metrics.averageCost
+                let invested = costValue * metrics.quantity
+                let unrealized = metrics.marketValue - invested
+                let unrealizedPercent = invested != 0 ? unrealized / invested : 0
+                // Two columns, not three: the combined figure sits beside the
+                // realized one it is made of, and a third cell here squeezes
+                // all of them until the amounts truncate.
                 HStack(spacing: 8) {
                     pnlCell(PulseLocalization.localizedString("metric.todayPnL"),
                             amount: metrics.todayPnL, percent: metrics.todayReturnPercent)
                     pnlCell(PulseLocalization.localizedString("metric.totalPnL"),
-                            amount: metrics.totalPnL, percent: metrics.totalReturnPercent)
+                            amount: unrealized, percent: unrealizedPercent)
                 }
                 HStack(spacing: 8) {
                     stat(PulseLocalization.localizedString("position.quantity"), PriceFormatter.quantity(metrics.quantity))
-                    stat(PulseLocalization.localizedString("position.cost"), PriceFormatter.price(metrics.averageCost))
+                    costBasisStat(value: costValue, basis: basis)
                     stat(PulseLocalization.localizedString("position.marketValue"), PriceFormatter.money(metrics.marketValue, currencyCode: currencyCode))
                 }
                 .padding(.top, 10)
@@ -80,14 +114,9 @@ struct PositionHubView: View {
                     .padding(.vertical, 6)
             }
             HStack(spacing: 8) {
-                stat(
-                    PulseLocalization.localizedString("position.realizedPnL"),
-                    PriceFormatter.signedMoney(item.realizedPnL, currencyCode: currencyCode),
-                    color: item.transactions.isEmpty ? nil : item.realizedPnL
-                )
-                stat(PulseLocalization.localizedString("position.totalInvested"),
-                     PriceFormatter.money(item.costBasis, currencyCode: currencyCode))
-                stat("", "")
+                realizedStat(item, basis: basis)
+                combinedPnLStat(combinedPnL)
+                totalFeesStat(item)
             }
             .padding(.top, 10)
 
@@ -122,7 +151,7 @@ struct PositionHubView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.pressable)
-                ForEach(entries.prefix(3)) { entry in
+                ForEach(entries.prefix(Self.visibleTransactionCount)) { entry in
                     TransactionRow(
                         entry: entry,
                         palette: appState.palette,
@@ -179,7 +208,7 @@ struct PositionHubView: View {
                     PulseLocalization.localizedString("position.historyTrades"),
                     PulseLocalization.localizedString("position.tradeCount", item.transactions.count)
                 )
-                stat("", "")
+                totalFeesStat(item)
             }
             .padding(.top, 8)
 
@@ -291,6 +320,56 @@ struct PositionHubView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// The cost cell doubles as the switch between the two bases: the moment
+    /// someone wants the other number is the moment they are looking at this
+    /// one. There are only two, so a click flips straight to the other instead
+    /// of opening a menu — a Menu measures its label to fit and clipped the
+    /// value away entirely.
+    private func costBasisStat(value: Double, basis: PositionCostBasis) -> some View {
+        Button {
+            appState.settings.positionCostBasis = basis == .average ? .diluted : .average
+        } label: {
+            stat(PulseLocalization.localizedString(basis.labelKey), PriceFormatter.price(value))
+        }
+        .buttonStyle(.plain)
+        .help(PulseLocalization.localizedString("position.costBasisHelp"))
+    }
+
+    /// Under the diluted basis the closed-out result already sits inside the
+    /// cost, so a zero here would read as "you broke even" rather than "this is
+    /// counted elsewhere".
+    private func realizedStat(_ item: WatchItem, basis: PositionCostBasis) -> some View {
+        guard basis == .average else {
+            return stat(PulseLocalization.localizedString("position.realizedPnL"), "—")
+        }
+        return stat(
+            PulseLocalization.localizedString("position.realizedPnL"),
+            PriceFormatter.signedMoney(item.realizedPnL, currencyCode: currencyCode),
+            color: item.transactions.isEmpty ? nil : item.realizedPnL
+        )
+    }
+
+    private func combinedPnLStat(_ value: Double?) -> some View {
+        guard let value else {
+            return stat(PulseLocalization.localizedString("position.combinedPnL"), "—")
+        }
+        return stat(
+            PulseLocalization.localizedString("position.combinedPnL"),
+            PriceFormatter.signedMoney(value, currencyCode: currencyCode),
+            color: value
+        )
+    }
+
+    /// Fees are optional, so an account that has never recorded one shows a
+    /// dash rather than a zero that reads like a measured value.
+    private func totalFeesStat(_ item: WatchItem) -> some View {
+        let fees = item.ledger?.totalFees ?? 0
+        return stat(
+            PulseLocalization.localizedString("position.totalFees"),
+            fees > 0 ? PriceFormatter.money(fees, currencyCode: currencyCode) : "—"
+        )
+    }
+
     private func stat(_ label: String, _ value: String, color: Double? = nil) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
@@ -384,7 +463,7 @@ struct TransactionRow: View {
             }
             .buttonStyle(.pressable)
             .onHover { hovering = $0 }
-            .help(PulseLocalization.localizedString("trade.editTitle"))
+            .help(editHelp)
         } else {
             row
         }
@@ -416,6 +495,17 @@ struct TransactionRow: View {
         return Text("  \(PriceFormatter.signedMoney(realized, currencyCode: currencyCode))")
             .font(.system(size: 10, weight: .medium).monospacedDigit())
             .foregroundStyle(palette.color(for: realized))
+    }
+
+    /// The row is a single line at the panel's width and has no room left for
+    /// a fee column, so a recorded fee is reported on hover instead.
+    private var editHelp: String {
+        let edit = PulseLocalization.localizedString("trade.editTitle")
+        guard let fee = entry.transaction.fee, fee > 0 else { return edit }
+        return edit + "\n" + PulseLocalization.localizedString(
+            "trade.feeAmount",
+            PriceFormatter.money(fee, currencyCode: currencyCode)
+        )
     }
 
     @ViewBuilder

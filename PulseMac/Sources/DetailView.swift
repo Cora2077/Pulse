@@ -1059,13 +1059,24 @@ struct DetailView: View {
                                 .foregroundStyle(.tertiary)
                         }
                         if let quote, let metrics = PositionMetrics(item: item, quote: quote) {
+                            // Read-only here: this whole block is one button that
+                            // opens the position page, so the switch lives there.
+                            // The numbers still follow whichever basis is set, and
+                            // the label says which one is on screen.
+                            let basis = appState.settings.positionCostBasis
+                            let costValue = basis == .diluted
+                                ? item.ledger?.dilutedCost ?? metrics.averageCost
+                                : metrics.averageCost
+                            let invested = costValue * metrics.quantity
+                            let unrealized = metrics.marketValue - invested
+                            let unrealizedPercent = invested != 0 ? unrealized / invested : 0
                             HStack(spacing: 8) {
                                 pnlCell(PulseLocalization.localizedString("metric.todayPnL"), amount: metrics.todayPnL, percent: metrics.todayReturnPercent)
-                                pnlCell(PulseLocalization.localizedString("metric.totalPnL"), amount: metrics.totalPnL, percent: metrics.totalReturnPercent)
+                                pnlCell(PulseLocalization.localizedString("metric.totalPnL"), amount: unrealized, percent: unrealizedPercent)
                             }
                             HStack(spacing: 8) {
                                 stat(PulseLocalization.localizedString("position.quantity"), PriceFormatter.quantity(metrics.quantity))
-                                stat(PulseLocalization.localizedString("position.cost"), PriceFormatter.price(metrics.averageCost))
+                                stat(PulseLocalization.localizedString(basis.labelKey), PriceFormatter.price(costValue))
                                 stat(PulseLocalization.localizedString("position.marketValue"), PriceFormatter.money(metrics.marketValue, currencyCode: currencyCode))
                             }
                         } else {

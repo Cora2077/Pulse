@@ -114,6 +114,10 @@
 "metric.changePercent" = "騰落率";
 "metric.todayPnL" = "当日損益";
 "metric.totalPnL" = "評価損益";
+"position.combinedPnL" = "通算損益";
+"position.costBasis.average" = "平均取得単価";
+"position.costBasis.diluted" = "損益分岐単価";
+"position.costBasisHelp" = "平均取得単価と損益分岐単価を切り替え";
 
 "position.indexLegacyNotice" = "この指数には旧バージョンの保有データが含まれています。指数自体は取引できないため、削除すると再登録はできません。";
 
@@ -337,6 +341,9 @@
 "trade.confirmSell" = "売りを確定";
 "trade.confirmSellHelp" = "売りを確定（Return）";
 "trade.price" = "価格";
+"trade.fee" = "手数料";
+"trade.feeAmount" = "手数料 %@";
+"position.totalFees" = "累計手数料";
 "trade.editTitle" = "取引を編集";
 "trade.date" = "日付";
 "trade.dateToday" = "今日";

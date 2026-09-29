@@ -24,6 +24,7 @@ struct TradeEntryView: View {
 
     @State private var priceText: String
     @State private var quantityText: String
+    @State private var feeText: String
     @State private var date: Date
     @State private var showsCalendar = false
     /// Daily candles backing the market-closed hint — whatever the detail
@@ -46,6 +47,7 @@ struct TradeEntryView: View {
         self._route = route
         _priceText = State(initialValue: "")
         _quantityText = State(initialValue: "")
+        _feeText = State(initialValue: "")
         _date = State(initialValue: Self.marketToday(for: symbol.market))
     }
 
@@ -62,6 +64,7 @@ struct TradeEntryView: View {
         self._route = route
         _priceText = State(initialValue: Self.fieldText(transaction.price))
         _quantityText = State(initialValue: Self.fieldText(transaction.quantity))
+        _feeText = State(initialValue: transaction.fee.map(Self.fieldText) ?? "")
         _date = State(initialValue: Calendar.current.startOfDay(for: transaction.date))
     }
 
@@ -135,6 +138,10 @@ struct TradeEntryView: View {
                         suggestion: availableToSellSuggestion
                     )
                 }
+                PositionInputCell(
+                    label: PulseLocalization.localizedString("trade.fee"),
+                    text: $feeText
+                )
                 dateRow
                 if let closedDayHint {
                     Text(closedDayHint)
@@ -470,6 +477,7 @@ struct TradeEntryView: View {
             var updated = editing
             updated.price = price
             updated.quantity = quantity
+            updated.fee = parsedFee
             updated.date = date
             transactions[existing] = updated
         } else {
@@ -477,7 +485,8 @@ struct TradeEntryView: View {
                 kind: recordSide == .buy ? .buy : .sell,
                 price: price,
                 quantity: quantity,
-                date: date
+                date: date,
+                fee: parsedFee
             ))
         }
         let ledger = PositionLedger(transactions: transactions)
@@ -492,12 +501,24 @@ struct TradeEntryView: View {
         )
     }
 
+    /// Fees are optional and typed by hand: an empty field means none were
+    /// recorded, which is deliberately not the same as a zero the user typed.
+    private var parsedFee: Double? {
+        let trimmed = feeText.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        guard let value = Double(trimmed.replacingOccurrences(of: ",", with: "")), value >= 0 else {
+            return nil
+        }
+        return value
+    }
+
     private func save() {
         guard !didSave, let item, let price = parsedPrice, let quantity = parsedQuantity, isValid else { return }
         didSave = true
         if var updated = editing {
             updated.price = price
             updated.quantity = quantity
+            updated.fee = parsedFee
             updated.date = date
             appState.watchlist.updateTransaction(item.symbol, updated)
         } else {
@@ -505,7 +526,8 @@ struct TradeEntryView: View {
                 kind: recordSide == .buy ? .buy : .sell,
                 price: price,
                 quantity: quantity,
-                date: date
+                date: date,
+                fee: parsedFee
             ))
         }
         route = dismissRoute

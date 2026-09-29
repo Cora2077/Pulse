@@ -114,6 +114,10 @@
 "metric.changePercent" = "涨跌幅";
 "metric.todayPnL" = "今日盈亏";
 "metric.totalPnL" = "持仓盈亏";
+"position.combinedPnL" = "总盈亏";
+"position.costBasis.average" = "买入均价";
+"position.costBasis.diluted" = "摊薄成本";
+"position.costBasisHelp" = "在买入均价和摊薄成本之间切换";
 
 "position.indexLegacyNotice" = "此指数含有旧版持仓数据。指数本身不可交易，清除后将无法再录入。";
 
@@ -337,6 +341,9 @@
 "trade.confirmSell" = "确认卖出";
 "trade.confirmSellHelp" = "确认卖出（回车）";
 "trade.price" = "价格";
+"trade.fee" = "手续费";
+"trade.feeAmount" = "手续费 %@";
+"position.totalFees" = "累计手续费";
 "trade.editTitle" = "编辑交易";
 "trade.date" = "日期";
 "trade.dateToday" = "今天";

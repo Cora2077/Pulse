@@ -524,4 +524,117 @@ struct WatchlistStoreTransactionTests {
         store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: 100, quantity: 0))
         #expect(store.item(for: apple.symbol)?.transactions.isEmpty == true)
     }
+
+    // MARK: - Trading fees
+
+    @Test("A buy fee is capitalized into the average cost")
+    func buyFeeLandsInCostBasis() {
+        let ledger = PositionLedger(transactions: [
+            PositionTransaction(kind: .buy, price: 10, quantity: 100, fee: 100),
+        ])
+        #expect(ledger.quantity == 100)
+        // 1,000 of turnover plus 100 of fees over 100 units.
+        #expect(ledger.averageCost == 11)
+        #expect(ledger.costBasis == 1_100)
+        #expect(ledger.totalFees == 100)
+    }
+
+    @Test("A sell fee comes off the realized P&L")
+    func sellFeeReducesRealizedPnL() {
+        let ledger = PositionLedger(transactions: [
+            PositionTransaction(kind: .buy, price: 10, quantity: 100),
+            PositionTransaction(kind: .sell, price: 12, quantity: 100, fee: 50),
+        ])
+        #expect(ledger.quantity == 0)
+        #expect(ledger.realizedPnL == 150)
+        #expect(ledger.totalFees == 50)
+    }
+
+    @Test("Fees on both sides of a round trip accumulate")
+    func roundTripFeesAccumulate() {
+        let ledger = PositionLedger(transactions: [
+            PositionTransaction(kind: .buy, price: 10, quantity: 100, fee: 100),
+            PositionTransaction(kind: .sell, price: 12, quantity: 100, fee: 50),
+        ])
+        #expect(ledger.totalFees == 150)
+        #expect(ledger.averageCost == 0)
+        // Cost 11 after fees, sold at 12, less 50 of sale fees.
+        #expect(ledger.realizedPnL == 50)
+    }
+
+    @Test("A missing fee behaves exactly like a zero fee")
+    func missingFeeMatchesZero() {
+        let withoutFee = PositionLedger(transactions: [
+            PositionTransaction(kind: .buy, price: 10, quantity: 100),
+        ])
+        let withZero = PositionLedger(transactions: [
+            PositionTransaction(kind: .buy, price: 10, quantity: 100, fee: 0),
+        ])
+        #expect(withoutFee.averageCost == withZero.averageCost)
+        #expect(withoutFee.averageCost == 10)
+        #expect(withoutFee.totalFees == 0)
+        #expect(withZero.totalFees == 0)
+    }
+
+    @Test("A calibration is not a trade and never contributes a fee")
+    func adjustmentIgnoresFee() {
+        let ledger = PositionLedger(transactions: [
+            PositionTransaction(kind: .adjustment, price: 10, quantity: 100, fee: 99),
+        ])
+        #expect(ledger.quantity == 100)
+        #expect(ledger.averageCost == 10)
+        #expect(ledger.totalFees == 0)
+    }
+
+    @Test("A fee on a short sale lowers what the short raised")
+    func shortSaleFeeLowersProceeds() {
+        let ledger = PositionLedger(transactions: [
+            PositionTransaction(kind: .sell, price: 10, quantity: 100, fee: 100),
+        ])
+        #expect(ledger.quantity == -100)
+        // Raised 1,000 less 100 of fees over 100 units.
+        #expect(ledger.averageCost == 9)
+        #expect(ledger.totalFees == 100)
+    }
+
+    @Test("The diluted cost nets every buy and sell into a break-even price")
+    func dilutedCostNetsTurnover() {
+        let ledger = PositionLedger(transactions: [
+            PositionTransaction(kind: .buy, price: 100, quantity: 1000),
+            PositionTransaction(kind: .sell, price: 105, quantity: 500),
+            PositionTransaction(kind: .buy, price: 101, quantity: 500),
+        ])
+        #expect(ledger.quantity == 1000)
+        // The weighted average keeps the purchase prices and books the round
+        // trip separately.
+        #expect(ledger.averageCost == 100.5)
+        #expect(ledger.realizedPnL == 2_500)
+        // The break-even price nets the sale against the buys:
+        // (100,000 − 52,500 + 50,500) / 1,000.
+        #expect(ledger.dilutedCost == 98)
+    }
+
+    @Test("A calibration restarts the diluted cost instead of adding to it")
+    func calibrationResetsDilutedCost() {
+        let ledger = PositionLedger(transactions: [
+            PositionTransaction(kind: .buy, price: 100, quantity: 1000),
+            PositionTransaction(kind: .adjustment, price: 120, quantity: 500),
+        ])
+        #expect(ledger.quantity == 500)
+        #expect(ledger.averageCost == 120)
+        #expect(ledger.dilutedCost == 120)
+    }
+
+    @Test("Both cost bases describe one position, so their totals agree")
+    func costBasesAgreeOnTheTotal() {
+        let ledger = PositionLedger(transactions: [
+            PositionTransaction(kind: .buy, price: 100, quantity: 1000),
+            PositionTransaction(kind: .sell, price: 105, quantity: 500),
+            PositionTransaction(kind: .buy, price: 101, quantity: 500),
+        ])
+        let price = 103.0
+        let weightedTotal = (price - ledger.averageCost) * ledger.quantity + ledger.realizedPnL
+        let dilutedTotal = (price - ledger.dilutedCost) * ledger.quantity
+        #expect(abs(weightedTotal - dilutedTotal) < 0.001)
+    }
 }
