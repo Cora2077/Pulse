@@ -263,12 +263,13 @@ final class MCPToolAdapter {
         },
         ToolSpec(
             name: "record_trade",
-            description: "Record a buy or sell for a symbol already on the watchlist. The date is the trade day in the user's local calendar. Pass a stable id to make retries idempotent.",
+            description: "Record a buy or sell for a symbol already on the watchlist. The date is the trade day in the user's local calendar. A buy may carry a zero price to bridge a share split; fee is optional commission in account currency. Pass a stable id to make retries idempotent.",
             properties: [
                 "symbol": symbolSchema,
                 "kind": .object(["type": "string", "enum": .array([.string("buy"), .string("sell")])]),
                 "quantity": .object(["type": "number"]),
                 "price": .object(["type": "number"]),
+                "fee": .object(["type": "number"]),
                 "date": tradeDateSchema,
                 "id": uuidSchema,
             ],
@@ -279,6 +280,7 @@ final class MCPToolAdapter {
                 kind: try arguments.tradeKind("kind"),
                 quantity: try arguments.double("quantity"),
                 price: try arguments.double("price"),
+                fee: try arguments.optionalDouble("fee"),
                 date: try arguments.date("date"),
                 id: try arguments.optionalUUID("id")
             )
@@ -294,6 +296,7 @@ final class MCPToolAdapter {
                 "kind": .object(["type": "string", "enum": .array([.string("buy"), .string("sell")])]),
                 "quantity": .object(["type": "number"]),
                 "price": .object(["type": "number"]),
+                "fee": .object(["type": "number"]),
                 "date": tradeDateSchema,
             ],
             required: ["symbol", "id"]
@@ -304,6 +307,7 @@ final class MCPToolAdapter {
                 kind: try arguments.optionalTradeKind("kind"),
                 quantity: try arguments.optionalDouble("quantity"),
                 price: try arguments.optionalDouble("price"),
+                fee: try arguments.optionalDouble("fee"),
                 date: try arguments.optionalDate("date")
             ))
             return try adapter.appliedValue(mutation)

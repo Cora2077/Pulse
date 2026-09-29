@@ -444,11 +444,13 @@ struct TradeEntryView: View {
 
     // MARK: - Parsing & simulation
 
-    /// An adjustment writes a target state, so zero is a legitimate input there
-    /// ("flat, no cost"); real trades keep the strictly-positive contract.
+    /// An adjustment writes a target state and a buy can bridge a share split
+    /// (more shares, no money moved), so zero is legitimate there. Sells keep
+    /// the strictly-positive contract: a zero sell would fabricate a realized
+    /// loss.
     private var parsedPrice: Double? {
         parseDecimal(priceText).flatMap {
-            $0.isFinite && (kind == .adjustment ? $0 >= 0 : $0 > 0) ? $0 : nil
+            $0.isFinite && (kind == .sell ? $0 > 0 : $0 >= 0) ? $0 : nil
         }
     }
 

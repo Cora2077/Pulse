@@ -522,15 +522,42 @@ struct WatchlistStoreTransactionTests {
     }
 
     @MainActor
-    @Test("Non-positive price or quantity never reaches the ledger")
+    @Test("Invalid entries never reach the ledger")
     func storeRejectsInvalidEntries() throws {
         let (store, defaults, suiteName) = try makeStore()
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         store.add(apple)
-        store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: 0, quantity: 10))
+        store.addTransaction(apple.symbol, PositionTransaction(kind: .sell, price: 0, quantity: 10))
+        store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: -1, quantity: 10))
         store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: 100, quantity: 0))
+        store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: 100, quantity: -5))
         #expect(store.item(for: apple.symbol)?.transactions.isEmpty == true)
+    }
+
+    @MainActor
+    @Test("A zero price bridges a share split on a buy but never on a sell")
+    func storeBridgesSplitWithZeroPriceBuy() throws {
+        let (store, defaults, suiteName) = try makeStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        store.add(apple)
+        store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: 3, quantity: 10))
+        // The split bridge: more shares, no money moved, no cost impact.
+        store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: 0, quantity: 20))
+
+        guard let item = store.item(for: apple.symbol) else {
+            Issue.record("missing item")
+            return
+        }
+        #expect(item.transactions.count == 2)
+        #expect(item.hasPosition)
+        #expect(item.lots.first?.quantity == 30)
+        #expect(item.lots.first?.price == 1)
+
+        // A zero sell still fabricates nothing.
+        store.addTransaction(apple.symbol, PositionTransaction(kind: .sell, price: 0, quantity: 5))
+        #expect(store.item(for: apple.symbol)?.transactions.count == 2)
     }
 
     @MainActor

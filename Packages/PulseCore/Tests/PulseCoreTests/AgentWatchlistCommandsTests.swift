@@ -99,6 +99,42 @@ struct AgentWatchlistCommandsTests {
     }
 
     @Test
+    func recordTradeBridgesSplitWithZeroPriceBuyAndCarriesFee() throws {
+        let (store, defaults, suiteName) = try makeStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let groupID = try #require(store.selectedGroupID)
+        let commands = AgentWatchlistCommands(store: store)
+        let ref = AgentSymbolRef(market: "us", code: "NVDA")
+        _ = try commands.addSymbol(ref, name: "NVIDIA", to: groupID).get()
+        let day = try #require(Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 20)))
+
+        // The split bridge: a buy at a zero price lands in the ledger.
+        let bridged = try commands.recordTrade(AgentTradeDraft(
+            symbol: ref, kind: .buy, quantity: 30, price: 0, date: day
+        )).get()
+        #expect(bridged.value.transactions.first?.price == 0)
+
+        // A zero-price sell would fabricate a realized loss.
+        switch commands.recordTrade(AgentTradeDraft(
+            symbol: ref, kind: .sell, quantity: 5, price: 0, date: day
+        )) {
+        case .failure(.invalidPrice):
+            break
+        default:
+            Issue.record("Expected invalidPrice for a zero-price sell")
+        }
+
+        // Fee rides through to the stored entry.
+        _ = try commands.recordTrade(AgentTradeDraft(
+            symbol: ref, kind: .buy, quantity: 10, price: 2, fee: 1.5, date: day
+        )).get()
+        let transaction = try #require(
+            store.item(for: SymbolID(market: .us, code: "NVDA"))?.transactions.last
+        )
+        #expect(transaction.fee == 1.5)
+    }
+
+    @Test
     func updateTradeRewritesFieldsAndKeepsOrder() throws {
         let (store, defaults, suiteName) = try makeStore()
         defer { defaults.removePersistentDomain(forName: suiteName) }

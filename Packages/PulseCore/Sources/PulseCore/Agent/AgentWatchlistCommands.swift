@@ -253,7 +253,15 @@ public struct AgentWatchlistCommands {
         guard draft.quantity.isFinite, draft.quantity > 0 else {
             return .failure(.invalidQuantity)
         }
-        guard draft.price.isFinite, draft.price > 0 else {
+        // A zero price is legitimate on a buy: it is how a share split is
+        // bridged (more shares, no money moved). A sell at zero would
+        // fabricate a realized loss, so it keeps the positive contract.
+        let priceIsValid = draft.price.isFinite
+            && (draft.kind == .buy ? draft.price >= 0 : draft.price > 0)
+        guard priceIsValid else {
+            return .failure(.invalidPrice)
+        }
+        if let fee = draft.fee, !(fee.isFinite && fee >= 0) {
             return .failure(.invalidPrice)
         }
         guard let symbol = symbol(from: draft.symbol) else {
@@ -279,7 +287,8 @@ public struct AgentWatchlistCommands {
             kind: draft.kind.positionKind,
             price: draft.price,
             quantity: draft.quantity,
-            date: draft.date
+            date: draft.date,
+            fee: draft.fee
         ))
         guard let updated = store.item(for: symbol) else {
             return .failure(.itemNotOnWatchlist)
@@ -428,6 +437,7 @@ public struct AgentWatchlistCommands {
         kind: AgentTradeKind? = nil,
         quantity: Double? = nil,
         price: Double? = nil,
+        fee: Double? = nil,
         date: Date? = nil
     ) -> Result<AgentMutation<AgentPositionSnapshot>, AgentWatchlistError> {
         guard let symbol = symbol(from: ref) else {
@@ -446,14 +456,22 @@ public struct AgentWatchlistCommands {
         }
         if let quantity { updated.quantity = quantity }
         if let price { updated.price = price }
+        if let fee { updated.fee = fee }
         if let date { updated.date = date }
 
+        if let fee = updated.fee, !(fee.isFinite && fee >= 0) {
+            return .failure(.invalidPrice)
+        }
         switch updated.kind {
         case .buy, .sell:
             guard updated.quantity.isFinite, updated.quantity > 0 else {
                 return .failure(.invalidQuantity)
             }
-            guard updated.price.isFinite, updated.price > 0 else {
+            // A buy may bridge a share split at a zero price; a sell at zero
+            // would fabricate a realized loss.
+            let priceIsValid = updated.price.isFinite
+                && (updated.kind == .buy ? updated.price >= 0 : updated.price > 0)
+            guard priceIsValid else {
                 return .failure(.invalidPrice)
             }
         case .adjustment:
@@ -629,7 +647,8 @@ public struct AgentWatchlistCommands {
             kind: transaction.kind.rawValue,
             price: transaction.price,
             quantity: transaction.quantity,
-            date: formattedDay(transaction.date)
+            date: formattedDay(transaction.date),
+            fee: transaction.fee
         )
     }
 

@@ -136,13 +136,16 @@ public struct AgentTransaction: Hashable, Codable, Sendable {
     public var quantity: Double
     /// Trade day as `YYYY-MM-DD` in the user's local calendar.
     public var date: String
+    /// Commission and other costs. Null when the entry carries no fee.
+    public var fee: Double?
 
-    public init(id: UUID, kind: String, price: Double, quantity: Double, date: String) {
+    public init(id: UUID, kind: String, price: Double, quantity: Double, date: String, fee: Double? = nil) {
         self.id = id
         self.kind = kind
         self.price = price
         self.quantity = quantity
         self.date = date
+        self.fee = fee
     }
 }
 
@@ -188,6 +191,9 @@ public struct AgentTradeDraft: Sendable {
     public var kind: AgentTradeKind
     public var quantity: Double
     public var price: Double
+    /// Commission and other costs in account currency. `nil` keeps the entry
+    /// fee-free, which is also how a share-split bridge is written.
+    public var fee: Double?
     public var date: Date
     public var id: UUID?
 
@@ -196,6 +202,7 @@ public struct AgentTradeDraft: Sendable {
         kind: AgentTradeKind,
         quantity: Double,
         price: Double,
+        fee: Double? = nil,
         date: Date,
         id: UUID? = nil
     ) {
@@ -203,6 +210,7 @@ public struct AgentTradeDraft: Sendable {
         self.kind = kind
         self.quantity = quantity
         self.price = price
+        self.fee = fee
         self.date = date
         self.id = id
     }

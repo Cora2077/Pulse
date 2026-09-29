@@ -509,12 +509,16 @@ public final class WatchlistStore {
     // MARK: - Transactions
 
     /// Appends a trade. The first transaction on a lot-based item folds the
-    /// legacy position into the ledger as an opening adjustment.
+    /// legacy position into the ledger as an opening adjustment. A buy may
+    /// carry a zero price — that is how a share split is bridged (more shares,
+    /// no money moved); a sell at zero would fabricate a realized loss, so it
+    /// stays strictly positive.
     public func addTransaction(_ symbol: SymbolID, _ transaction: PositionTransaction) {
         guard let index = allItems.firstIndex(where: { $0.symbol == symbol }),
               allItems[index].supportsPosition,
               transaction.quantity.isFinite, transaction.quantity > 0,
-              transaction.price.isFinite, transaction.price > 0,
+              transaction.price.isFinite, transaction.price >= 0,
+              transaction.kind == .buy || transaction.price > 0,
               transaction.hasValidFee else { return }
         var transactions = allItems[index].materializedTransactions()
         transactions.append(transaction)
@@ -531,15 +535,19 @@ public final class WatchlistStore {
     }
 
     /// Replaces the transaction carrying `transaction.id`, keeping its
-    /// `createdAt` so an edit never reshuffles same-day replay order. Buy/sell
-    /// entries need a positive price and quantity; an adjustment keeps the
-    /// calibrator's looser contract (finite quantity, non-negative cost).
+    /// `createdAt` so an edit never reshuffles same-day replay order. Buys may
+    /// bridge a share split at a zero price; sells keep a positive price and
+    /// an adjustment keeps the calibrator's looser contract (finite quantity,
+    /// non-negative cost).
     public func updateTransaction(_ symbol: SymbolID, _ transaction: PositionTransaction) {
         guard let index = allItems.firstIndex(where: { $0.symbol == symbol }),
               allItems[index].supportsPosition else { return }
         guard transaction.hasValidFee else { return }
         switch transaction.kind {
-        case .buy, .sell:
+        case .buy:
+            guard transaction.price.isFinite, transaction.price >= 0,
+                  transaction.quantity.isFinite, transaction.quantity > 0 else { return }
+        case .sell:
             guard transaction.price.isFinite, transaction.price > 0,
                   transaction.quantity.isFinite, transaction.quantity > 0 else { return }
         case .adjustment:
