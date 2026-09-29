@@ -394,7 +394,10 @@
 "data.error.notArchive" = "The clipboard doesn’t hold a Pulse export. Copy the example format to see what one looks like.";
 "data.error.newerVersion" = "That export came from a newer version of Pulse. Update and try again.";
 "data.error.noLists" = "That export has no lists in it.";
-"settings.data.row" = "Import & Export";
+"settings.data.row" = "Data & Sync";
+"settings.data.rowStatus.on" = "On";
+"settings.data.rowStatus.off" = "Off";
+"settings.data.rowStatus.attention" = "Needs Attention";
 "data.export.subtitle" = "Copy every list, order, pin, and trade as text";
 "data.import.subtitle" = "Read a Pulse export and review it before it lands";
 "data.format.title" = "Format";
@@ -454,3 +457,31 @@
 "feedback.emailUnavailable" = "Mail unavailable";
 "settings.section.support" = "Support";
 "settings.support.help" = "Send Email drafts a message to us with the diagnostics report attached. The report lists the Pulse and macOS versions, data-source status, and recent log lines from this session, and never includes your symbols, positions, or credentials. Without a mail client, copy the address and the report instead.";
+
+/* Folder sync */
+"sync.title" = "Sync between Macs";
+"sync.setup.help" = "Choose the same folder on both Macs. iCloud Drive and other sync services may take time to copy changes; sync is not instant.";
+"sync.choose.title" = "Choose a Sync Folder";
+"sync.choose.button" = "Choose Folder…";
+"sync.changeFolder" = "Change Folder…";
+"sync.now" = "Sync Now";
+"sync.disable" = "Turn Off";
+"sync.status.off" = "Off — choose a folder to set up sync";
+"sync.status.ready" = "Ready; checks for changes every minute";
+"sync.status.syncing" = "Checking the selected folder…";
+"sync.status.error" = "Sync needs attention";
+"sync.status.conflicts" = "%d trade conflicts need your choice";
+"sync.lastRead" = "Last successful read: %@";
+"sync.lastWrite" = "Last successful write: %@";
+"sync.conflict.detail" = "%d conflicting trades on Mac %@";
+"sync.conflict.warning" = "Your choice applies to every listed trade. Removing a trade changes the position calculation. Pulse saves both snapshots locally before applying your choice.";
+"sync.conflict.keepLocal" = "Keep This Mac’s Trades";
+"sync.conflict.useRemote" = "Use Other Mac’s Trades";
+"sync.conflict.changed" = "The other Mac changed during review. Check the updated conflict before choosing.";
+"sync.privacy" = "The selected folder contains readable watchlists, positions, and trade history. Provider credentials, Keychain items, MCP tokens, and Mac-specific settings stay local.";
+"sync.error.accessDenied" = "Pulse can’t access this folder. Choose it again in Settings.";
+"sync.error.folderUnavailable" = "The selected location is not an available folder.";
+"sync.error.invalidFile" = "A sync file is unreadable or belongs to a different device. Local data was kept.";
+"sync.error.coordination" = "Pulse could not coordinate access to the sync folder.";
+"sync.error.backupFailed" = "Pulse could not save the conflict backup, so no choice was applied.";
+"sync.error.ownFilePendingDownload" = "This Mac’s sync file is still downloading from iCloud. Pulse will retry in the background.";

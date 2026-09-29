@@ -123,7 +123,11 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    settingsDestinationRow(titleKey: "settings.data.row", route: .dataSettings)
+                    settingsDestinationRow(
+                        titleKey: "settings.data.row",
+                        route: .dataSettings,
+                        statusKey: dataRowStatusKey
+                    )
                     Toggle(
                         PulseLocalization.localizedString("settings.general.anonymousAnalytics"),
                         isOn: $settings.shareAnonymousUsageData
@@ -204,12 +208,22 @@ struct SettingsView: View {
         .onAppear { PulseTelemetry.signal(.settingsOpened) }
     }
 
-    private func settingsDestinationRow(titleKey: String, route destination: PopoverRoute) -> some View {
+    private func settingsDestinationRow(
+        titleKey: String,
+        route destination: PopoverRoute,
+        statusKey: String? = nil
+    ) -> some View {
         Button {
             route = destination
         } label: {
             LabeledContent {
-                settingsChevron
+                HStack(spacing: 6) {
+                    if let statusKey {
+                        Text(PulseLocalization.localizedString(statusKey))
+                            .foregroundStyle(.secondary)
+                    }
+                    settingsChevron
+                }
             } label: {
                 Text(PulseLocalization.localizedString(titleKey))
             }
@@ -258,6 +272,16 @@ struct SettingsView: View {
                     .allowsHitTesting(false)
             }
         }
+    }
+
+    /// The Data row reports sync at a glance. A conflict the user never opens
+    /// the page to see is a conflict that never gets resolved.
+    private var dataRowStatusKey: String {
+        let sync = appState.folderSync
+        if sync.lastError != nil || !sync.conflictSummaries.isEmpty {
+            return "settings.data.rowStatus.attention"
+        }
+        return sync.isConfigured ? "settings.data.rowStatus.on" : "settings.data.rowStatus.off"
     }
 
     private var mcpRowStatusKey: String {

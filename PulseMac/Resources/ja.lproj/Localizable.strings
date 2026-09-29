@@ -394,12 +394,43 @@
 "data.error.notArchive" = "クリップボードの内容は Pulse が書き出したものではありません。書式の例をコピーすると形式を確認できます。";
 "data.error.newerVersion" = "この内容は新しいバージョンの Pulse のものです。アップデートしてからお試しください。";
 "data.error.noLists" = "この内容にはリストがありません。";
-"settings.data.row" = "読み込みと書き出し";
+"settings.data.row" = "データと同期";
+"settings.data.rowStatus.on" = "オン";
+"settings.data.rowStatus.off" = "オフ";
+"settings.data.rowStatus.attention" = "要確認";
 "data.export.subtitle" = "リスト・並び順・ピン留め・取引をテキストとしてコピー";
 "data.import.subtitle" = "Pulse の書き出し内容を読み込み、反映前に確認";
 "data.format.title" = "書式";
 "data.format.help" = "market は us・hk・sh・sz・crypto のいずれか。code は NVDA や 700 のようなコード、または BTC/USDT のようなペアです。name・pinned・transactions は省略できます。";
 "data.import.status.missingCode" = "コードなし";
+
+/* Folder sync */
+"sync.title" = "Mac 間で同期";
+"sync.setup.help" = "両方の Mac で同じフォルダを選択してください。iCloud Drive などの同期サービスでは反映に時間がかかることがあり、即時同期ではありません。";
+"sync.choose.title" = "同期フォルダを選択";
+"sync.choose.button" = "フォルダを選択…";
+"sync.changeFolder" = "フォルダを変更…";
+"sync.now" = "今すぐ同期";
+"sync.disable" = "同期をオフ";
+"sync.status.off" = "オフ — フォルダを選択して設定";
+"sync.status.ready" = "準備完了。1 分ごとに変更を確認します";
+"sync.status.syncing" = "選択したフォルダを確認中…";
+"sync.status.error" = "同期の確認が必要です";
+"sync.status.conflicts" = "%d 件の取引の競合を選択してください";
+"sync.lastRead" = "最終読み込み成功: %@";
+"sync.lastWrite" = "最終書き込み成功: %@";
+"sync.conflict.detail" = "%d 件の取引が競合しています（Mac %@）";
+"sync.conflict.warning" = "選択は表示されたすべての取引に適用されます。取引を削除するとポジション計算も変わります。適用前に両方のスナップショットをこの Mac に保存します。";
+"sync.conflict.keepLocal" = "この Mac の取引を残す";
+"sync.conflict.useRemote" = "もう一台の Mac の取引を使う";
+"sync.conflict.changed" = "確認中にもう一台の Mac で変更がありました。更新された競合を確認してから選択してください。";
+"sync.privacy" = "選択したフォルダには、読み取り可能なウォッチリスト、ポジション、取引履歴が保存されます。データソースの認証情報、キーチェーン項目、MCP トークン、Mac 固有の設定はこの Mac に残ります。";
+"sync.error.accessDenied" = "Pulse はこのフォルダにアクセスできません。設定でもう一度選択してください。";
+"sync.error.folderUnavailable" = "選択した場所は利用可能なフォルダではありません。";
+"sync.error.invalidFile" = "同期ファイルを読み取れないか、別のデバイスのものです。この Mac のデータは保持されています。";
+"sync.error.coordination" = "Pulse は同期フォルダへのアクセスを調整できませんでした。";
+"sync.error.backupFailed" = "競合のバックアップを保存できなかったため、選択は適用されませんでした。";
+"sync.error.ownFilePendingDownload" = "この Mac の同期ファイルは iCloud からダウンロード中です。Pulse はバックグラウンドで再試行します。";
 
 "settings.mcp.row" = "MCP";
 "settings.mcp.title" = "MCP";

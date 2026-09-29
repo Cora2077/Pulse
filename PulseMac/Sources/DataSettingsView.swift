@@ -1,7 +1,7 @@
 import SwiftUI
 import PulseCore
 
-/// Settings → Data: move watchlists in and out of Pulse through the clipboard.
+/// Settings → Data: sync a selected folder or move watchlists through the clipboard.
 ///
 /// This lives on its own page rather than in the settings list. Import is a
 /// multi-step review — paste, read what Pulse understood, then apply — and an
@@ -26,6 +26,16 @@ struct DataSettingsView: View {
 
     @State private var phase: Phase = .idle
 
+    /// Import is its own two-step review — paste, read the plan, then apply — so
+    /// the clipboard actions step aside while a plan is on screen. Sync is a
+    /// standing setting and keeps its place either way.
+    private var isReviewingImport: Bool {
+        switch phase {
+        case .previewing(_, _), .imported(_): true
+        default: false
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -33,6 +43,10 @@ struct DataSettingsView: View {
                 case .previewing(_, let plan), .imported(let plan):
                     planCard(plan)
                 default:
+                    EmptyView()
+                }
+                folderSyncCard
+                if !isReviewingImport {
                     actionsCard
                     formatCard
                 }
@@ -113,6 +127,130 @@ struct DataSettingsView: View {
             ) { previewClipboard() }
         }
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private var folderSyncCard: some View {
+        let sync = appState.folderSync
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Image(systemName: "icloud")
+                    .foregroundStyle(.secondary)
+                Text(PulseLocalization.localizedString("sync.title"))
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                if sync.isSyncing { ProgressView().controlSize(.small) }
+            }
+
+            Text(PulseLocalization.localizedString("sync.setup.help"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let folderPath = sync.selectedFolderPath {
+                Text(folderPath)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+
+            Text(syncStatusText(sync))
+                .font(.caption)
+                .foregroundStyle(sync.lastError == nil
+                    ? (sync.conflictSummaries.isEmpty ? Color.secondary : Color.orange)
+                    : Color.orange)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let lastReadAt = sync.lastReadAt {
+                Text(PulseLocalization.localizedString("sync.lastRead", formatted(lastReadAt)))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if let lastWriteAt = sync.lastWriteAt {
+                Text(PulseLocalization.localizedString("sync.lastWrite", formatted(lastWriteAt)))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if let error = sync.lastError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            ForEach(sync.conflictSummaries) { conflict in
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(PulseLocalization.localizedString(
+                        "sync.conflict.detail", conflict.count, String(conflict.id.prefix(8))
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    ForEach(conflict.examples, id: \.self) { example in
+                        Text(example)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(PulseLocalization.localizedString("sync.conflict.warning"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Button(PulseLocalization.localizedString("sync.conflict.keepLocal")) {
+                            sync.resolveConflicts(peerID: conflict.id, choosingRemote: false)
+                        }
+                        .disabled(sync.isSyncing)
+                        Button(PulseLocalization.localizedString("sync.conflict.useRemote")) {
+                            sync.resolveConflicts(peerID: conflict.id, choosingRemote: true)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(sync.isSyncing)
+                    }
+                    .controlSize(.small)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            }
+
+            HStack {
+                Button(PulseLocalization.localizedString(sync.isConfigured ? "sync.changeFolder" : "sync.choose.button")) {
+                    sync.chooseFolder()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(sync.isSyncing)
+                if sync.isConfigured {
+                    Button(PulseLocalization.localizedString("sync.now")) { sync.syncNow() }
+                        .disabled(sync.isSyncing)
+                    Spacer(minLength: 0)
+                    Button(PulseLocalization.localizedString("sync.disable")) { sync.disableSync() }
+                        .disabled(sync.isSyncing)
+                }
+            }
+            .controlSize(.small)
+
+            Text(PulseLocalization.localizedString("sync.privacy"))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func syncStatusText(_ sync: FolderSyncController) -> String {
+        if sync.lastError != nil { return PulseLocalization.localizedString("sync.status.error") }
+        if !sync.conflictSummaries.isEmpty {
+            return PulseLocalization.localizedString("sync.status.conflicts", sync.conflictSummaries.count)
+        }
+        if sync.isSyncing { return PulseLocalization.localizedString("sync.status.syncing") }
+        return PulseLocalization.localizedString(sync.isConfigured ? "sync.status.ready" : "sync.status.off")
+    }
+
+    private func formatted(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .shortened)
     }
 
     private func actionRow(

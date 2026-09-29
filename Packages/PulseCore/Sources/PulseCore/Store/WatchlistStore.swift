@@ -18,6 +18,11 @@ public final class WatchlistStore {
     @ObservationIgnored private let initialGroupName: String
     @ObservationIgnored private var retainedHistoryItems: [WatchItem] = []
 
+    /// Called after a local persistence change that affects synchronized data.
+    /// Initial loading, local selection changes, and remote snapshot application
+    /// do not invoke this hook.
+    @ObservationIgnored public var onLocalSyncChange: ((WatchlistSyncSnapshot) -> Void)?
+
     public init(defaults: UserDefaults = .standard, defaultGroupName: String? = nil) {
         self.defaults = defaults
         self.initialGroupName = defaultGroupName ?? Self.localizedDefaultGroupName
@@ -54,7 +59,7 @@ public final class WatchlistStore {
     public func selectGroup(_ id: UUID) {
         guard groups.contains(where: { $0.id == id }), selectedGroupID != id else { return }
         selectedGroupID = id
-        save()
+        save(syncRelevant: false)
     }
 
     /// Reorders a tag relative to another tag while preserving the selected tag and memberships.
@@ -501,8 +506,17 @@ public final class WatchlistStore {
     private func applyTransactions(_ transactions: [PositionTransaction], at index: Int) {
         allItems[index].transactions = PositionLedger.replayOrdered(transactions)
         let ledger = PositionLedger(transactions: allItems[index].transactions)
+        // The cache lot's identity is derived from the symbol rather than
+        // random, so it matches the lot a merged peer snapshot derives for the
+        // same position. A random id here would differ from the merge result and
+        // make every local trade force one extra sync round trip.
         allItems[index].lots = ledger.hasOpenPosition
-            ? [CostLot(price: ledger.averageCost, quantity: ledger.quantity, date: nil)]
+            ? [CostLot(
+                id: WatchlistSyncMerge.derivedLedgerLotID(for: allItems[index].symbol),
+                price: ledger.averageCost,
+                quantity: ledger.quantity,
+                date: nil
+            )]
             : []
     }
 
@@ -571,6 +585,34 @@ public final class WatchlistStore {
             return WatchlistArchive.List(name: group.name, entries: entries)
         }
         return WatchlistArchive(exportedAt: exportedAt, app: app, lists: lists)
+    }
+
+    /// Full-fidelity sync state, including dormant transaction history and all
+    /// stable group identifiers, memberships, pins, and orderings.
+    public func syncSnapshot() -> WatchlistSyncSnapshot {
+        WatchlistSyncSnapshot(
+            items: allItems,
+            groups: groups,
+            retainedHistoryItems: retainedHistoryItems
+        )
+    }
+
+    /// Replaces synchronized state from a merged peer snapshot. Selection remains
+    /// local. Normalization and persistence follow the same path used at startup.
+    /// Returns true only when the sync-visible state changed.
+    @discardableResult
+    public func applySyncSnapshot(_ snapshot: WatchlistSyncSnapshot) -> Bool {
+        let previous = syncSnapshot()
+        guard previous != snapshot else { return false }
+
+        allItems = snapshot.items
+        groups = snapshot.groups
+        retainedHistoryItems = snapshot.retainedHistoryItems
+        normalizeLoadedState()
+        // Applying a peer snapshot is not a local edit, so it must not schedule
+        // a write back out to the sync folder on its own.
+        save(syncRelevant: false)
+        return previous != syncSnapshot()
     }
 
     /// What importing `archive` would do, entry by entry, without writing anything.
@@ -717,7 +759,7 @@ public final class WatchlistStore {
             selectedGroupID = snapshot.selectedGroupID
             retainedHistoryItems = snapshot.retainedHistoryItems ?? []
             normalizeLoadedState()
-            save()
+            save(syncRelevant: false)
             return
         }
         migrateLegacyState()
@@ -750,7 +792,7 @@ public final class WatchlistStore {
         if let encoded = try? JSONEncoder().encode(allItems) {
             defaults.set(encoded, forKey: legacyStorageKey)
         }
-        save()
+        save(syncRelevant: false)
     }
 
     private func normalizeLoadedState() {
@@ -836,7 +878,7 @@ public final class WatchlistStore {
         return normalizedItems
     }
 
-    private func save() {
+    private func save(syncRelevant: Bool = true) {
         let snapshot = Snapshot(
             items: allItems,
             groups: groups,
@@ -844,7 +886,11 @@ public final class WatchlistStore {
             retainedHistoryItems: retainedHistoryItems
         )
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        guard defaults.data(forKey: storageKey) != data else { return }
         defaults.set(data, forKey: storageKey)
+        if syncRelevant {
+            onLocalSyncChange?(syncSnapshot())
+        }
     }
 
     /// Keeps removed ledger data outside the active watchlist so it neither renders nor refreshes.

@@ -17,6 +17,7 @@ final class AppState {
     let settings: AppSettings
     let onboarding: OnboardingState
     let watchlist: WatchlistStore
+    let folderSync: FolderSyncController
     let market: MarketStore
     let engine: RefreshEngine
     @ObservationIgnored let provider: CompositeProvider
@@ -80,6 +81,7 @@ final class AppState {
         // make every install look like an upgrade to the fresh-install check.
         let onboarding = OnboardingState(defaults: storeDefaults)
         let watchlist = WatchlistStore(defaults: storeDefaults)
+        let folderSync = FolderSyncController(store: watchlist, defaults: storeDefaults)
         let market = MarketStore()
         // Image-rendering self-tests do not need live credentials. Skipping Keychain access
         // also keeps the headless test from waiting on an authorization prompt.
@@ -102,6 +104,7 @@ final class AppState {
         self.settings = settings
         self.onboarding = onboarding
         self.watchlist = watchlist
+        self.folderSync = folderSync
         self.market = market
         self.provider = provider
         self.binance = binance
@@ -124,6 +127,8 @@ final class AppState {
                                     pollOverrides: settings.providerPollIntervals)
         self.liveStreaming = false
         engine.start()
+        let isSelfTestMode = CommandLine.arguments.contains { $0.contains("selftest") }
+        if !isSelfTestMode { folderSync.start() }
         startRotation()
         observeMenuTracking()
         // Image-rendering self-tests must not touch the Keychain (the MCP token

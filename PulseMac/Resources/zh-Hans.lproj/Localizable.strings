@@ -394,12 +394,43 @@
 "data.error.notArchive" = "剪贴板里不是 Pulse 导出的内容。可以先复制示例格式看看它长什么样。";
 "data.error.newerVersion" = "这份导出来自更新版本的 Pulse，请先升级后再试。";
 "data.error.noLists" = "这份导出里没有任何列表。";
-"settings.data.row" = "导入与导出";
+"settings.data.row" = "数据与同步";
+"settings.data.rowStatus.on" = "已开启";
+"settings.data.rowStatus.off" = "未开启";
+"settings.data.rowStatus.attention" = "需处理";
 "data.export.subtitle" = "把全部列表、顺序、置顶与交易复制为文本";
 "data.import.subtitle" = "读取 Pulse 导出内容，导入前先逐条确认";
 "data.format.title" = "格式";
 "data.format.help" = "market 取 us、hk、sh、sz 或 crypto；code 填 NVDA、700 这类代码，或 BTC/USDT 这样的交易对。name、pinned、transactions 可省略。";
 "data.import.status.missingCode" = "代码为空";
+
+/* Folder sync */
+"sync.title" = "在 Mac 之间同步";
+"sync.setup.help" = "请在两台 Mac 上选择同一个文件夹。iCloud Drive 或其他同步服务可能需要时间传输更改，并非即时同步。";
+"sync.choose.title" = "选择同步文件夹";
+"sync.choose.button" = "选择文件夹…";
+"sync.changeFolder" = "更改文件夹…";
+"sync.now" = "立即同步";
+"sync.disable" = "关闭同步";
+"sync.status.off" = "已关闭 — 选择文件夹以设置同步";
+"sync.status.ready" = "已就绪；每分钟检查更改";
+"sync.status.syncing" = "正在检查所选文件夹…";
+"sync.status.error" = "同步需要处理";
+"sync.status.conflicts" = "有 %d 笔交易冲突需要选择";
+"sync.lastRead" = "最近成功读取：%@";
+"sync.lastWrite" = "最近成功写入：%@";
+"sync.conflict.detail" = "有 %d 笔交易冲突，来自 Mac %@";
+"sync.conflict.warning" = "选择将应用于列出的所有交易。删除交易会改变持仓计算。Pulse 会在应用选择前于本机保留两份快照。";
+"sync.conflict.keepLocal" = "保留本机交易";
+"sync.conflict.useRemote" = "使用另一台 Mac 的交易";
+"sync.conflict.changed" = "查看期间另一台 Mac 有更新。请检查更新后的冲突再选择。";
+"sync.privacy" = "所选文件夹内是可读的自选、持仓和交易记录。数据源凭据、钥匙串项目、MCP 令牌和本机设置仅保留在本机。";
+"sync.error.accessDenied" = "Pulse 无法访问此文件夹。请在设置中重新选择。";
+"sync.error.folderUnavailable" = "所选位置不是可用的文件夹。";
+"sync.error.invalidFile" = "同步文件无法读取或属于其他设备。本机数据已保留。";
+"sync.error.coordination" = "Pulse 无法协调访问同步文件夹。";
+"sync.error.backupFailed" = "Pulse 无法保存冲突备份，因此没有应用任何选择。";
+"sync.error.ownFilePendingDownload" = "这台 Mac 的同步文件仍在从 iCloud 下载。Pulse 会在后台重试。";
 
 "settings.mcp.row" = "MCP";
 "settings.mcp.title" = "MCP";

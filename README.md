@@ -31,6 +31,14 @@ Pulse is a lightweight market-watching app, not a trading terminal. It solves ex
 - **Session-aware, per-source refresh**: each provider polls at its own configurable cadence, and only while its markets are open — saving power and avoiding rate limits; push-capable sources stream instead of polling
 - **Language control**: follows the system language when possible, with manual switching between English, Simplified Chinese, and Japanese
 
+## Sync between Macs
+
+Pulse can keep watchlists, positions, and trade history in sync through a folder you choose. Open **Settings → Data & Sync → Choose Folder** on each Mac and select the same folder. The folder can be in iCloud Drive or another service that syncs files between your Macs. Run the same current Pulse version on both Macs; newer sync files are not readable by older releases. A paid Apple Developer membership is not required.
+
+Pulse reads peer files when it launches, after local changes, when you choose **Sync Now**, and about once a minute while it is running. File-provider uploads and downloads can take time, so changes are not instant; the settings page shows the latest successful read and write. Each Mac writes its own readable `Pulse-sync-<device-id>.json` file, which avoids two Macs writing the same file. The files contain watchlists, positions, and transaction history. Provider credentials, Keychain items, MCP tokens, and Mac-specific settings remain local.
+
+When both Macs edit the same trade in different ways, Pulse pauses that peer and asks whether to keep this Mac's trades or use the other Mac's trades. The choice applies to all listed trade conflicts and can affect the resulting position if a trade is removed. Before applying a choice, Pulse keeps both input snapshots in a local conflict backup.
+
 ## Agent access (MCP)
 
 Pulse can expose an opt-in **MCP** endpoint on your Mac so Claude, ChatGPT, and any MCP-compatible client can work with the same watchlists and trades you see in the menu bar. Nothing is uploaded: the server binds `127.0.0.1` only, and access requires a Bearer token stored in the Keychain.
