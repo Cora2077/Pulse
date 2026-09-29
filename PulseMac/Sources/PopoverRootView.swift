@@ -226,7 +226,7 @@ struct PopoverRootView: View {
                 .transition(pushTransition)
             }
         }
-        .frame(width: 340, height: presentedHeight, alignment: .top)
+        .frame(width: panelWidth, height: presentedHeight, alignment: .top)
         // Keep one title-bar skeleton mounted for the lifetime of the pinned
         // window. Route-specific views contribute actions, but an actionless page
         // no longer collapses the bar from 52pt to the empty 32pt window strip.
@@ -337,6 +337,14 @@ struct PopoverRootView: View {
         }
     }
 
+    /// The menu bar panel is pinned to the width its popover needs. A pinned
+    /// window is a real window the user leaves open, so it opens wider. The
+    /// watchlist measures its title and metric columns rather than scaling
+    /// them, so the extra width lands in the sparkline between them.
+    private var panelWidth: CGFloat {
+        host == .pinnedWindow ? 520 : 340
+    }
+
     /// The list page height adapts to the watchlist size (chrome, row height, bottom bar, and padding),
     /// clamped between the min and max
     private func height(for route: PopoverRoute) -> CGFloat {
@@ -354,12 +362,27 @@ struct PopoverRootView: View {
         case .position(let symbol, _):
             // Summary + trade actions + recent trades once anything has been
             // traded; only a symbol with no history at all gets the compact
-            // pitch for recording a first trade.
+            // pitch for recording a first trade. The held-position page is now
+            // budgeted from the measured height above the trade rows plus one
+            // row per trade, so it neither leaves the old 40pt of dead space
+            // nor crowds the rows it shows.
             guard let item = appState.watchlist.item(for: symbol) else { return 360 }
-            if item.hasPosition { return 420 }
+            if item.hasPosition {
+                let rows = min(
+                    item.ledger?.entries.count ?? 0,
+                    PositionHubView.visibleTransactionCount
+                )
+                return PositionHubView.summaryHeightAboveTrades
+                    + CGFloat(rows) * PositionHubView.transactionRowHeight
+            }
+            // A closed position stacks fewer blocks; it still uses the older
+            // fixed heights until it is measured the same way.
             return item.transactions.isEmpty ? 300 : 380
         case .trade, .editTrade:
-            return 330
+            // The entry form is a stack of labelled fields. The panel gets the
+            // tightest budget that still fits them; a pinned window can afford
+            // the room to breathe.
+            return host == .pinnedWindow ? 420 : 330
         case .transactions:
             return 500
         case .calibrate:
