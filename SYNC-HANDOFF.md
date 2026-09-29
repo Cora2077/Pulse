@@ -1,10 +1,10 @@
 # Pulse 交接文档
 
-最后更新：2026-09-29 18:00（WorkBuddy 收尾）
+最后更新：2026-09-29 19:30（交易计划系统）
 
-## 先读这个（2026-09-29 下午续记）
+## 先读这个（2026-09-29 晚续记）
 
-**工作区状态**：改动全部已 commit + push，`main` 与 `origin/main` 同步，工作区干净。今天共 **4 个 commit**：
+**工作区状态**：改动全部已 commit + push，`main` 与 `origin/main` 同步，工作区干净。今天共 **6 个 commit**：
 
 | commit | 内容 |
 |---|---|
@@ -12,6 +12,8 @@
 | `a045c86` | 钉住窗口加宽 340 → 520pt |
 | `910ff9a` | 交易手续费 + 成本口径切换（加权/摊薄）+ 总盈亏 |
 | `08513a5` | 投资逻辑（thesis）字段 |
+| `6401d7b` | 交接文档入库 |
+| 本次 | 交易计划系统（详见下节） |
 
 **完整开发记录在 `.workbuddy/memory/2026-09-29.md`**（很长，含全部踩坑过程与代码细节）；长期项目笔记在 `.workbuddy/memory/MEMORY.md`。**接手前先读这两份。**
 
@@ -23,12 +25,27 @@
 4. **`.app` 目录的 mtime 不更新** —— Xcode 增量构建只重写 `Contents/MacOS/` 里的二进制；判断版本要看**二进制**的时间。
 5. **macmini 上的 `rsync` 是 openrsync**，不认 `--delete`，报 `server receiver mode requires two argument`。**用 `scp -r`。**
 6. **新字段要接 5 条链路**（`WatchItem` 手写 Codable 的 4 处 + `normalizedItems` 去重合并 + `mergeItem` 三方合并 + 归档导入导出 + MCP）—— 少接一条就**静默丢数据**，尤其同步那条。
+7. **`ditto` 与 `cp -R` 拷出来的 `.app` 文件数不同不是缺文件**：`Sparkle.framework` 内部是软链，`ditto` 保留（~74 个文件）、`cp -R` 展开成实体（~179 个），等价。构建时 `.strings` 被编成**二进制 plist**，`grep` 数不到 key（得 0），要用 `plutil -p`。
+8. **同一 bundle id 只能跑一个实例**（共用 UserDefaults 与同一个同步文件）；换构建后必须重启进程，判定跑的是不是新代码要 `lsof -p <pid> | grep debug.dylib` **比 size**，进程路径会骗人。
+
+### 交易计划系统（本次新增，两台都要升到这版）
+
+- 一条计划 = 在什么价位买/卖多少：`TradePlan`（kind/price/quantity/status/note），挂在 `WatchItem.plans`。
+- **到价与否不落盘** —— `isReached(at:)` 每次渲染用现价现算。两台 Mac 各自锁一个布尔只会互相触发无意义的同步往返。
+- 入口：详情页底部「交易计划」区块（只读，点行 push 到 `PlanEditorView` 编辑；**没有用 sheet**，理由同坑 2）；首页底部状态栏右侧常驻 chip（`N 条 · M 到价`，到价时变强调色）→ 跨标的 `PlanListView`（到价置顶，点行进详情，右键改/放弃/恢复）。
+- 新文件：`TradePlan.swift`、`TradePlanOverview.swift`、`PlanEditorView.swift`、`PlanListView.swift`；测试 `TradePlanTests`（15 例）+ `TradePlanOverviewTests`（9 例）。`PositionReturnRoute` 加了 `planList`（否则总览页进编辑页保存后会跳错地方）。
+- 验证基线：**380 个测试 / 40 个套件**全部通过；完整 Debug 构建 SUCCEEDED（mini 实测）。
+- ⚠️ **旧版读到不认识的 `plans` 字段会在写回时把它删掉**（与 thesis 同款数据丢失）。两台 Mac 必须都升到本版再继续用。
+
+### 各机当前状态
+
+- **Mac mini**（`CoradeMac-mini-7`，局域网 192.168.31.123/140）：已装完整 Xcode 27.0 + xcodegen + Rust，**能独立构建**（首次 2m22s）。`~/Applications/Pulse Dev.app` 已是最新构建（dylib 30274272 字节）。⚠️ 下面「macmini 只有 CommandLineTools、不能构建」的旧结论已作废。
+- **主力机**（`MacBigBook`，Tailscale 100.108.129.117，局域网不见）：直接跑 `build/DerivedData/.../Pulse Dev.app`，`~/Applications` 里**没有**安装副本。SSH 已授权 mini 的公钥。
 
 ### 待办
 
 - **iCloud 双机实测**（唯一没做的）：macmini 打开 `~/Applications/Pulse Dev.app` → 选 `iCloud Drive/PulseSyncTest` → 与本机双向同步。**本机已配置好并写出了同步文件，iCloud 链路已验证通**（macmini 已收到同一文件）。
 - macmini 的**屏幕共享仍连不上**：需在它的「系统设置 → 通用 → 共享」里关掉「远程管理」、打开「屏幕共享」（两者互斥）。
-- macmini **只有 CommandLineTools、没有完整 Xcode** → 不能构建。跑新版要在本机构建后 `scp` `.app` 过去。
 
 ## 用户已确定的方向
 
