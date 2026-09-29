@@ -326,6 +326,102 @@ public struct AgentWatchlistCommands {
         ))
     }
 
+    /// Creates or rewrites one trade plan. `kind`, `price`, and `quantity` are
+    /// always written; `status` and `note` fall back to what the plan already
+    /// carries, so an edit that only moves the price does not silently reset
+    /// the rest. Supplying `id` for one that already exists makes a retry
+    /// idempotent — the same shape `recordTrade` uses.
+    public func setTradePlan(
+        symbol ref: AgentSymbolRef,
+        id: UUID?,
+        kind: AgentTradeKind,
+        price: Double,
+        quantity: Double,
+        status: TradePlan.Status? = nil,
+        note: String? = nil
+    ) -> Result<AgentMutation<AgentPositionSnapshot>, AgentWatchlistError> {
+        guard price.isFinite, price > 0 else {
+            return .failure(.invalidPrice)
+        }
+        guard quantity.isFinite, quantity > 0 else {
+            return .failure(.invalidQuantity)
+        }
+        guard let symbol = symbol(from: ref) else {
+            return .failure(.invalidSymbol(ref))
+        }
+        guard let item = store.item(for: symbol) else {
+            return .failure(.itemNotOnWatchlist)
+        }
+        guard item.supportsPosition else {
+            return .failure(.positionNotSupported)
+        }
+
+        let existing = id.flatMap { planID in item.plans.first { $0.id == planID } }
+        // Absent note keeps what was written; an empty string clears it, the
+        // same contract `setThesis` offers.
+        let trimmedNote = note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedNote: String? = trimmedNote.map { $0.isEmpty ? nil : $0 } ?? existing?.note
+        let resolvedStatus = status ?? existing?.status ?? .active
+        let planKind = kind.planKind
+
+        let alreadyApplied = existing.map {
+            $0.kind == planKind
+                && $0.price == price
+                && $0.quantity == quantity
+                && $0.status == resolvedStatus
+                && $0.note == resolvedNote
+        } ?? false
+
+        let before = Set(store.symbols)
+        if !alreadyApplied {
+            store.setTradePlan(
+                TradePlan(
+                    id: id ?? UUID(),
+                    kind: planKind,
+                    price: price,
+                    quantity: quantity,
+                    status: resolvedStatus,
+                    note: resolvedNote
+                ),
+                for: symbol
+            )
+        }
+        guard let updated = store.item(for: symbol) else {
+            return .failure(.itemNotOnWatchlist)
+        }
+        return .success(mutation(
+            positionSnapshot(updated),
+            before: before,
+            alreadyApplied: alreadyApplied
+        ))
+    }
+
+    public func deleteTradePlan(
+        symbol ref: AgentSymbolRef,
+        id: UUID
+    ) -> Result<AgentMutation<AgentPositionSnapshot>, AgentWatchlistError> {
+        guard let symbol = symbol(from: ref) else {
+            return .failure(.invalidSymbol(ref))
+        }
+        guard let item = store.item(for: symbol) else {
+            return .failure(.itemNotOnWatchlist)
+        }
+
+        let before = Set(store.symbols)
+        let alreadyApplied = !item.plans.contains { $0.id == id }
+        if !alreadyApplied {
+            store.deleteTradePlan(id, for: symbol)
+        }
+        guard let updated = store.item(for: symbol) else {
+            return .failure(.itemNotOnWatchlist)
+        }
+        return .success(mutation(
+            positionSnapshot(updated),
+            before: before,
+            alreadyApplied: alreadyApplied
+        ))
+    }
+
     public func updateTrade(
         symbol ref: AgentSymbolRef,
         id: UUID,
@@ -479,15 +575,31 @@ public struct AgentWatchlistCommands {
     }
 
     private func positionSnapshot(_ item: WatchItem) -> AgentPositionSnapshot {
-        AgentPositionSnapshot(
+        let quote = market?.quote(for: item.symbol)
+        return AgentPositionSnapshot(
             symbol: instrument(item),
             quantity: item.positionQuantity,
             averageCost: item.averageCost,
             costBasis: item.costBasis,
             realizedPnL: item.realizedPnL,
             transactions: item.transactions.map(transactionSnapshot),
-            quote: market?.quote(for: item.symbol).map(quoteSnapshot),
-            thesis: item.thesis
+            quote: quote.map(quoteSnapshot),
+            thesis: item.thesis,
+            plans: item.plans.map { planSnapshot($0, quote: quote) }
+        )
+    }
+
+    private func planSnapshot(_ plan: TradePlan, quote: Quote?) -> AgentTradePlan {
+        AgentTradePlan(
+            id: plan.id,
+            kind: plan.kind.rawValue,
+            price: plan.price,
+            quantity: plan.quantity,
+            status: plan.status.rawValue,
+            note: plan.note,
+            reached: quote.map { plan.isReached(at: $0.price) },
+            createdAt: plan.createdAt,
+            updatedAt: plan.updatedAt
         )
     }
 
@@ -564,6 +676,13 @@ public struct AgentWatchlistCommands {
 
 private extension AgentTradeKind {
     var positionKind: PositionTransaction.Kind {
+        switch self {
+        case .buy: .buy
+        case .sell: .sell
+        }
+    }
+
+    var planKind: TradePlan.Kind {
         switch self {
         case .buy: .buy
         case .sell: .sell

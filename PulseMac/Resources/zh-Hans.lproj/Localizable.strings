@@ -441,6 +441,40 @@
 "sync.error.backupFailed" = "Pulse 无法保存冲突备份，因此没有应用任何选择。";
 "sync.error.ownFilePendingDownload" = "这台 Mac 的同步文件仍在从 iCloud 下载。Pulse 会在后台重试。";
 
+/* Trade plans: what the user means to do at which price */
+"detail.section.plan" = "交易计划";
+"plan.add" = "添加交易计划";
+"plan.empty" = "写下你打算在什么价位做什么。";
+"plan.more" = "还有 %d 条";
+"plan.gap" = "还差 %@";
+"plan.reached" = "已到价";
+"plan.rowHelp" = "编辑这条计划";
+"plan.title.add" = "新建交易计划";
+"plan.title.edit" = "编辑交易计划";
+"plan.kind.buy" = "买入";
+"plan.kind.sell" = "卖出";
+"plan.price" = "价位";
+"plan.note" = "备注（可选）";
+"plan.status" = "状态";
+"plan.status.active" = "等待中";
+"plan.status.done" = "已成交";
+"plan.status.cancelled" = "已放弃";
+"plan.delete" = "删除计划";
+"plan.useCurrentPrice" = "点击填入当前价格";
+"plan.amount" = "计划金额";
+
+/* Trade plans: the cross-symbol overview and its entry point on the home bar */
+"plan.list.title" = "交易计划";
+"plan.list.summary" = "共 %d 条 · %d 条到价";
+"plan.list.empty" = "还没有写过计划。到某个标的的详情页里，写下你打算在什么价位买或卖多少 —— 市场走到那里时，这一页会告诉你。";
+"plan.menu.edit" = "改点位与数量";
+"plan.menu.drop" = "标记为已放弃";
+"plan.menu.revive" = "恢复为等待中";
+"plan.entry.empty" = "计划";
+"plan.entry.waiting" = "%d 条";
+"plan.entry.reached" = "%d 条 · %d 到价";
+"plan.entry.help" = "你写下的全部计划，以及市场有没有走到";
+
 "settings.mcp.row" = "MCP";
 "settings.mcp.title" = "MCP";
 "settings.mcp.enable" = "启用 MCP 服务";

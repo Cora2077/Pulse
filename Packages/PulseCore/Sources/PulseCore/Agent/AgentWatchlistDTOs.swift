@@ -65,6 +65,9 @@ public struct AgentPositionSnapshot: Hashable, Codable, Sendable {
     public var quote: AgentQuoteSnapshot?
     /// The user's own reason for holding this instrument, when they wrote one.
     public var thesis: String?
+    /// What the user intends to do at which price. Rides along with the
+    /// position so one read returns holdings and intentions together.
+    public var plans: [AgentTradePlan]
 
     public init(
         symbol: AgentInstrument,
@@ -74,7 +77,8 @@ public struct AgentPositionSnapshot: Hashable, Codable, Sendable {
         realizedPnL: Double,
         transactions: [AgentTransaction],
         quote: AgentQuoteSnapshot?,
-        thesis: String? = nil
+        thesis: String? = nil,
+        plans: [AgentTradePlan] = []
     ) {
         self.symbol = symbol
         self.quantity = quantity
@@ -84,6 +88,44 @@ public struct AgentPositionSnapshot: Hashable, Codable, Sendable {
         self.transactions = transactions
         self.quote = quote
         self.thesis = thesis
+        self.plans = plans
+    }
+}
+
+public struct AgentTradePlan: Hashable, Codable, Sendable {
+    public var id: UUID
+    public var kind: String
+    public var price: Double
+    public var quantity: Double
+    public var status: String
+    public var note: String?
+    /// Whether the plan's price condition holds at the cached quote. Null when
+    /// no quote is cached — a plan is never "not reached" merely because the
+    /// app has not heard from the market yet.
+    public var reached: Bool?
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: UUID,
+        kind: String,
+        price: Double,
+        quantity: Double,
+        status: String,
+        note: String? = nil,
+        reached: Bool? = nil,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.kind = kind
+        self.price = price
+        self.quantity = quantity
+        self.status = status
+        self.note = note
+        self.reached = reached
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
     }
 }
 

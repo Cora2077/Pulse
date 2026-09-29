@@ -1,0 +1,114 @@
+import Foundation
+
+/// One trade plan: how much to buy or sell at a given price.
+///
+/// A plan records an *intention*, never a fill. Whether its price condition
+/// holds is derived from the live quote every time it is read (`isReached(at:)`)
+/// and is deliberately not persisted: two Macs would otherwise each latch a
+/// `triggered` flag on their own first sight of the price, writing a sync round
+/// trip for something that is not a user edit at all.
+///
+/// Plans live inside `WatchItem`, next to `transactions`, so the three-way merge
+/// that already reconciles trades reconciles these too.
+public struct TradePlan: Codable, Sendable, Hashable, Identifiable {
+    public enum Kind: String, Codable, Sendable, CaseIterable {
+        case buy
+        case sell
+    }
+
+    /// What the user decided about this plan. The market's opinion lives in
+    /// `isReached(at:)`, not here.
+    public enum Status: String, Codable, Sendable, CaseIterable {
+        /// Still waiting for the price.
+        case active
+        /// The user acted on it.
+        case done
+        /// The user gave up on it.
+        case cancelled
+    }
+
+    public var id: UUID
+    public var kind: Kind
+    /// Trigger price. A buy holds once the quote is at or below this; a sell
+    /// holds once it is at or above.
+    public var price: Double
+    /// Always positive, in the instrument's own trading unit (shares/units).
+    public var quantity: Double
+    public var status: Status
+    /// Why this price and this size. Free text, like `thesis`: nothing parses it.
+    public var note: String?
+    public var createdAt: Date
+    /// Refreshed on every edit. The merge uses it as the last-write-wins
+    /// tiebreak when both devices changed the same plan.
+    public var updatedAt: Date
+    /// The trade this plan produced, once one was recorded from it. Used only
+    /// to pair the two up for display — a dangling id is treated as unfilled
+    /// rather than cascading a deletion into the plan.
+    public var filledTransactionID: UUID?
+
+    public init(
+        id: UUID = UUID(),
+        kind: Kind,
+        price: Double,
+        quantity: Double,
+        status: Status = .active,
+        note: String? = nil,
+        createdAt: Date = .now,
+        updatedAt: Date = .now,
+        filledTransactionID: UUID? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.price = price
+        self.quantity = quantity
+        self.status = status
+        self.note = note
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.filledTransactionID = filledTransactionID
+    }
+}
+
+public extension TradePlan {
+    /// Whether the price condition holds at `current`. A buy is reached by
+    /// falling to the plan price, a sell by rising to it. Equality counts as
+    /// reached on both sides.
+    func isReached(at current: Double) -> Bool {
+        guard current > 0 else { return false }
+        switch kind {
+        case .buy: return current <= price
+        case .sell: return current >= price
+        }
+    }
+
+    /// How far the quote still has to move, in percent of the current price.
+    /// Zero once the plan is reached — never negative, so "already there" and
+    /// "overshot" read the same.
+    func gapPercent(from current: Double) -> Double {
+        guard current > 0 else { return 0 }
+        let raw = switch kind {
+        case .buy: (current - price) / current * 100
+        case .sell: (price - current) / current * 100
+        }
+        return max(0, raw)
+    }
+
+    /// What the plan would cost (buy) or raise (sell) at its own price.
+    var estimatedAmount: Double { price * quantity }
+
+    /// The one ordering the array is stored, rendered, and merged in.
+    ///
+    /// All three have to agree. Storing entry order while merging by id makes
+    /// `applySyncSnapshot` see a difference on every pass and write the file
+    /// again for nothing — the same fan-out the derived lot identity exists to
+    /// avoid. Buys lead (they are the common case and read as a ladder from the
+    /// nearest price down), then price descending, then id purely to break ties
+    /// deterministically.
+    static func ordered(_ plans: [TradePlan]) -> [TradePlan] {
+        plans.sorted { lhs, rhs in
+            if lhs.kind != rhs.kind { return lhs.kind == .buy }
+            if lhs.price != rhs.price { return lhs.price > rhs.price }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+    }
+}

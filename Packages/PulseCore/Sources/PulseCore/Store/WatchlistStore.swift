@@ -410,6 +410,82 @@ public final class WatchlistStore {
         save()
     }
 
+    // MARK: - Trade plans
+
+    /// Every plan the user can still act on, in group order.
+    ///
+    /// Instruments that survive only as dormant history are left out: the
+    /// symbol is not in any group any more, so its plan has no list to
+    /// trigger against and nothing to open. Membership is walked rather than
+    /// `allItems`, and a symbol tagged into two groups contributes once.
+    ///
+    /// Order is group order followed by each item's own storage order, which is
+    /// already `TradePlan.ordered`. The overview re-sorts by price distance on
+    /// top of this; that pass is display-only and never written back.
+    ///
+    /// The symbol lookup is built once rather than calling `item(for:)` per
+    /// membership: the home chip recomputes this on every quote tick, and a
+    /// linear scan per symbol would make it quadratic in the watchlist size for
+    /// no reason. Same shape as `items`.
+    public var tradePlanEntries: [TradePlanEntry] {
+        let bySymbol = Dictionary(uniqueKeysWithValues: allItems.map { ($0.symbol, $0) })
+        var seen = Set<SymbolID>()
+        var entries: [TradePlanEntry] = []
+        for group in groups {
+            for symbol in group.symbols where seen.insert(symbol).inserted {
+                guard let item = bySymbol[symbol] else { continue }
+                entries.append(contentsOf: item.plans.map {
+                    TradePlanEntry(symbol: symbol, plan: $0)
+                })
+            }
+        }
+        return entries
+    }
+
+    /// Creates or replaces one plan on an instrument.
+    ///
+    /// The plan keeps its identity by `id`: an edit preserves the original
+    /// `createdAt` and refreshes `updatedAt`, which is what the sync merge reads
+    /// when both devices changed the same plan. The caller assembles the plan,
+    /// exactly as `addTransaction` takes an assembled transaction.
+    @discardableResult
+    public func setTradePlan(_ plan: TradePlan, for symbol: SymbolID) -> Bool {
+        guard let index = allItems.firstIndex(where: { $0.symbol == symbol }),
+              allItems[index].supportsPosition,
+              plan.price.isFinite, plan.price > 0,
+              plan.quantity.isFinite, plan.quantity > 0 else { return false }
+
+        var incoming = plan
+        incoming.note = Self.normalizedPlanNote(plan.note)
+        var plans = allItems[index].plans
+        if let existing = plans.firstIndex(where: { $0.id == plan.id }) {
+            incoming.createdAt = plans[existing].createdAt
+            incoming.updatedAt = .now
+            plans[existing] = incoming
+        } else {
+            incoming.updatedAt = .now
+            plans.append(incoming)
+        }
+        allItems[index].plans = TradePlan.ordered(plans)
+        save()
+        return true
+    }
+
+    @discardableResult
+    public func deleteTradePlan(_ id: UUID, for symbol: SymbolID) -> Bool {
+        guard let index = allItems.firstIndex(where: { $0.symbol == symbol }) else { return false }
+        let count = allItems[index].plans.count
+        allItems[index].plans.removeAll { $0.id == id }
+        guard allItems[index].plans.count != count else { return false }
+        save()
+        return true
+    }
+
+    private static func normalizedPlanNote(_ note: String?) -> String? {
+        let trimmed = note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed?.isEmpty ?? true) ? nil : trimmed
+    }
+
     public func updateLots(_ symbol: SymbolID, lots: [CostLot]) {        guard let index = allItems.firstIndex(where: { $0.symbol == symbol }) else { return }
         // Preserve legacy index data until the user explicitly removes it, but
         // never create or replace a position for a non-tradable index.
@@ -588,7 +664,10 @@ public final class WatchlistStore {
                     transactions: item.materializedTransactions().isEmpty
                         ? nil
                         : item.materializedTransactions(),
-                    thesis: item.thesis
+                    thesis: item.thesis,
+                    // Plans are the user's intentions, so they travel with the
+                    // reasoning that explains them.
+                    plans: item.plans.isEmpty ? nil : TradePlan.ordered(item.plans)
                 )
             }
             return WatchlistArchive.List(name: group.name, entries: entries)
@@ -717,6 +796,13 @@ public final class WatchlistStore {
                     if allItems[itemIndex].thesis == nil, let archivedThesis = entry.thesis {
                         allItems[itemIndex].thesis = archivedThesis
                     }
+                    // Same rule again for plans: only an instrument with no
+                    // plans at all adopts the archive's, so a stale backup
+                    // cannot replace a plan the user has since rewritten.
+                    if allItems[itemIndex].plans.isEmpty, let archivedPlans = entry.plans,
+                       !archivedPlans.isEmpty {
+                        allItems[itemIndex].plans = TradePlan.ordered(archivedPlans)
+                    }
                 } else {
                     let archivedName = entry.name?
                         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -728,7 +814,8 @@ public final class WatchlistStore {
                         displayName: archivedName.isEmpty ? symbol.displayCode : archivedName,
                         displayNameSource: nil,
                         instrumentType: entry.type,
-                        thesis: entry.thesis
+                        thesis: entry.thesis,
+                        plans: TradePlan.ordered(entry.plans ?? [])
                     ))
                     if !archivedTransactions.isEmpty {
                         applyTransactions(archivedTransactions, at: allItems.count - 1)
@@ -857,6 +944,10 @@ public final class WatchlistStore {
                 item.instrumentType,
                 for: item.symbol
             )
+            // Storage, rendering, and the merge all read one order
+            // (`TradePlan.ordered`); normalizing on every load keeps a peer's
+            // snapshot from looking different purely because of sequence.
+            item.plans = TradePlan.ordered(item.plans)
             if let existingIndex = itemIndexBySymbol[item.symbol] {
                 var existingLotIDs = Set(normalizedItems[existingIndex].lots.map(\.id))
                 normalizedItems[existingIndex].lots.append(
@@ -892,6 +983,14 @@ public final class WatchlistStore {
                    incoming.count > (normalizedItems[existingIndex].thesis?.count ?? 0) {
                     normalizedItems[existingIndex].thesis = incoming
                 }
+                // Plans carry stable ids, so duplicates from two spellings of
+                // the same symbol union by id rather than picking a winner.
+                var existingPlanIDs = Set(normalizedItems[existingIndex].plans.map(\.id))
+                normalizedItems[existingIndex].plans = TradePlan.ordered(
+                    normalizedItems[existingIndex].plans + item.plans.filter {
+                        existingPlanIDs.insert($0.id).inserted
+                    }
+                )
             } else {
                 itemIndexBySymbol[item.symbol] = normalizedItems.count
                 normalizedItems.append(item)

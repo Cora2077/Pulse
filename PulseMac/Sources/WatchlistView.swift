@@ -801,8 +801,75 @@ struct WatchlistView: View {
                 .controlSize(.small)
                 .padding(.trailing, 12)
                 .padding(.bottom, 4)
+            } else {
+                planEntryChip
             }
         }
+    }
+
+    /// The trade-plan overview lives here rather than in the header's action
+    /// cluster or a strip under the group bar.
+    ///
+    /// This row is already the status line — the market's health is a couple of
+    /// points to the left — and a plan coming into range is the same kind of
+    /// fact. It also costs nothing: the list is `110 + 48 per row` against a
+    /// 600pt cap, so a strip of its own would have taken a row off every
+    /// watchlist already at ten instruments. The header cluster was the other
+    /// candidate, and a fifth glyph beside the pin would still have had to say
+    /// how many plans were in range, which is the only part worth knowing.
+    ///
+    /// It is always present — never appearing and disappearing — so the list
+    /// below it never shifts by a row, and the target glyph gains a lit chip
+    /// once something is in range. That is the whole "notice without opening
+    /// the app" story, with no notification permission involved.
+    private var planEntryChip: some View {
+        let summary = TradePlanOverview.summary(
+            appState.watchlist.tradePlanEntries,
+            currentPrice: { appState.market.quote(for: $0)?.price }
+        )
+        let isLit = summary.reached > 0
+        return Button {
+            route = .planList
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: isLit ? "target" : "scope")
+                    .font(.system(size: 9, weight: .medium))
+                Text(planEntryLabel(summary))
+                    .font(.system(size: 10, weight: isLit ? .semibold : .regular))
+            }
+            // The accent rather than the up/down colours: this badge speaks for
+            // plans across several instruments at once, and a buy plan arriving
+            // in range means the price *fell* — painting that red would read as
+            // a gain. The row-level bar on the overview page keeps the
+            // direction colour, because there a single plan owns the row.
+            .foregroundStyle(isLit ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+            .padding(.horizontal, 6)
+            .frame(height: 22)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(isLit ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.05))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.pressable)
+        .help(PulseLocalization.localizedString("plan.entry.help"))
+        .padding(.trailing, 12)
+        .padding(.bottom, 4)
+    }
+
+    /// Counts every plan rather than only the live ones, so this badge and the
+    /// overview header can never print different totals for the same watchlist.
+    /// The header is where the live/settled split gets explained.
+    private func planEntryLabel(_ summary: TradePlanOverview.Summary) -> String {
+        if summary.total == 0 {
+            return PulseLocalization.localizedString("plan.entry.empty")
+        }
+        if summary.reached > 0 {
+            return PulseLocalization.localizedString(
+                "plan.entry.reached", summary.total, summary.reached
+            )
+        }
+        return PulseLocalization.localizedString("plan.entry.waiting", summary.total)
     }
 
     private var footerShowsFallback: Bool {
@@ -1941,6 +2008,11 @@ struct WatchRow: View {
                                 .foregroundStyle(.tertiary)
                                 .help(PulseLocalization.localizedString("detail.section.thesis"))
                         }
+                        // The whole point of a plan is the moment its price
+                        // arrives, which is only useful if it can be seen from
+                        // the list. Nothing is stored for this: the row asks
+                        // the quote, exactly like the detail block does.
+                        planIndicator(for: item, quote: quote)
                     }
                 }
                 .frame(width: titleColumnWidth, alignment: .leading)
@@ -2024,6 +2096,24 @@ struct WatchRow: View {
         }
         .onChange(of: isReordering) { _, active in
             if active { hovering = false }
+        }
+    }
+
+    /// A filled target once any plan's price has arrived, a hollow scope while
+    /// plans are only waiting, and nothing at all without plans. Tinted by the
+    /// direction the reached plan trades in, matching the detail block.
+    @ViewBuilder
+    private func planIndicator(for item: WatchItem, quote: Quote?) -> some View {
+        if let reached = quote.flatMap({ item.reachedPlan(at: $0.price) }) {
+            Image(systemName: "target")
+                .font(.system(size: 8))
+                .foregroundStyle(appState.palette.color(isUp: reached.kind == .buy))
+                .help(PulseLocalization.localizedString("plan.reached"))
+        } else if item.hasActivePlans {
+            Image(systemName: "scope")
+                .font(.system(size: 8))
+                .foregroundStyle(.tertiary)
+                .help(PulseLocalization.localizedString("detail.section.plan"))
         }
     }
 

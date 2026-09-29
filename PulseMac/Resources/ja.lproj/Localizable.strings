@@ -441,6 +441,40 @@
 "sync.error.backupFailed" = "競合のバックアップを保存できなかったため、選択は適用されませんでした。";
 "sync.error.ownFilePendingDownload" = "この Mac の同期ファイルは iCloud からダウンロード中です。Pulse はバックグラウンドで再試行します。";
 
+/* Trade plans: what the user means to do at which price */
+"detail.section.plan" = "取引プラン";
+"plan.add" = "取引プランを追加";
+"plan.empty" = "どの価格で何をするつもりかを書き留めてください。";
+"plan.more" = "他 %d 件";
+"plan.gap" = "あと %@";
+"plan.reached" = "到達";
+"plan.rowHelp" = "このプランを編集";
+"plan.title.add" = "取引プランを作成";
+"plan.title.edit" = "取引プランを編集";
+"plan.kind.buy" = "買い";
+"plan.kind.sell" = "売り";
+"plan.price" = "価格";
+"plan.note" = "メモ（任意）";
+"plan.status" = "状態";
+"plan.status.active" = "待機中";
+"plan.status.done" = "約定済み";
+"plan.status.cancelled" = "取りやめ";
+"plan.delete" = "プランを削除";
+"plan.useCurrentPrice" = "クリックで現在値を入力";
+"plan.amount" = "計画金額";
+
+/* Trade plans: the cross-symbol overview and its entry point on the home bar */
+"plan.list.title" = "トレード計画";
+"plan.list.summary" = "全 %d 件 · %d 件が到達";
+"plan.list.empty" = "まだ計画がありません。銘柄の詳細ページで、どの価格で何をいくら売買するつもりかを書いておくと、その価格に届いたときにこのページが知らせます。";
+"plan.menu.edit" = "価格と数量を変更";
+"plan.menu.drop" = "放棄として記録";
+"plan.menu.revive" = "待機に戻す";
+"plan.entry.empty" = "計画";
+"plan.entry.waiting" = "%d 件";
+"plan.entry.reached" = "%d 件 · %d 件が到達";
+"plan.entry.help" = "書いておいた計画のすべてと、その価格に届いているかどうか";
+
 "settings.mcp.row" = "MCP";
 "settings.mcp.title" = "MCP";
 "settings.mcp.enable" = "MCP サーバーを有効にする";

@@ -39,6 +39,10 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
     /// by hand: nothing parses it and nothing else depends on its shape. `nil`
     /// and an empty string both mean "not written yet".
     public var thesis: String?
+    /// What the user intends to do at which price, kept in the stored order
+    /// `TradePlan.ordered` defines. Intention only — a plan's price condition
+    /// is derived from the live quote, never persisted.
+    public var plans: [TradePlan]
 
     public init(
         symbol: SymbolID,
@@ -48,7 +52,8 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         addedAt: Date = .now,
         lots: [CostLot] = [],
         transactions: [PositionTransaction] = [],
-        thesis: String? = nil
+        thesis: String? = nil,
+        plans: [TradePlan] = []
     ) {
         self.symbol = symbol
         self.displayName = displayName
@@ -58,11 +63,13 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         self.lots = lots
         self.transactions = transactions
         self.thesis = thesis
+        self.plans = plans
     }
 
     enum CodingKeys: String, CodingKey {
         case symbol, displayName, displayNameSource, instrumentType, addedAt, lots, transactions
         case thesis
+        case plans
     }
 
     public init(from decoder: Decoder) throws {
@@ -75,6 +82,7 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         lots = try container.decodeIfPresent([CostLot].self, forKey: .lots) ?? []
         transactions = try container.decodeIfPresent([PositionTransaction].self, forKey: .transactions) ?? []
         thesis = try container.decodeIfPresent(String.self, forKey: .thesis)
+        plans = try container.decodeIfPresent([TradePlan].self, forKey: .plans) ?? []
     }
 
     public var id: SymbolID { symbol }
@@ -156,6 +164,18 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
     /// position or transaction history (realized P&L survives selling out).
     public var hasPositionHistory: Bool {
         hasPosition || !transactions.isEmpty
+    }
+
+    /// Whether any plan is still waiting on its price.
+    public var hasActivePlans: Bool {
+        plans.contains { $0.status == .active }
+    }
+
+    /// The first active plan whose price condition holds at `price`. The store
+    /// never latches this; the list row and the detail block both ask the live
+    /// quote, so both answer the same on every device.
+    public func reachedPlan(at price: Double) -> TradePlan? {
+        plans.first { $0.status == .active && $0.isReached(at: price) }
     }
 
     /// Legacy lots materialized as an opening adjustment, so recording the

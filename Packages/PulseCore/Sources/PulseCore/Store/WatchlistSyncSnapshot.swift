@@ -252,7 +252,12 @@ public enum WatchlistSyncMerge {
                 instrumentType: source?.instrumentType,
                 addedAt: source?.addedAt ?? .now,
                 lots: [],
-                transactions: replay(transactions)
+                transactions: replay(transactions),
+                // A plan is user intent, so a concurrent one follows the
+                // surviving trades into dormant history rather than vanishing
+                // with the deleted membership. Plans alone never resurrect the
+                // item: the guard above still requires a trade.
+                plans: mergePlans(base: base?.plans ?? [], local: local?.plans ?? [], remote: remote?.plans ?? [])
             )
         }
 
@@ -268,6 +273,11 @@ public enum WatchlistSyncMerge {
         result.instrumentType = threeWay(base?.instrumentType, local?.instrumentType, remote?.instrumentType)
         result.addedAt = threeWay(base?.addedAt, local?.addedAt, remote?.addedAt, fallback: seed.addedAt) ?? seed.addedAt
         result.thesis = threeWay(base?.thesis, local?.thesis, remote?.thesis)
+        result.plans = mergePlans(
+            base: base?.plans ?? [],
+            local: local?.plans ?? [],
+            remote: remote?.plans ?? []
+        )
         result.transactions = replay(transactions)
         if result.transactions.isEmpty {
             let hadTransactionHistory = [base, local, remote].contains { item in
@@ -293,6 +303,59 @@ public enum WatchlistSyncMerge {
         if remote == base { return local }
         if local == nil || remote == nil { return nil }
         return canonicalChoice(local!, remote!)
+    }
+
+    /// Three-way merge for trade plans, by id.
+    ///
+    /// A plan both devices changed is settled by `updatedAt` rather than
+    /// reported as a conflict. The conflict channel and its UI are the trade
+    /// channel — a trade is worth interrupting someone over because it is real
+    /// money, while a plan is a note to self that costs nothing to redo. Asking
+    /// would also mean extending the conflict enum and its resolution UI for a
+    /// case nobody needs.
+    ///
+    /// `updatedAt` rather than `canonicalChoice`: the latter picks by encoded
+    /// byte order, which for hand-written content is the same as picking at
+    /// random. Older clock skew on one device degrades that to a coin flip, but
+    /// still a deterministic, converging one.
+    private static func mergePlans(
+        base: [TradePlan], local: [TradePlan], remote: [TradePlan]
+    ) -> [TradePlan] {
+        let b = Dictionary(base.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let l = Dictionary(local.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let r = Dictionary(remote.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var merged: [TradePlan] = []
+        for id in Set(b.keys).union(l.keys).union(r.keys) {
+            let basePlan = b[id]
+            let localPlan = l[id]
+            let remotePlan = r[id]
+            let chosen: TradePlan?
+            if localPlan == remotePlan {
+                chosen = localPlan
+            } else if localPlan == basePlan {
+                chosen = remotePlan
+            } else if remotePlan == basePlan {
+                chosen = localPlan
+            } else {
+                chosen = newer(localPlan, remotePlan)
+            }
+            if let chosen { merged.append(chosen) }
+        }
+        return TradePlan.ordered(merged)
+    }
+
+    private static func newer(_ local: TradePlan?, _ remote: TradePlan?) -> TradePlan? {
+        switch (local, remote) {
+        case (nil, let remote): return remote
+        case (let local, nil): return local
+        case (let local?, let remote?):
+            if local.updatedAt != remote.updatedAt {
+                return local.updatedAt > remote.updatedAt ? local : remote
+            }
+            // Same timestamp — two devices editing within one clock tick. Fall
+            // back to the encoding order so both of them land on the same one.
+            return canonicalChoice(local, remote)
+        }
     }
 
     private static func mergeLots(base: [CostLot], local: [CostLot], remote: [CostLot]) -> [CostLot] {

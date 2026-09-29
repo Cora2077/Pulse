@@ -4,6 +4,10 @@ import PulseCore
 
 enum PopoverRoute: Hashable {
     case list
+    /// Cross-symbol trade-plan overview, reached from the home bottom bar.
+    /// Unlike the position flow it carries no return route: it is pushed
+    /// straight off the list, so back is always the list.
+    case planList
     case detail(SymbolID)
     /// Position hub: summary, trade actions, and recent transactions.
     case position(SymbolID, PositionReturnRoute)
@@ -15,6 +19,9 @@ enum PopoverRoute: Hashable {
     case transactions(SymbolID, PositionReturnRoute)
     /// Quick set: overwrite quantity + average cost as one calibration entry.
     case calibrate(SymbolID, PositionReturnRoute)
+    /// Trade plan editor. The second value is the plan being edited; nil
+    /// creates a new one.
+    case plan(SymbolID, UUID?, PositionReturnRoute)
     /// Full business summary, pushed from the detail page's excerpt.
     case profile(SymbolID)
     case settings
@@ -45,6 +52,10 @@ enum TradeSide: Hashable {
 enum PositionReturnRoute: Hashable {
     case list
     case detail(SymbolID)
+    /// The cross-symbol plan overview. The plan editor is reachable from it,
+    /// and coming back from an edit has to land on the overview rather than
+    /// jumping to a different page.
+    case planList
 
     var popoverRoute: PopoverRoute {
         switch self {
@@ -52,6 +63,8 @@ enum PositionReturnRoute: Hashable {
             .list
         case .detail(let symbol):
             .detail(symbol)
+        case .planList:
+            .planList
         }
     }
 }
@@ -96,6 +109,14 @@ struct PopoverRootView: View {
         case .position(let symbol, _), .trade(let symbol, _, _),
              .transactions(let symbol, _), .calibrate(let symbol, _):
             return appState.watchlist.item(for: symbol) == nil ? .list : route
+        case .plan(let symbol, let planID, let returnRoute):
+            // A plan deleted out from under the editor (or a symbol leaving the
+            // watchlist) falls back to the page it was opened from.
+            guard let item = appState.watchlist.item(for: symbol) else { return .list }
+            guard let planID else { return route }
+            return item.plans.contains(where: { $0.id == planID })
+                ? route
+                : returnRoute.popoverRoute
         case .editTrade(let symbol, let id, let returnRoute):
             // A transaction deleted out from under the edit page (or a symbol
             // leaving the watchlist) falls back to the log it came from.
@@ -129,6 +150,10 @@ struct PopoverRootView: View {
             switch displayRoute {
             case .list:
                 EmptyView()
+            case .planList:
+                PlanListView(route: $route)
+                    .frame(height: height(for: displayRoute))
+                    .transition(pushTransition)
             case .detail(let symbol):
                 DetailView(symbol: symbol, route: $route)
                     .frame(height: height(for: displayRoute))
@@ -157,6 +182,15 @@ struct PopoverRootView: View {
                 TransactionListView(symbol: symbol, returnRoute: returnRoute, route: $route)
                     .frame(height: height(for: displayRoute))
                     .transition(pushTransition)
+            case .plan(let symbol, let planID, let returnRoute):
+                PlanEditorView(
+                    symbol: symbol,
+                    planID: planID,
+                    returnRoute: returnRoute,
+                    route: $route
+                )
+                .frame(height: height(for: displayRoute))
+                .transition(pushTransition)
             case .calibrate(let symbol, let returnRoute):
                 VStack(spacing: 0) {
                     // The panel's compact editor has Cancel at the bottom. In a window,
@@ -323,12 +357,14 @@ struct PopoverRootView: View {
              .transactions(let symbol, let returnRoute),
              .calibrate(let symbol, let returnRoute):
             .position(symbol, returnRoute)
+        case .plan(_, _, let returnRoute):
+            returnRoute.popoverRoute
         case .editTrade(let symbol, _, let returnRoute):
             // Editing is launched from the trade log, so Escape goes back to it.
             .transactions(symbol, returnRoute)
         case .profile(let symbol):
             .detail(symbol)
-        case .settings:
+        case .settings, .planList:
             .list
         case .providerList, .dataSettings, .appearanceSettings, .mcpSettings:
             .settings
@@ -345,6 +381,26 @@ struct PopoverRootView: View {
         host == .pinnedWindow ? 520 : 340
     }
 
+    /// The detail page is a fixed-height stack with one flexible block (the
+    /// chart) in the middle, so anything added to it comes out of the chart.
+    /// The trade-plan block is measured by `PlanSection` and granted here, up
+    /// to the host's own ceiling; without this the block would simply push the
+    /// thesis section past the bottom edge, where it gets clipped.
+    private func detailHeight(for symbol: SymbolID) -> CGFloat {
+        guard plansApply(to: symbol) else { return 560 }
+        let planCount = appState.watchlist.item(for: symbol)?.plans.count ?? 0
+        return min(Self.maxHeight, 560 + PlanSection.sectionHeight(planCount: planCount))
+    }
+
+    /// Mirrors `DetailView.symbolSupportsPosition`: an index is a calculated
+    /// benchmark and a metal quote is a futures contract whose size Pulse does
+    /// not model, so neither can hold a position — or a plan for one.
+    private func plansApply(to symbol: SymbolID) -> Bool {
+        if symbol.indexID != nil || symbol.metalID != nil { return false }
+        guard let item = appState.watchlist.item(for: symbol) else { return true }
+        return item.supportsPosition
+    }
+
     /// The list page height adapts to the watchlist size (chrome, row height, bottom bar, and padding),
     /// clamped between the min and max
     private func height(for route: PopoverRoute) -> CGFloat {
@@ -355,8 +411,8 @@ struct PopoverRootView: View {
             let content = listChromeHeight + CGFloat(appState.watchlist.items.count) * Self.listRowHeight
             let minimum = appState.watchlist.items.isEmpty ? Self.minHeight : Self.minListHeight
             return min(max(content, minimum), Self.maxHeight)
-        case .detail:
-            return 560
+        case .detail(let symbol):
+            return detailHeight(for: symbol)
         case .profile:
             return 440
         case .position(let symbol, _):
@@ -385,8 +441,16 @@ struct PopoverRootView: View {
             return host == .pinnedWindow ? 420 : 330
         case .transactions:
             return 500
+        case .planList:
+            // A scrolling page, so the height is a window rather than a
+            // budget: the same order of magnitude as the trade log above.
+            return host == .pinnedWindow ? 520 : 460
         case .calibrate:
             return 370
+        case .plan:
+            // A labelled form: kind, two input cells, note, status, amount.
+            // The pinned window has the room to breathe.
+            return host == .pinnedWindow ? 420 : 380
         case .settings:
             // Root is an index of destinations; keep it short so agents and data stay on-screen.
             return 460

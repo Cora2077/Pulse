@@ -32,7 +32,9 @@ struct DetailView: View {
         .minute5, .minute15, .minute30, .hour1,
     ]
 
-    // Page flow: price hero → trend chart → market stats → position.
+    // Page flow: price hero → trend chart → market stats → position →
+    // trade plans → thesis. Reading top to bottom is "what it costs", "what I
+    // hold", "what I mean to do", "why" — the thesis stays the closing block.
     // Source/time/delay metadata sits at the hero's top-right corner, annotating the price.
     var body: some View {
         VStack(spacing: 0) {
@@ -42,6 +44,7 @@ struct DetailView: View {
             sectionSeparator
             statsSection
             positionArea
+            planArea
             thesisArea
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1018,7 +1021,170 @@ struct DetailView: View {
         .padding(.horizontal, 12)
     }
 
-    // MARK: - Position
+    // MARK: - Trade plans
+
+    /// The user's intentions: how much, at which price. Read-only here — the
+    /// editor is a pushed page (`PlanEditorView`) because this page has no
+    /// ScrollView and cannot grow to hold a form. The one live signal the block
+    /// carries is derived, never stored: `isReached(at:)` against the quote.
+    @ViewBuilder
+    private var planArea: some View {
+        if symbolSupportsPosition {
+            sectionSeparator
+            planSection
+        }
+    }
+
+    private var planSection: some View {
+        VStack(alignment: .leading, spacing: PlanSection.stackSpacing) {
+            planHeaderRow
+            if let item, !item.plans.isEmpty {
+                planRows(item)
+            } else {
+                planEmptyRow
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, PlanSection.bottomPadding)
+    }
+
+    private var planHeaderRow: some View {
+        HStack(spacing: 4) {
+            sectionHeaderText(PulseLocalization.localizedString("detail.section.plan"))
+            Spacer(minLength: 0)
+            if let reached = reachedPlan {
+                // The plan in range is the thing worth knowing from this page,
+                // so the header says it before any row does.
+                Text(PulseLocalization.localizedString("plan.reached"))
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(appState.palette.color(isUp: reached.kind == .buy))
+            }
+            Button {
+                openPlanEditor(nil)
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.pressable)
+            .help(PulseLocalization.localizedString("plan.add"))
+        }
+    }
+
+    /// The active plan whose price condition holds right now, if any.
+    private var reachedPlan: TradePlan? {
+        guard let quote, let item else { return nil }
+        return item.reachedPlan(at: quote.price)
+    }
+
+    /// Lists at most `PlanSection.visibleRowCount` plans. The page is a fixed
+    /// height, so the rest are counted rather than drawn — the same trade the
+    /// position hub makes with its six most recent transactions.
+    @ViewBuilder
+    private func planRows(_ item: WatchItem) -> some View {
+        ForEach(item.plans.prefix(PlanSection.visibleRowCount)) { plan in
+            planRow(plan)
+        }
+        if item.plans.count > PlanSection.visibleRowCount {
+            Text(PulseLocalization.localizedString(
+                "plan.more",
+                item.plans.count - PlanSection.visibleRowCount
+            ))
+            .font(.system(size: 9))
+            .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func planRow(_ plan: TradePlan) -> some View {
+        let reached = quote.map { plan.isReached(at: $0.price) } ?? false
+        let isWaiting = plan.status == .active
+        return Button {
+            openPlanEditor(plan.id)
+        } label: {
+            HStack(spacing: 6) {
+                // A bar rather than a tinted row: a buy plan coming into range
+                // means the price *fell*, and painting that in the up colour
+                // reads as a gain. The bar borrows the direction the plan
+                // trades in without turning the line red or green.
+                Capsule()
+                    .fill(reached && isWaiting ? appState.palette.color(isUp: plan.kind == .buy) : Color.clear)
+                    .frame(width: 2, height: 12)
+                TradeKindBadge(
+                    kind: plan.kind == .buy ? .buy : .sell,
+                    palette: appState.palette
+                )
+                Text("\(PriceFormatter.price(plan.price, market: symbol.market)) × \(PriceFormatter.quantity(plan.quantity))")
+                    .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                    .foregroundStyle(isWaiting ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+                    .strikethrough(plan.status == .cancelled, color: .secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .allowsTightening(true)
+                Spacer(minLength: 4)
+                planTrailingLabel(plan, reached: reached)
+            }
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.pressable)
+        .help(plan.note ?? PulseLocalization.localizedString("plan.rowHelp"))
+    }
+
+    @ViewBuilder
+    private func planTrailingLabel(_ plan: TradePlan, reached: Bool) -> some View {
+        switch plan.status {
+        case .done:
+            planStatusLabel("plan.status.done")
+        case .cancelled:
+            planStatusLabel("plan.status.cancelled")
+        case .active:
+            if reached {
+                Text(PulseLocalization.localizedString("plan.reached"))
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(appState.palette.color(isUp: plan.kind == .buy))
+            } else if let quote {
+                Text(PulseLocalization.localizedString(
+                    "plan.gap",
+                    PriceFormatter.percentMagnitude(plan.gapPercent(from: quote.price))
+                ))
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func planStatusLabel(_ key: String) -> some View {
+        Text(PulseLocalization.localizedString(key))
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(.tertiary)
+    }
+
+    private var planEmptyRow: some View {
+        Text(PulseLocalization.localizedString("plan.empty"))
+            .font(.system(size: 10.5))
+            .foregroundStyle(.tertiary)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { openPlanEditor(nil) }
+    }
+
+    /// Plans need a stored item, and a symbol opened from search has none.
+    /// Materializing it here is the same move `openPositions()` makes, and it
+    /// keeps the instrument out of every list.
+    @MainActor
+    private func openPlanEditor(_ id: UUID?) {
+        if appState.watchlist.item(for: symbol) == nil {
+            appState.watchlist.materializeItem(SymbolInfo(
+                symbol: symbol,
+                name: appState.market.quote(for: symbol)?.name ?? appState.displayName(for: symbol)
+            ))
+            appState.engine.poke()
+        }
+        route = .plan(symbol, id, .detail(symbol))
+    }
 
     // MARK: - Thesis
 
@@ -1311,5 +1477,39 @@ struct DetailView: View {
                 .allowsTightening(true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Geometry of the detail page's trade-plan block.
+///
+/// The detail page has no ScrollView — its height is handed to it from
+/// `PopoverRootView`, which also has to budget for this block. The two live
+/// apart, so the numbers live here once and both read them rather than
+/// drifting into a layout that clips the section it just added.
+enum PlanSection {
+    /// How many plans the block lists before the rest are counted instead.
+    /// Same idea as `PositionHubView.visibleTransactionCount`.
+    static let visibleRowCount = 2
+
+    static let rowHeight: CGFloat = 22
+    static let moreRowHeight: CGFloat = 16
+    static let emptyTextHeight: CGFloat = 15
+    /// `sectionSeparator`'s 8pt above and below plus its hairline.
+    static let separatorHeight: CGFloat = 17
+    static let headerHeight: CGFloat = 13
+    static let stackSpacing: CGFloat = 6
+    static let bottomPadding: CGFloat = 12
+
+    /// What the block costs the page. The chart above it is the flexible
+    /// block, so this is how much shorter the chart gets.
+    static func sectionHeight(planCount: Int) -> CGFloat {
+        let content: CGFloat
+        if planCount == 0 {
+            content = emptyTextHeight
+        } else {
+            content = CGFloat(min(planCount, visibleRowCount)) * rowHeight
+                + (planCount > visibleRowCount ? moreRowHeight : 0)
+        }
+        return separatorHeight + headerHeight + stackSpacing + content + bottomPadding
     }
 }

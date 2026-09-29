@@ -494,3 +494,37 @@
 "sync.error.coordination" = "Pulse could not coordinate access to the sync folder.";
 "sync.error.backupFailed" = "Pulse could not save the conflict backup, so no choice was applied.";
 "sync.error.ownFilePendingDownload" = "This Mac’s sync file is still downloading from iCloud. Pulse will retry in the background.";
+
+/* Trade plans: what the user means to do at which price */
+"detail.section.plan" = "Trade Plans";
+"plan.add" = "Add Trade Plan";
+"plan.empty" = "Write down what you plan to do at which price.";
+"plan.more" = "%d more";
+"plan.gap" = "%@ to go";
+"plan.reached" = "In Range";
+"plan.rowHelp" = "Edit this plan";
+"plan.title.add" = "New Trade Plan";
+"plan.title.edit" = "Edit Trade Plan";
+"plan.kind.buy" = "Buy";
+"plan.kind.sell" = "Sell";
+"plan.price" = "Price";
+"plan.note" = "Note (optional)";
+"plan.status" = "Status";
+"plan.status.active" = "Waiting";
+"plan.status.done" = "Done";
+"plan.status.cancelled" = "Dropped";
+"plan.delete" = "Delete Plan";
+"plan.useCurrentPrice" = "Click to fill in the current price";
+"plan.amount" = "Plan Amount";
+
+/* Trade plans: the cross-symbol overview and its entry point on the home bar */
+"plan.list.title" = "Trade Plans";
+"plan.list.summary" = "%d plans · %d in range";
+"plan.list.empty" = "No plans yet. Open an instrument's detail page and write down what you mean to do at which price — when the market gets there, this page will tell you.";
+"plan.menu.edit" = "Edit Price and Size";
+"plan.menu.drop" = "Mark as Dropped";
+"plan.menu.revive" = "Put Back in Waiting";
+"plan.entry.empty" = "Plans";
+"plan.entry.waiting" = "%d plans";
+"plan.entry.reached" = "%d plans · %d in range";
+"plan.entry.help" = "Every plan you have written, and whether the market has reached it yet";

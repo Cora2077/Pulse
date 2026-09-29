@@ -188,6 +188,46 @@ final class MCPToolAdapter {
             return try adapter.appliedValue(mutation)
         },
         ToolSpec(
+            name: "set_trade_plan",
+            description: "Create or rewrite a trade plan: how much of a symbol to buy or sell at a given price. kind, price, and quantity are always written; status and note keep their recorded values when omitted. Pass an id to make retries idempotent. Never invent a plan the user did not state.",
+            properties: [
+                "symbol": symbolSchema,
+                "kind": .object(["type": "string", "enum": .array([.string("buy"), .string("sell")])]),
+                "price": .object(["type": "number"]),
+                "quantity": .object(["type": "number"]),
+                "id": uuidSchema,
+                "status": .object([
+                    "type": "string",
+                    "enum": .array(TradePlan.Status.allCases.map { .string($0.rawValue) }),
+                ]),
+                "note": .object(["type": "string"]),
+            ],
+            required: ["symbol", "kind", "price", "quantity"]
+        ) { adapter, arguments in
+            let mutation = try MCPToolAdapter.unwrap(adapter.commands.setTradePlan(
+                symbol: arguments.symbol("symbol"),
+                id: try arguments.optionalUUID("id"),
+                kind: try arguments.tradeKind("kind"),
+                price: try arguments.double("price"),
+                quantity: try arguments.double("quantity"),
+                status: try arguments.optionalTradePlanStatus("status"),
+                note: try arguments.optionalString("note")
+            ))
+            return try adapter.appliedValue(mutation)
+        },
+        ToolSpec(
+            name: "delete_trade_plan",
+            description: "Delete one trade plan by id. Deleting a plan that is not there succeeds with alreadyApplied=true.",
+            properties: ["symbol": symbolSchema, "id": uuidSchema],
+            required: ["symbol", "id"]
+        ) { adapter, arguments in
+            let mutation = try MCPToolAdapter.unwrap(adapter.commands.deleteTradePlan(
+                symbol: arguments.symbol("symbol"),
+                id: arguments.uuid("id")
+            ))
+            return try adapter.appliedValue(mutation)
+        },
+        ToolSpec(
             name: "add_symbol",
             description: "Add a symbol to a watchlist group. group_id is required; use search_symbols first to resolve market/code and pass the resolved name.",
             properties: [
@@ -520,6 +560,14 @@ struct ToolArguments {
     func optionalTradeKind(_ key: String) throws -> AgentTradeKind? {
         guard try optionalString(key) != nil else { return nil }
         return try tradeKind(key)
+    }
+
+    func optionalTradePlanStatus(_ key: String) throws -> TradePlan.Status? {
+        guard let string = try optionalString(key) else { return nil }
+        guard let status = TradePlan.Status(rawValue: string) else {
+            throw Self.wrongType(key, expected: "\"active\", \"done\", or \"cancelled\"")
+        }
+        return status
     }
 
     func optionalInstrumentType(_ key: String) throws -> InstrumentType? {

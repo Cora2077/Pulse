@@ -441,6 +441,40 @@
 "sync.error.backupFailed" = "충돌 백업을 저장할 수 없어 어떤 선택도 적용하지 않았습니다.";
 "sync.error.ownFilePendingDownload" = "이 Mac의 동기화 파일을 iCloud에서 다운로드 중입니다. Pulse가 백그라운드에서 다시 시도합니다.";
 
+/* Trade plans: what the user means to do at which price */
+"detail.section.plan" = "거래 계획";
+"plan.add" = "거래 계획 추가";
+"plan.empty" = "어느 가격에 무엇을 할지 적어 두세요.";
+"plan.more" = "%d개 더";
+"plan.gap" = "%@ 남음";
+"plan.reached" = "도달";
+"plan.rowHelp" = "이 계획 편집";
+"plan.title.add" = "새 거래 계획";
+"plan.title.edit" = "거래 계획 편집";
+"plan.kind.buy" = "매수";
+"plan.kind.sell" = "매도";
+"plan.price" = "가격";
+"plan.note" = "메모(선택)";
+"plan.status" = "상태";
+"plan.status.active" = "대기 중";
+"plan.status.done" = "체결됨";
+"plan.status.cancelled" = "포기";
+"plan.delete" = "계획 삭제";
+"plan.useCurrentPrice" = "클릭하여 현재가 입력";
+"plan.amount" = "계획 금액";
+
+/* Trade plans: the cross-symbol overview and its entry point on the home bar */
+"plan.list.title" = "거래 계획";
+"plan.list.summary" = "총 %d건 · %d건 도달";
+"plan.list.empty" = "아직 계획이 없습니다. 종목 상세 페이지에서 어느 가격에 무엇을 얼마나 사거나 팔지 적어 두면, 그 가격에 닿았을 때 이 페이지가 알려 줍니다.";
+"plan.menu.edit" = "가격과 수량 수정";
+"plan.menu.drop" = "포기로 표시";
+"plan.menu.revive" = "대기로 되돌리기";
+"plan.entry.empty" = "계획";
+"plan.entry.waiting" = "%d건";
+"plan.entry.reached" = "%d건 · %d건 도달";
+"plan.entry.help" = "적어 둔 모든 계획과 그 가격에 닿았는지 여부";
+
 "settings.mcp.row" = "MCP";
 "settings.mcp.title" = "MCP";
 "settings.mcp.enable" = "MCP 서버 사용";

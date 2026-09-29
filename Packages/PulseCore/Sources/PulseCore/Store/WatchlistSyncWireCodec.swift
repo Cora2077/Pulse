@@ -39,6 +39,7 @@ public enum WatchlistSyncWireCodec {
         case duplicateItemSymbol(SymbolID)
         case duplicateCostLotID(UUID)
         case duplicateTransactionID(UUID)
+        case duplicateTradePlanID(UUID)
     }
 
     private struct Header: Decodable {
@@ -147,6 +148,14 @@ public enum WatchlistSyncWireCodec {
             for transaction in item.transactions {
                 guard transactionIDs.insert(transaction.id).inserted else {
                     throw CodecError.duplicateTransactionID(transaction.id)
+                }
+            }
+            // The plan merge keys by id, so a payload carrying one twice would
+            // silently drop an edit instead of reporting the malformed file.
+            var planIDs = Set<UUID>()
+            for plan in item.plans {
+                guard planIDs.insert(plan.id).inserted else {
+                    throw CodecError.duplicateTradePlanID(plan.id)
                 }
             }
         }
