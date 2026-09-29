@@ -23,6 +23,10 @@ struct DetailView: View {
     @State private var shareFeedback: ShareFeedback?
     /// Owned here (not in the chart) so sharing can read the zoomed candle window.
     @State private var candleViewport = CandleChartViewport()
+    /// The thesis sheet. The draft lives here so abandoning an edit leaves the
+    /// stored text exactly as it was.
+    @State private var isEditingThesis = false
+    @State private var thesisDraft = ""
 
     private static let minutePeriods: [CandlePeriod] = [
         .minute5, .minute15, .minute30, .hour1,
@@ -38,6 +42,7 @@ struct DetailView: View {
             sectionSeparator
             statsSection
             positionArea
+            thesisArea
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .softScrollEdgeEffect(for: .all)
@@ -1014,6 +1019,89 @@ struct DetailView: View {
     }
 
     // MARK: - Position
+
+    // MARK: - Thesis
+
+    /// The user's own reason for holding this instrument, kept as free text.
+    /// Shown last because it is the one block that exists only once someone has
+    /// written it — and it is usually the thing they came back to read.
+    @ViewBuilder
+    private var thesisArea: some View {
+        if let item {
+            // The same hairline `sectionSeparator` draws, but tightened on both
+            // sides. The position block above ends on a value row with no
+            // bottom inset, so the stock 8pt above the divider read as a hole;
+            // the 8pt below it read as a second one before the section title.
+            Divider()
+                .opacity(0.45)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 4)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 4) {
+                    sectionHeaderText(PulseLocalization.localizedString("detail.section.thesis"))
+                    Spacer(minLength: 0)
+                    if !isEditingThesis {
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                if isEditingThesis {
+                    // Edited in place rather than in a sheet: this is an
+                    // accessory (LSUIElement) app, and a sheet is its own
+                    // window — typing into one takes key status the app cannot
+                    // hold, which closes the whole thing.
+                    TextEditor(text: $thesisDraft)
+                        .font(.system(size: 10.5))
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 96)
+                        .padding(6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.primary.opacity(0.05))
+                        )
+                    HStack(spacing: 8) {
+                        Spacer(minLength: 0)
+                        Button(PulseLocalization.localizedString("action.cancel")) {
+                            isEditingThesis = false
+                        }
+                        Button(PulseLocalization.localizedString("action.save")) {
+                            appState.watchlist.setThesis(thesisDraft, for: symbol)
+                            isEditingThesis = false
+                        }
+                        .keyboardShortcut(.defaultAction)
+                    }
+                    .controlSize(.small)
+                } else {
+                    Group {
+                        if let thesis = item.thesis, !thesis.isEmpty {
+                            Text(thesis)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text(PulseLocalization.localizedString("detail.thesis.empty"))
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        thesisDraft = item.thesis ?? ""
+                        isEditingThesis = true
+                    }
+                }
+            }
+            // No extra top padding here. `sectionSeparator` already carries 8pt
+            // above and below itself, which is the same gap every other section
+            // gets — adding more only pushed this block away from its own
+            // divider and made the space above it read as a hole.
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
+        }
+    }
 
     /// Display driver for the position area: the live item when present,
     /// otherwise dormant history — an instrument removed from every list keeps

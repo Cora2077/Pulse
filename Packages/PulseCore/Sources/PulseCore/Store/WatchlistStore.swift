@@ -401,8 +401,16 @@ public final class WatchlistStore {
         return true
     }
 
-    public func updateLots(_ symbol: SymbolID, lots: [CostLot]) {
+    /// Records the user's own reason for holding this instrument. Free text;
+    /// an empty string clears it rather than storing whitespace.
+    public func setThesis(_ thesis: String?, for symbol: SymbolID) {
         guard let index = allItems.firstIndex(where: { $0.symbol == symbol }) else { return }
+        let trimmed = thesis?.trimmingCharacters(in: .whitespacesAndNewlines)
+        allItems[index].thesis = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        save()
+    }
+
+    public func updateLots(_ symbol: SymbolID, lots: [CostLot]) {        guard let index = allItems.firstIndex(where: { $0.symbol == symbol }) else { return }
         // Preserve legacy index data until the user explicitly removes it, but
         // never create or replace a position for a non-tradable index.
         guard allItems[index].supportsPosition || lots.isEmpty else { return }
@@ -579,7 +587,8 @@ public final class WatchlistStore {
                     // archive instead of silently exporting a position-less entry.
                     transactions: item.materializedTransactions().isEmpty
                         ? nil
-                        : item.materializedTransactions()
+                        : item.materializedTransactions(),
+                    thesis: item.thesis
                 )
             }
             return WatchlistArchive.List(name: group.name, entries: entries)
@@ -702,6 +711,12 @@ public final class WatchlistStore {
                        !archivedTransactions.isEmpty {
                         applyTransactions(archivedTransactions, at: itemIndex)
                     }
+                    // An archive fills a thesis the local copy never had, but it
+                    // does not overwrite one the user has already written —
+                    // same rule the trades follow above.
+                    if allItems[itemIndex].thesis == nil, let archivedThesis = entry.thesis {
+                        allItems[itemIndex].thesis = archivedThesis
+                    }
                 } else {
                     let archivedName = entry.name?
                         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -712,7 +727,8 @@ public final class WatchlistStore {
                         // display-name upgrade path repairs on the first refresh.
                         displayName: archivedName.isEmpty ? symbol.displayCode : archivedName,
                         displayNameSource: nil,
-                        instrumentType: entry.type
+                        instrumentType: entry.type,
+                        thesis: entry.thesis
                     ))
                     if !archivedTransactions.isEmpty {
                         applyTransactions(archivedTransactions, at: allItems.count - 1)
@@ -869,6 +885,12 @@ public final class WatchlistStore {
                     over: normalizedItems[existingIndex].instrumentType
                 ) {
                     normalizedItems[existingIndex].instrumentType = item.instrumentType
+                }
+                // A thesis only exists because someone typed it, so a merged
+                // duplicate keeps the longer one instead of discarding work.
+                if let incoming = item.thesis,
+                   incoming.count > (normalizedItems[existingIndex].thesis?.count ?? 0) {
+                    normalizedItems[existingIndex].thesis = incoming
                 }
             } else {
                 itemIndexBySymbol[item.symbol] = normalizedItems.count

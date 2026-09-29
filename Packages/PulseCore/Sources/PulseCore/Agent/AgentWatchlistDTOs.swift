@@ -63,6 +63,8 @@ public struct AgentPositionSnapshot: Hashable, Codable, Sendable {
     public var realizedPnL: Double
     public var transactions: [AgentTransaction]
     public var quote: AgentQuoteSnapshot?
+    /// The user's own reason for holding this instrument, when they wrote one.
+    public var thesis: String?
 
     public init(
         symbol: AgentInstrument,
@@ -71,7 +73,8 @@ public struct AgentPositionSnapshot: Hashable, Codable, Sendable {
         costBasis: Double,
         realizedPnL: Double,
         transactions: [AgentTransaction],
-        quote: AgentQuoteSnapshot?
+        quote: AgentQuoteSnapshot?,
+        thesis: String? = nil
     ) {
         self.symbol = symbol
         self.quantity = quantity
@@ -80,6 +83,7 @@ public struct AgentPositionSnapshot: Hashable, Codable, Sendable {
         self.realizedPnL = realizedPnL
         self.transactions = transactions
         self.quote = quote
+        self.thesis = thesis
     }
 }
 

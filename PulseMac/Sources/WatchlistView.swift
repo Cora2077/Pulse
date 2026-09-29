@@ -1933,6 +1933,14 @@ struct WatchRow: View {
                         Text(item.symbol.displayCode)
                             .font(.system(size: 10).monospaced())
                             .foregroundStyle(.secondary)
+                        // A written thesis is invisible otherwise, and the whole
+                        // point of writing one is to read it again later.
+                        if item.thesis?.isEmpty == false {
+                            Image(systemName: "text.alignleft")
+                                .font(.system(size: 8))
+                                .foregroundStyle(.tertiary)
+                                .help(PulseLocalization.localizedString("detail.section.thesis"))
+                        }
                     }
                 }
                 .frame(width: titleColumnWidth, alignment: .leading)

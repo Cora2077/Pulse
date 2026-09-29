@@ -173,6 +173,21 @@ final class MCPToolAdapter {
             return try adapter.appliedValue(mutation)
         },
         ToolSpec(
+            name: "set_thesis",
+            description: "Save the user's own reason for holding a symbol. Free text for their eyes, not an input to any calculation. Pass an empty string to clear it. Never invent a thesis the user did not state.",
+            properties: [
+                "symbol": symbolSchema,
+                "text": .object(["type": "string"]),
+            ],
+            required: ["symbol", "text"]
+        ) { adapter, arguments in
+            let mutation = try MCPToolAdapter.unwrap(adapter.commands.setThesis(
+                symbol: arguments.symbol("symbol"),
+                text: arguments.optionalString("text")
+            ))
+            return try adapter.appliedValue(mutation)
+        },
+        ToolSpec(
             name: "add_symbol",
             description: "Add a symbol to a watchlist group. group_id is required; use search_symbols first to resolve market/code and pass the resolved name.",
             properties: [

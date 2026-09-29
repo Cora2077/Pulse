@@ -35,6 +35,10 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
     public var lots: [CostLot]
     /// Source of truth for the position once non-empty (see `PositionLedger`).
     public var transactions: [PositionTransaction]
+    /// The user's own reason for holding this instrument. Free text, written
+    /// by hand: nothing parses it and nothing else depends on its shape. `nil`
+    /// and an empty string both mean "not written yet".
+    public var thesis: String?
 
     public init(
         symbol: SymbolID,
@@ -43,7 +47,8 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         instrumentType: InstrumentType? = nil,
         addedAt: Date = .now,
         lots: [CostLot] = [],
-        transactions: [PositionTransaction] = []
+        transactions: [PositionTransaction] = [],
+        thesis: String? = nil
     ) {
         self.symbol = symbol
         self.displayName = displayName
@@ -52,10 +57,12 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         self.addedAt = addedAt
         self.lots = lots
         self.transactions = transactions
+        self.thesis = thesis
     }
 
     enum CodingKeys: String, CodingKey {
         case symbol, displayName, displayNameSource, instrumentType, addedAt, lots, transactions
+        case thesis
     }
 
     public init(from decoder: Decoder) throws {
@@ -67,6 +74,7 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         addedAt = try container.decode(Date.self, forKey: .addedAt)
         lots = try container.decodeIfPresent([CostLot].self, forKey: .lots) ?? []
         transactions = try container.decodeIfPresent([PositionTransaction].self, forKey: .transactions) ?? []
+        thesis = try container.decodeIfPresent(String.self, forKey: .thesis)
     }
 
     public var id: SymbolID { symbol }

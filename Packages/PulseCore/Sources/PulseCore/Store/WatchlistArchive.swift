@@ -42,6 +42,9 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         public var type: InstrumentType?
         public var pinned: Bool?
         public var transactions: [PositionTransaction]?
+        /// The user's own reason for holding the instrument, carried through an
+        /// export so the reasoning survives a reinstall with the position.
+        public var thesis: String?
 
         public init(
             market: String,
@@ -49,7 +52,8 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
             name: String? = nil,
             type: InstrumentType? = nil,
             pinned: Bool? = nil,
-            transactions: [PositionTransaction]? = nil
+            transactions: [PositionTransaction]? = nil,
+            thesis: String? = nil
         ) {
             self.market = market
             self.code = code
@@ -57,6 +61,7 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
             self.type = type
             self.pinned = pinned
             self.transactions = transactions
+            self.thesis = thesis
         }
 
         public init(
@@ -65,7 +70,8 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
             name: String? = nil,
             type: InstrumentType? = nil,
             pinned: Bool? = nil,
-            transactions: [PositionTransaction]? = nil
+            transactions: [PositionTransaction]? = nil,
+            thesis: String? = nil
         ) {
             self.init(
                 market: market.rawValue,
@@ -73,7 +79,8 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
                 name: name,
                 type: type,
                 pinned: pinned,
-                transactions: transactions
+                transactions: transactions,
+                thesis: thesis
             )
         }
 

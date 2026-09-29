@@ -38,6 +38,8 @@
 "detail.section.about" = "概要";
 "detail.section.market" = "マーケット";
 "detail.section.position" = "保有";
+"detail.section.thesis" = "投資仮説";
+"detail.thesis.empty" = "保有する理由を書き留めてください — 何が成り立てばこの投資が筋が通るのか。";
 "detail.section.trend" = "チャート";
 
 "duration.seconds" = "%d秒";

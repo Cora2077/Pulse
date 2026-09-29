@@ -295,6 +295,37 @@ public struct AgentWatchlistCommands {
     /// recorded values; the entry's id and insertion timestamp always survive the
     /// edit. `kind` applies only to buy/sell entries — a calibration entry never
     /// becomes a trade.
+    /// Records the user's own reason for holding this instrument. Free text;
+    /// an empty or whitespace-only string clears it. Routed through the same
+    /// store call the UI uses, so an agent edit and a typed one land
+    /// identically.
+    public func setThesis(
+        symbol ref: AgentSymbolRef,
+        text: String?
+    ) -> Result<AgentMutation<AgentPositionSnapshot>, AgentWatchlistError> {
+        guard let symbol = symbol(from: ref) else {
+            return .failure(.invalidSymbol(ref))
+        }
+        guard let item = store.item(for: symbol) else {
+            return .failure(.itemNotOnWatchlist)
+        }
+        let normalized = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let incoming = (normalized?.isEmpty ?? true) ? nil : normalized
+        let alreadyApplied = item.thesis == incoming
+        let before = Set(store.symbols)
+        if !alreadyApplied {
+            store.setThesis(text, for: symbol)
+        }
+        guard let updated = store.item(for: symbol) else {
+            return .failure(.itemNotOnWatchlist)
+        }
+        return .success(mutation(
+            positionSnapshot(updated),
+            before: before,
+            alreadyApplied: alreadyApplied
+        ))
+    }
+
     public func updateTrade(
         symbol ref: AgentSymbolRef,
         id: UUID,
@@ -455,7 +486,8 @@ public struct AgentWatchlistCommands {
             costBasis: item.costBasis,
             realizedPnL: item.realizedPnL,
             transactions: item.transactions.map(transactionSnapshot),
-            quote: market?.quote(for: item.symbol).map(quoteSnapshot)
+            quote: market?.quote(for: item.symbol).map(quoteSnapshot),
+            thesis: item.thesis
         )
     }
 

@@ -38,6 +38,8 @@
 "detail.section.about" = "종목 정보";
 "detail.section.market" = "시세";
 "detail.section.position" = "보유";
+"detail.section.thesis" = "투자 논리";
+"detail.thesis.empty" = "보유하는 이유를 적어 두세요 — 무엇이 유지되어야 이 투자가 성립하는지.";
 "detail.section.trend" = "차트";
 
 "duration.seconds" = "%d초";

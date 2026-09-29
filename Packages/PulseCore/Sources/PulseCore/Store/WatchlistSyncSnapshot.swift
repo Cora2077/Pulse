@@ -267,6 +267,7 @@ public enum WatchlistSyncMerge {
         result.displayNameSource = threeWay(base?.displayNameSource, local?.displayNameSource, remote?.displayNameSource)
         result.instrumentType = threeWay(base?.instrumentType, local?.instrumentType, remote?.instrumentType)
         result.addedAt = threeWay(base?.addedAt, local?.addedAt, remote?.addedAt, fallback: seed.addedAt) ?? seed.addedAt
+        result.thesis = threeWay(base?.thesis, local?.thesis, remote?.thesis)
         result.transactions = replay(transactions)
         if result.transactions.isEmpty {
             let hadTransactionHistory = [base, local, remote].contains { item in

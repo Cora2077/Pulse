@@ -38,6 +38,8 @@
 "detail.section.about" = "简介";
 "detail.section.market" = "行情";
 "detail.section.position" = "持仓";
+"detail.section.thesis" = "投资逻辑";
+"detail.thesis.empty" = "写下你为什么持有它 —— 什么条件成立，这笔投资才说得通。";
 "detail.section.trend" = "趋势";
 
 "duration.seconds" = "%d 秒";

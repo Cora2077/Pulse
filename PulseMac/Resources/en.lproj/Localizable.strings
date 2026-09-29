@@ -38,6 +38,8 @@
 "detail.section.about" = "About";
 "detail.section.market" = "Market Data";
 "detail.section.position" = "Position";
+"detail.section.thesis" = "Investment Thesis";
+"detail.thesis.empty" = "Write down why you hold this — what has to stay true for it to work.";
 "detail.section.trend" = "Chart";
 
 "duration.seconds" = "%d sec";
