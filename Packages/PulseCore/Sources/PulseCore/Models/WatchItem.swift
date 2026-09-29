@@ -235,11 +235,15 @@ public struct PositionMetrics: Sendable, Hashable {
         self.costBasis = costBasis
         self.marketValue = marketValue
         self.totalPnL = totalPnL
-        self.totalReturnPercent = costBasis == 0 ? 0 : totalPnL / abs(costBasis) * 100
+        self.totalReturnPercent = Self.returnPercent(pnl: totalPnL, invested: costBasis)
         self.todayPnL = todayPnL
         // Measured against the capital that was actually exposed today, so a
         // position opened during the session reports its own return instead of
         // the symbol's full-day move.
-        self.todayReturnPercent = day.costBase == 0 ? 0 : todayPnL / day.costBase * 100
+        self.todayReturnPercent = Self.returnPercent(pnl: todayPnL, invested: day.costBase)
+    }
+
+    public static func returnPercent(pnl: Double, invested: Double) -> Double {
+        invested == 0 ? 0 : pnl / abs(invested) * 100
     }
 }

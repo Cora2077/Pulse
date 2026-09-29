@@ -52,12 +52,24 @@ public enum WatchlistSyncMerge {
         /// before applying this snapshot or advancing their common base.
         public var snapshot: WatchlistSyncSnapshot
         public var conflicts: [TransactionConflict]
+        fileprivate var transactionOrderSources: [SymbolID: [[PositionTransaction]]]
 
         public var isConflictFree: Bool { conflicts.isEmpty }
 
         public init(snapshot: WatchlistSyncSnapshot, conflicts: [TransactionConflict]) {
             self.snapshot = snapshot
             self.conflicts = conflicts
+            self.transactionOrderSources = [:]
+        }
+
+        fileprivate init(
+            snapshot: WatchlistSyncSnapshot,
+            conflicts: [TransactionConflict],
+            transactionOrderSources: [SymbolID: [[PositionTransaction]]]
+        ) {
+            self.snapshot = snapshot
+            self.conflicts = conflicts
+            self.transactionOrderSources = transactionOrderSources
         }
     }
 
@@ -75,7 +87,13 @@ public enum WatchlistSyncMerge {
         var snapshot = result.snapshot
         for conflict in result.conflicts {
             let selected = resolution == .local ? conflict.local : conflict.remote
-            replaceTransaction(selected, id: conflict.transactionID, symbol: conflict.symbol, in: &snapshot)
+            replaceTransaction(
+                selected,
+                id: conflict.transactionID,
+                symbol: conflict.symbol,
+                preservingOrderFrom: result.transactionOrderSources[conflict.symbol] ?? [],
+                in: &snapshot
+            )
         }
         snapshot.retainedHistoryItems.removeAll { $0.materializedTransactions().isEmpty }
         return snapshot
@@ -177,11 +195,18 @@ public enum WatchlistSyncMerge {
             if $0.symbol != $1.symbol { return symbolLessThan($0.symbol, $1.symbol) }
             return $0.transactionID.uuidString < $1.transactionID.uuidString
         }
+        let transactionOrderSources = Dictionary(uniqueKeysWithValues: conflictedSymbols.map { symbol in
+            (symbol, [
+                baseItems[symbol]?.transactions ?? [],
+                localItems[symbol]?.transactions ?? [],
+                remoteItems[symbol]?.transactions ?? []
+            ])
+        })
         return Result(snapshot: WatchlistSyncSnapshot(
             items: itemOrder.compactMap { active[$0] },
             groups: groupOrder.compactMap { groupsByID[$0] },
             retainedHistoryItems: retainedOrder.compactMap { retained[$0] }
-        ), conflicts: conflicts)
+        ), conflicts: conflicts, transactionOrderSources: transactionOrderSources)
     }
 
     private static func itemMap(_ snapshot: WatchlistSyncSnapshot) -> [SymbolID: WatchItem] {
@@ -252,7 +277,9 @@ public enum WatchlistSyncMerge {
                 instrumentType: source?.instrumentType,
                 addedAt: source?.addedAt ?? .now,
                 lots: [],
-                transactions: replay(transactions),
+                transactions: replay(transactions, preservingOrderFrom: [
+                    base?.transactions ?? [], local?.transactions ?? [], remote?.transactions ?? []
+                ]),
                 // A plan is user intent, so a concurrent one follows the
                 // surviving trades into dormant history rather than vanishing
                 // with the deleted membership. Plans alone never resurrect the
@@ -278,7 +305,9 @@ public enum WatchlistSyncMerge {
             local: local?.plans ?? [],
             remote: remote?.plans ?? []
         )
-        result.transactions = replay(transactions)
+        result.transactions = replay(transactions, preservingOrderFrom: [
+            base?.transactions ?? [], local?.transactions ?? [], remote?.transactions ?? []
+        ])
         if result.transactions.isEmpty {
             let hadTransactionHistory = [base, local, remote].contains { item in
                 !(item?.transactions.isEmpty ?? true)
@@ -379,12 +408,69 @@ public enum WatchlistSyncMerge {
         return result
     }
 
-    private static func replay(_ transactions: [PositionTransaction]) -> [PositionTransaction] {
-        let stableInput = transactions.sorted {
-            if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
-            return $0.id.uuidString < $1.id.uuidString
+    private struct ReplayOrderKey: Hashable {
+        var day: CalendarDay
+        var createdAt: Date
+
+        init(_ transaction: PositionTransaction) {
+            day = CalendarDay(transaction.date, in: .current)
+            createdAt = transaction.createdAt
         }
-        return PositionLedger.replayOrdered(stableInput)
+    }
+
+    private static func replay(
+        _ transactions: [PositionTransaction],
+        preservingOrderFrom sources: [[PositionTransaction]]
+    ) -> [PositionTransaction] {
+        let valuesByID = Dictionary(uniqueKeysWithValues: transactions.map { ($0.id, $0) })
+        var groups: [ReplayOrderKey: Set<UUID>] = [:]
+        for transaction in transactions {
+            groups[ReplayOrderKey(transaction), default: []].insert(transaction.id)
+        }
+        guard groups.values.contains(where: { $0.count > 1 }) else {
+            return PositionLedger.replayOrdered(transactions)
+        }
+
+        let sourceOrders = sources.map { source in
+            var groups: [ReplayOrderKey: [UUID]] = [:]
+            for transaction in source {
+                groups[ReplayOrderKey(transaction), default: []].append(transaction.id)
+            }
+            return groups
+        }
+        var ordered: [PositionTransaction] = []
+        for (key, ids) in groups {
+            if ids.count == 1 {
+                ordered.append(valuesByID[ids.first!]!)
+                continue
+            }
+            var outgoing: [UUID: Set<UUID>] = [:]
+            var indegree = Dictionary(uniqueKeysWithValues: ids.map { ($0, 0) })
+            for source in sourceOrders {
+                var previous: UUID?
+                for id in source[key] ?? [] where ids.contains(id) {
+                    guard previous != id else { continue }
+                    if let previous, outgoing[previous, default: []].insert(id).inserted {
+                        indegree[id, default: 0] += 1
+                    }
+                    previous = id
+                }
+            }
+
+            var remaining = ids
+            while !remaining.isEmpty {
+                let ready = remaining.filter { indegree[$0, default: 0] == 0 }
+                // UUID order only breaks ties among unrelated additions, or an
+                // incompatible cycle left by older divergent transaction orders.
+                let next = (ready.isEmpty ? remaining : ready).min { $0.uuidString < $1.uuidString }!
+                ordered.append(valuesByID[next]!)
+                remaining.remove(next)
+                for target in outgoing[next, default: []] where remaining.contains(target) {
+                    indegree[target, default: 0] -= 1
+                }
+            }
+        }
+        return PositionLedger.replayOrdered(ordered)
     }
 
     private static func mergeGroups(
@@ -668,13 +754,18 @@ public enum WatchlistSyncMerge {
         _ replacement: PositionTransaction?,
         id: UUID,
         symbol: SymbolID,
+        preservingOrderFrom sources: [[PositionTransaction]],
         in snapshot: inout WatchlistSyncSnapshot
     ) {
         func patch(_ items: inout [WatchItem]) {
             guard let index = items.firstIndex(where: { $0.symbol == symbol }) else { return }
+            let existingOrder = items[index].transactions
             items[index].transactions.removeAll { $0.id == id }
             if let replacement { items[index].transactions.append(replacement) }
-            items[index].transactions = replay(items[index].transactions)
+            items[index].transactions = replay(
+                items[index].transactions,
+                preservingOrderFrom: [existingOrder] + sources
+            )
             let ledger = PositionLedger(transactions: items[index].transactions)
             if items[index].transactions.isEmpty {
                 // Conflict resolution applies to a transaction-backed item;

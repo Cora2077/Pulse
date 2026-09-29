@@ -345,6 +345,8 @@
 "trade.price" = "체결가";
 "trade.fee" = "수수료";
 "trade.feeAmount" = "수수료 %@";
+"trade.invalidFee" = "0 이상의 올바른 수수료를 입력하세요.";
+"data.error.invalidTransactionFee" = "보관 파일에 수수료가 올바르지 않은 거래가 있습니다.";
 "position.totalFees" = "누적 수수료";
 "trade.editTitle" = "거래 편집";
 "trade.date" = "날짜";

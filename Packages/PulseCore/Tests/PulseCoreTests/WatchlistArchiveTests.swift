@@ -116,6 +116,20 @@ struct WatchlistArchiveTests {
         #expect(index.symbol.indexID == .sp500)
     }
 
+    @Test("An archive with an invalid transaction fee is rejected as malformed")
+    func invalidArchiveFeeIsRejected() throws {
+        let transaction = PositionTransaction(kind: .buy, price: 100, quantity: 1, fee: -1)
+        let archive = WatchlistArchive(lists: [
+            .init(name: "Core", entries: [
+                .init(market: .us, code: "AAPL", transactions: [transaction])
+            ])
+        ])
+
+        #expect(throws: WatchlistArchive.DecodingFailure.invalidTransactionFee(transaction.id)) {
+            try WatchlistArchive.decoded(from: archive.encoded())
+        }
+    }
+
     @MainActor
     @Test("A metal entry survives export and can be typed by hand")
     func metalEntriesImport() throws {

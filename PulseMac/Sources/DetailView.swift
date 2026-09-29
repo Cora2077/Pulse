@@ -1323,7 +1323,7 @@ struct DetailView: View {
                                 : metrics.averageCost
                             let invested = costValue * metrics.quantity
                             let unrealized = metrics.marketValue - invested
-                            let unrealizedPercent = invested != 0 ? unrealized / invested : 0
+                            let unrealizedPercent = PositionMetrics.returnPercent(pnl: unrealized, invested: invested)
                             HStack(spacing: 8) {
                                 pnlCell(PulseLocalization.localizedString("metric.todayPnL"), amount: metrics.todayPnL, percent: metrics.todayReturnPercent)
                                 pnlCell(PulseLocalization.localizedString("metric.totalPnL"), amount: unrealized, percent: unrealizedPercent)

@@ -141,6 +141,90 @@ struct WatchlistSyncMergeTests {
         #expect(Set(merged.snapshot.items[0].transactions.map(\.id)) == [existing.id, localTrade.id, remoteTrade.id])
     }
 
+    @Test("Equal-timestamp replay keeps stored order and remains stable across merges")
+    func equalTimestampMergeKeepsStoredOrder() throws {
+        let stamp = Date(timeIntervalSince1970: 1_787_000_000)
+        let buy = PositionTransaction(
+            id: UUID(uuidString: "ffffffff-ffff-ffff-ffff-ffffffffffff")!,
+            kind: .buy, price: 100, quantity: 10, date: stamp, createdAt: stamp
+        )
+        let adjustment = PositionTransaction(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            kind: .adjustment, price: 80, quantity: 20, date: stamp, createdAt: stamp
+        )
+        let snapshot = WatchlistSyncSnapshot(
+            items: [item(symbolA, transactions: [buy, adjustment])],
+            groups: []
+        )
+
+        let first = WatchlistSyncMerge.merge(base: snapshot, local: snapshot, remote: snapshot).snapshot
+        let repeated = WatchlistSyncMerge.merge(base: snapshot, local: first, remote: snapshot).snapshot
+        let mergedItem = try #require(first.items.first)
+
+        #expect(mergedItem.transactions.map(\.id) == [buy.id, adjustment.id])
+        #expect(PositionLedger(transactions: mergedItem.transactions).quantity == 20)
+        #expect(PositionLedger(transactions: mergedItem.transactions).averageCost == 80)
+        #expect(repeated == first)
+    }
+
+    @Test("Stable fallback orders only concurrent entries without breaking a source order")
+    func concurrentUnorderedTradesKeepSourceOrder() throws {
+        let stamp = Date(timeIntervalSince1970: 1_787_000_000)
+        func trade(_ id: String) -> PositionTransaction {
+            PositionTransaction(
+                id: UUID(uuidString: id)!, kind: .buy, price: 100, quantity: 1,
+                date: stamp, createdAt: stamp
+            )
+        }
+        let firstLocal = trade("ffffffff-ffff-ffff-ffff-ffffffffffff")
+        let secondLocal = trade("00000000-0000-0000-0000-000000000001")
+        let concurrentRemote = trade("88888888-8888-8888-8888-888888888888")
+        let base = WatchlistSyncSnapshot(items: [], groups: [])
+        let local = WatchlistSyncSnapshot(
+            items: [item(symbolA, transactions: [firstLocal, secondLocal])], groups: []
+        )
+        let remote = WatchlistSyncSnapshot(
+            items: [item(symbolA, transactions: [concurrentRemote])], groups: []
+        )
+
+        let merged = WatchlistSyncMerge.merge(base: base, local: local, remote: remote).snapshot
+        let swapped = WatchlistSyncMerge.merge(base: base, local: remote, remote: local).snapshot
+        let ids = try #require(merged.items.first).transactions.map(\.id)
+
+        #expect(ids.firstIndex(of: firstLocal.id)! < ids.firstIndex(of: secondLocal.id)!)
+        #expect(swapped == merged)
+    }
+
+    @Test("Choosing remote restores a conflicted trade to its original replay position")
+    func resolvingDeletedTradePreservesItsOrder() throws {
+        let stamp = Date(timeIntervalSince1970: 1_787_000_000)
+        let buyID = UUID(uuidString: "ffffffff-ffff-ffff-ffff-ffffffffffff")!
+        let adjustmentID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let buy = PositionTransaction(
+            id: buyID, kind: .buy, price: 100, quantity: 10, date: stamp, createdAt: stamp
+        )
+        let editedBuy = PositionTransaction(
+            id: buyID, kind: .buy, price: 110, quantity: 10, date: stamp, createdAt: stamp
+        )
+        let adjustment = PositionTransaction(
+            id: adjustmentID, kind: .adjustment, price: 80, quantity: 20,
+            date: stamp, createdAt: stamp
+        )
+        let base = WatchlistSyncSnapshot(items: [item(symbolA, transactions: [buy, adjustment])], groups: [])
+        let local = WatchlistSyncSnapshot(items: [item(symbolA, transactions: [adjustment])], groups: [])
+        let remote = WatchlistSyncSnapshot(items: [item(symbolA, transactions: [editedBuy, adjustment])], groups: [])
+
+        let conflict = WatchlistSyncMerge.merge(base: base, local: local, remote: remote)
+        let resolved = WatchlistSyncMerge.resolve(conflict, choosing: .remote)
+        let transactions = try #require(resolved.items.first).transactions
+
+        #expect(conflict.conflicts.count == 1)
+        #expect(transactions.map(\.id) == [buyID, adjustmentID])
+        #expect(transactions.first?.price == 110)
+        #expect(PositionLedger(transactions: transactions).quantity == 20)
+        #expect(PositionLedger(transactions: transactions).averageCost == 80)
+    }
+
     @Test("Incompatible edits to the same trade are reported and can choose remote")
     func conflictingTradeCanBeResolved() throws {
         let groupID = UUID()

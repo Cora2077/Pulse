@@ -137,6 +137,7 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         case wrongFormat(String)
         case unsupportedVersion(Int)
         case noLists
+        case invalidTransactionFee(UUID)
     }
 
     public static func encoder() -> JSONEncoder {
@@ -182,6 +183,11 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
             throw DecodingFailure.unsupportedVersion(archive.version)
         }
         guard !archive.lists.isEmpty else { throw DecodingFailure.noLists }
+        for transaction in archive.lists.flatMap(\.entries).flatMap({ $0.transactions ?? [] }) {
+            guard transaction.hasValidFee else {
+                throw DecodingFailure.invalidTransactionFee(transaction.id)
+            }
+        }
         return archive
     }
 

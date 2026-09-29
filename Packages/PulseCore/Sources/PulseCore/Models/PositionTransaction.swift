@@ -33,6 +33,8 @@ public struct PositionTransaction: Codable, Sendable, Hashable, Identifiable {
     public var fee: Double?
     public var note: String?
 
+    public var hasValidFee: Bool { fee.map { $0.isFinite && $0 >= 0 } ?? true }
+
     public init(
         id: UUID = UUID(),
         kind: Kind,

@@ -513,7 +513,9 @@ public final class WatchlistStore {
     public func addTransaction(_ symbol: SymbolID, _ transaction: PositionTransaction) {
         guard let index = allItems.firstIndex(where: { $0.symbol == symbol }),
               allItems[index].supportsPosition,
-              transaction.quantity > 0, transaction.price > 0 else { return }
+              transaction.quantity.isFinite, transaction.quantity > 0,
+              transaction.price.isFinite, transaction.price > 0,
+              transaction.hasValidFee else { return }
         var transactions = allItems[index].materializedTransactions()
         transactions.append(transaction)
         commitTransactions(transactions, at: index)
@@ -535,6 +537,7 @@ public final class WatchlistStore {
     public func updateTransaction(_ symbol: SymbolID, _ transaction: PositionTransaction) {
         guard let index = allItems.firstIndex(where: { $0.symbol == symbol }),
               allItems[index].supportsPosition else { return }
+        guard transaction.hasValidFee else { return }
         switch transaction.kind {
         case .buy, .sell:
             guard transaction.price.isFinite, transaction.price > 0,
@@ -563,7 +566,7 @@ public final class WatchlistStore {
     ) {
         guard let index = allItems.firstIndex(where: { $0.symbol == symbol }),
               allItems[index].supportsPosition,
-              quantity.isFinite, averageCost >= 0 else { return }
+              quantity.isFinite, averageCost.isFinite, averageCost >= 0 else { return }
         var transactions = allItems[index].materializedTransactions()
         transactions.append(PositionTransaction(
             id: id,

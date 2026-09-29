@@ -486,6 +486,8 @@ struct DataSettingsView: View {
             PulseLocalization.localizedString("data.error.newerVersion")
         case .noLists:
             PulseLocalization.localizedString("data.error.noLists")
+        case .invalidTransactionFee:
+            PulseLocalization.localizedString("data.error.invalidTransactionFee")
         }
     }
 }

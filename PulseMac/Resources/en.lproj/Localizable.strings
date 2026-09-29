@@ -345,6 +345,8 @@
 "trade.price" = "Price";
 "trade.fee" = "Fee";
 "trade.feeAmount" = "Fee %@";
+"trade.invalidFee" = "Enter a valid non-negative fee.";
+"data.error.invalidTransactionFee" = "The archive contains a trade with an invalid fee.";
 "position.totalFees" = "Total Fees";
 "trade.editTitle" = "Edit Trade";
 "trade.date" = "Date";

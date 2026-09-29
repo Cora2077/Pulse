@@ -39,6 +39,7 @@ public enum WatchlistSyncWireCodec {
         case duplicateItemSymbol(SymbolID)
         case duplicateCostLotID(UUID)
         case duplicateTransactionID(UUID)
+        case invalidTransactionFee(UUID)
         case duplicateTradePlanID(UUID)
     }
 
@@ -146,6 +147,7 @@ public enum WatchlistSyncWireCodec {
             }
             var transactionIDs = Set<UUID>()
             for transaction in item.transactions {
+                guard transaction.hasValidFee else { throw CodecError.invalidTransactionFee(transaction.id) }
                 guard transactionIDs.insert(transaction.id).inserted else {
                     throw CodecError.duplicateTransactionID(transaction.id)
                 }

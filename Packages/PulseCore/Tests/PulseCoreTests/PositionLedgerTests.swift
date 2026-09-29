@@ -159,6 +159,14 @@ struct PositionLedgerTests {
         #expect(metrics.todayReturnPercent > 0)
     }
 
+    @Test("Return percentages use absolute invested capital for both position sides and bases")
+    func returnPercentUsesAbsoluteInvestment() {
+        #expect(PositionMetrics.returnPercent(pnl: 20, invested: 200) == 10)
+        #expect(PositionMetrics.returnPercent(pnl: 20, invested: 100) == 20)
+        #expect(PositionMetrics.returnPercent(pnl: 20, invested: -200) == 10)
+        #expect(PositionMetrics.returnPercent(pnl: 20, invested: 0) == 0)
+    }
+
     @Test("Replay sorts by trade date, breaking same-day ties by insertion time")
     func replayOrder() {
         let backdatedBuy = PositionTransaction(
@@ -523,6 +531,34 @@ struct WatchlistStoreTransactionTests {
         store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: 0, quantity: 10))
         store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: 100, quantity: 0))
         #expect(store.item(for: apple.symbol)?.transactions.isEmpty == true)
+    }
+
+    @MainActor
+    @Test("Store rejects non-finite trades and invalid fees without changing saved state")
+    func storeRejectsInvalidTradeValuesAndFees() throws {
+        let (store, defaults, suiteName) = try makeStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        store.add(apple)
+        let valid = PositionTransaction(kind: .buy, price: 100, quantity: 2, fee: 1)
+        store.addTransaction(apple.symbol, valid)
+        let savedBeforeInvalidWrites = defaults.data(forKey: "pulse.watchlists.v2")
+
+        store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: .infinity, quantity: 1))
+        store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: 100, quantity: 1, fee: -.infinity))
+        store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: 100, quantity: 1, fee: -1))
+        var invalidUpdate = valid
+        invalidUpdate.fee = .infinity
+        store.updateTransaction(apple.symbol, invalidUpdate)
+        invalidUpdate.fee = -1
+        store.updateTransaction(apple.symbol, invalidUpdate)
+        invalidUpdate.fee = 1
+        invalidUpdate.price = .infinity
+        store.updateTransaction(apple.symbol, invalidUpdate)
+        store.calibratePosition(apple.symbol, quantity: 3, averageCost: .infinity)
+
+        #expect(store.item(for: apple.symbol)?.transactions == [valid])
+        #expect(defaults.data(forKey: "pulse.watchlists.v2") == savedBeforeInvalidWrites)
     }
 
     // MARK: - Trading fees

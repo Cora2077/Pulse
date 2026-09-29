@@ -91,7 +91,7 @@ struct PositionHubView: View {
                     : metrics.averageCost
                 let invested = costValue * metrics.quantity
                 let unrealized = metrics.marketValue - invested
-                let unrealizedPercent = invested != 0 ? unrealized / invested : 0
+                let unrealizedPercent = PositionMetrics.returnPercent(pnl: unrealized, invested: invested)
                 // Two columns, not three: the combined figure sits beside the
                 // realized one it is made of, and a third cell here squeezes
                 // all of them until the amounts truncate.

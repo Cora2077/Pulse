@@ -142,6 +142,11 @@ struct TradeEntryView: View {
                     label: PulseLocalization.localizedString("trade.fee"),
                     text: $feeText
                 )
+                if showsFeeError {
+                    Text(PulseLocalization.localizedString("trade.invalidFee"))
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
                 dateRow
                 if let closedDayHint {
                     Text(closedDayHint)
@@ -454,7 +459,7 @@ struct TradeEntryView: View {
     }
 
     private var isValid: Bool {
-        parsedPrice != nil && parsedQuantity != nil
+        parsedPrice != nil && parsedQuantity != nil && parsedFeeIsValid
     }
 
     private struct SimulatedOutcome {
@@ -504,12 +509,21 @@ struct TradeEntryView: View {
     /// Fees are optional and typed by hand: an empty field means none were
     /// recorded, which is deliberately not the same as a zero the user typed.
     private var parsedFee: Double? {
-        let trimmed = feeText.trimmingCharacters(in: .whitespaces)
+        let trimmed = feeText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        guard let value = Double(trimmed.replacingOccurrences(of: ",", with: "")), value >= 0 else {
+        guard let value = Double(trimmed.replacingOccurrences(of: ",", with: "")),
+              value.isFinite, value >= 0 else {
             return nil
         }
         return value
+    }
+
+    private var parsedFeeIsValid: Bool {
+        feeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || parsedFee != nil
+    }
+
+    private var showsFeeError: Bool {
+        !feeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !parsedFeeIsValid
     }
 
     private func save() {

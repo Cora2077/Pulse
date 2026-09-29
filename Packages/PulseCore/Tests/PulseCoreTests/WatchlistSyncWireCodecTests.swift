@@ -98,6 +98,35 @@ final class WatchlistSyncWireCodecTests: XCTestCase {
         }
     }
 
+    func testInvalidTransactionFeeIsRejectedOnEncodeAndDecode() throws {
+        let date = Date(timeIntervalSinceReferenceDate: 812_345_678)
+        var snapshot = makeSnapshot(date: date)
+        let original = try XCTUnwrap(snapshot.items.first?.transactions.first)
+        var invalid = original
+        invalid.fee = -1
+        snapshot.items[0].transactions = [invalid]
+
+        XCTAssertThrowsError(try WatchlistSyncWireCodec.encode(deviceID: deviceID, snapshot: snapshot)) { error in
+            XCTAssertEqual(error as? WatchlistSyncWireCodec.CodecError, .invalidTransactionFee(original.id))
+        }
+
+        snapshot.items[0].transactions = [original]
+        var payload = try v2JSON(WatchlistSyncWireCodec.encode(deviceID: deviceID, snapshot: snapshot))
+        var transactionSnapshot = try snapshotObject(in: payload)
+        var items = try XCTUnwrap(transactionSnapshot["items"] as? [[String: Any]])
+        var encodedItem = try XCTUnwrap(items.first)
+        var transactions = try XCTUnwrap(encodedItem["transactions"] as? [[String: Any]])
+        transactions[0]["fee"] = -1
+        encodedItem["transactions"] = transactions
+        items[0] = encodedItem
+        transactionSnapshot["items"] = items
+        payload["snapshot"] = transactionSnapshot
+
+        XCTAssertThrowsError(try WatchlistSyncWireCodec.decode(jsonData(payload))) { error in
+            XCTAssertEqual(error as? WatchlistSyncWireCodec.CodecError, .invalidTransactionFee(original.id))
+        }
+    }
+
     private func makeSnapshot(date: Date) -> WatchlistSyncSnapshot {
         let symbol = SymbolID(market: .us, code: "AAPL")
         let transaction = PositionTransaction(

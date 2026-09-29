@@ -345,6 +345,8 @@
 "trade.price" = "価格";
 "trade.fee" = "手数料";
 "trade.feeAmount" = "手数料 %@";
+"trade.invalidFee" = "0以上の有効な手数料を入力してください。";
+"data.error.invalidTransactionFee" = "アーカイブに無効な手数料の取引が含まれています。";
 "position.totalFees" = "累計手数料";
 "trade.editTitle" = "取引を編集";
 "trade.date" = "日付";

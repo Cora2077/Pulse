@@ -345,6 +345,8 @@
 "trade.price" = "价格";
 "trade.fee" = "手续费";
 "trade.feeAmount" = "手续费 %@";
+"trade.invalidFee" = "请输入有效的非负手续费。";
+"data.error.invalidTransactionFee" = "备份中有交易的手续费无效。";
 "position.totalFees" = "累计手续费";
 "trade.editTitle" = "编辑交易";
 "trade.date" = "日期";
