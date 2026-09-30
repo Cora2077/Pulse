@@ -101,8 +101,8 @@ struct MainPlanListView: View {
                 // is to find the plan whose price difference costs the most.
                 // Rows with no size or no quote have no amount to rank on and
                 // sink to the bottom.
-                let leftCost = leftPrice.flatMap { lhs.plan.costDelta(from: $0)?.amount } ?? -Double.infinity
-                let rightCost = rightPrice.flatMap { rhs.plan.costDelta(from: $0)?.amount } ?? -Double.infinity
+                let leftCost = PulseUI.PlanCostText.summary(for: lhs.plan, current: leftPrice)?.amount ?? -Double.infinity
+                let rightCost = PulseUI.PlanCostText.summary(for: rhs.plan, current: rightPrice)?.amount ?? -Double.infinity
                 if leftCost != rightCost { return leftCost > rightCost }
             }
             return lhs.id.uuidString < rhs.id.uuidString

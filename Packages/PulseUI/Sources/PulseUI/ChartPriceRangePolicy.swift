@@ -1,14 +1,38 @@
 import Foundation
 import PulseCore
 
-/// Shared, deterministic rules for choosing plan prices that affect a chart's
-/// visible price domain. The chart adapters still own their padding and volume
-/// layout; this policy only considers real price values before those bands.
+/// Shared rules for fitting plan and indicator prices into the visible chart domain.
 enum ChartPriceRangePolicy {
+    /// Expands the y-domain by the bottom bands' height so the candle pane keeps its size.
+    static let macdDomainGrowth = 0.587
+
     static func range(of prices: [Double]) -> ClosedRange<Double>? {
         let valid = prices.filter { $0.isFinite && $0 > 0 }
         guard let lower = valid.min(), let upper = valid.max() else { return nil }
         return lower...upper
+    }
+
+    static func candleYDomain(
+        of prices: [Double],
+        including additionalPrices: [Double] = [],
+        hasBuyMarkers: Bool,
+        hasSellMarkers: Bool,
+        reserveVolumeBand: Bool,
+        reserveMACDBand: Bool = false
+    ) -> ClosedRange<Double> {
+        let validRange = range(of: prices + additionalPrices)
+        let lo = validRange?.lowerBound ?? 0
+        let hi = validRange?.upperBound ?? 1
+        let span = max(hi - lo, hi * 0.001, 0.0001)
+        let bottomPad: Double
+        if reserveVolumeBand {
+            bottomPad = span * (hasBuyMarkers ? 0.42 : 0.28)
+        } else {
+            bottomPad = span * (hasBuyMarkers ? 0.16 : 0.05)
+        }
+        let topPad = span * (hasSellMarkers ? 0.16 : 0.05)
+        let extraPad = reserveMACDBand ? (span + bottomPad + topPad) * macdDomainGrowth : 0
+        return (lo - bottomPad - extraPad)...(hi + topPad)
     }
 
     /// Active plans are shown by default. Historical plans join only when the

@@ -4,6 +4,26 @@ import PulseCore
 @testable import PulseUI
 
 struct ChartPriceRangePolicyTests {
+    @Test("visible MA60 values after a price gap stay above the lower bands", arguments: [false, true])
+    func movingAverageAfterGapFitsPricePane(showsMACD: Bool) {
+        let closes = Array(repeating: 80.0, count: 60) + Array(repeating: 100.0, count: 60)
+        let averages = ChartIndicatorMath.simpleMovingAverage(closes, period: 60)
+        let visibleAveragePrices = averages[60..<120].compactMap { $0 }
+        let domain = ChartPriceRangePolicy.candleYDomain(
+            of: [100, 100],
+            including: visibleAveragePrices,
+            hasBuyMarkers: false,
+            hasSellMarkers: false,
+            reserveVolumeBand: true,
+            reserveMACDBand: showsMACD
+        )
+        let bands = ChartBands(hasVolume: true, hasMACD: showsMACD)
+        let pricePaneBottom = domain.lowerBound + (domain.upperBound - domain.lowerBound) * bands.bottomReserved
+        #expect(!visibleAveragePrices.isEmpty)
+        #expect(pricePaneBottom <= (visibleAveragePrices.min() ?? .infinity))
+        #expect(domain.upperBound >= (visibleAveragePrices.max() ?? 0))
+    }
+
     @Test("nearby plans fit while a distant plan stays outside the price domain")
     func nearbyPlanFitsAndRemotePlanDoesNot() {
         let fitted = ChartPriceRangePolicy.pricesToFit(
