@@ -995,38 +995,66 @@ enum ChartAnnotationMath {
         return CGRect(x: plot.minX, y: plot.minY, width: plot.width, height: plot.height * (1 - clamped))
     }
 
-    /// Nudges `y` to the nearest spot that clears every obstacle, so a plan tag never lands on
-    /// top of the bars or average lines it is annotating. Keeps `y` when nothing is free.
-    static func avoidingObstacles(_ y: CGFloat, obstacles: [ClosedRange<CGFloat>], half: CGFloat,
-                                  low: CGFloat, high: CGFloat) -> CGFloat {
-        guard !obstacles.isEmpty else { return y }
-        // A hair of daylight, and a strict overlap test: a tag resting exactly on the envelope
-        // edge still reads as covering it.
-        let padding: CGFloat = 2
+    /// Collapses spans that touch or overlap into the fewest blocks covering the same ground.
+    /// Spans that merely sit near each other stay separate, which is what keeps the gaps
+    /// between candles available as places to put a tag.
+    static func mergingOverlapping(_ spans: [ClosedRange<CGFloat>],
+                                   tolerance: CGFloat = 0) -> [ClosedRange<CGFloat>] {
+        let sorted = spans.filter { $0.lowerBound.isFinite && $0.upperBound.isFinite }
+            .sorted { $0.lowerBound < $1.lowerBound }
+        var merged: [ClosedRange<CGFloat>] = []
+        for span in sorted {
+            if let last = merged.last, span.lowerBound <= last.upperBound + tolerance {
+                merged[merged.count - 1] = last.lowerBound...max(last.upperBound, span.upperBound)
+            } else {
+                merged.append(span)
+            }
+        }
+        return merged
+    }
+
+    /// Slides a tag from `y` to the nearest spot that clears every obstacle and stays inside
+    /// the pane. Returns nil when the whole pane is blocked, which lets the caller fall back
+    /// rather than silently dropping the tag back onto the bars.
+    static func nearestFreeY(_ y: CGFloat, obstacles: [ClosedRange<CGFloat>], half: CGFloat,
+                             low: CGFloat, high: CGFloat, padding: CGFloat = 1) -> CGFloat? {
         func isClear(_ value: CGFloat) -> Bool {
+            guard value >= low, value <= high else { return false }
             let top = value - half - padding
             let bottom = value + half + padding
+            // Strict overlap: a tag merely touching an obstacle edge still covers it.
             return !obstacles.contains { $0.lowerBound < bottom && $0.upperBound > top }
         }
-        var best = y
+        if isClear(y) { return y }
+        // Only the two edges of each obstacle can be the nearest free spot, so probing them is
+        // enough and keeps this cheap enough to run per tag per frame.
+        var best: CGFloat?
         var bestDistance = CGFloat.greatestFiniteMagnitude
-        var candidates: [CGFloat] = [y]
         for obstacle in obstacles {
-            candidates.append(obstacle.lowerBound - half - padding)
-            candidates.append(obstacle.upperBound + half + padding)
-        }
-        for candidate in candidates {
-            let clamped = min(max(candidate, low), high)
-            guard isClear(clamped) else { continue }
-            let distance = abs(clamped - y)
-            if distance < bestDistance {
-                bestDistance = distance
-                best = clamped
+            for candidate in [obstacle.lowerBound - half - padding, obstacle.upperBound + half + padding] {
+                let clamped = min(max(candidate, low), high)
+                guard isClear(clamped) else { continue }
+                let distance = abs(clamped - y)
+                if distance < bestDistance {
+                    bestDistance = distance
+                    best = clamped
+                }
             }
         }
         return best
     }
 
+    /// Places plan tags so that they clear the candles *and* never stack on one another.
+    ///
+    /// These constraints used to be satisfied in two passes — dodge the obstacles, then push
+    /// tags apart — and the second pass undid the first: `max()` knew nothing about the bars,
+    /// so on a daily chart it shoved tags straight back onto the candles they had just avoided.
+    /// One solver now moves through the tags in price order, and each tag picks the free spot
+    /// nearest its own price that also keeps the required gap from the tag before it.
+    ///
+    /// A tag that cannot satisfy both keeps the gap and accepts the obstacle: overlapping a
+    /// neighbour would make two different prices unreadable, while sitting near a candle still
+    /// leaves both legible side by side.
     static func placePlanLabels(_ candidates: [PlanLabelCandidate], bounds: ClosedRange<CGFloat>, gap: CGFloat,
                                inset requestedInset: CGFloat? = nil,
                                obstacles: [ClosedRange<CGFloat>] = []) -> [PlanLabelPlacement] {
@@ -1038,30 +1066,51 @@ enum ChartAnnotationMath {
         let inset = min(requestedInset ?? 8, max(bounds.upperBound - bounds.lowerBound, 0) / 2)
         let low = bounds.lowerBound + inset
         let high = bounds.upperBound - inset
-        // Step every tag off the bars and average lines first; the pass below then keeps the
-        // tags from stacking on one another.
-        var positions = sorted.map {
-            avoidingObstacles(min(max($0.anchorY, low), high), obstacles: obstacles,
-                              half: inset, low: low, high: high)
-        }
-        if positions.count > 1 {
-            for index in 1..<positions.count {
-                positions[index] = max(positions[index], positions[index - 1] + gap)
+
+        var positions: [CGFloat] = []
+        positions.reserveCapacity(sorted.count)
+        var overflowed = false
+        for (index, candidate) in sorted.enumerated() {
+            let target = min(max(candidate.anchorY, low), high)
+            let floor = index == 0 ? low : positions[index - 1] + gap
+            // Past the pane edge: keep the spacing for now and let the shift below pull the
+            // whole run back up. Dropping the gap here would silently stack two tags.
+            guard floor <= high else {
+                overflowed = true
+                positions.append(floor)
+                continue
             }
-            if positions.last.map({ $0 > high }) == true {
-                if CGFloat(positions.count - 1) * gap <= high - low {
-                    positions[positions.count - 1] = high
-                    for index in stride(from: positions.count - 2, through: 0, by: -1) {
-                        positions[index] = min(positions[index], positions[index + 1] - gap)
-                    }
-                } else {
-                    let compressedGap = (high - low) / CGFloat(positions.count - 1)
-                    for index in positions.indices {
-                        positions[index] = low + CGFloat(index) * compressedGap
-                    }
+            if let spot = nearestFreeY(target, obstacles: obstacles, half: inset,
+                                       low: floor, high: high) {
+                positions.append(spot)
+            } else {
+                positions.append(floor)
+            }
+        }
+
+        // The run only overflowed because it ran out of room. Shift it back up so it ends at
+        // the pane's edge, keeping the gap and stepping over obstacles as it goes.
+        if overflowed {
+            let span = CGFloat(positions.count - 1) * gap
+            if span <= high - low {
+                positions[positions.count - 1] = high
+                for index in stride(from: positions.count - 2, through: 0, by: -1) {
+                    let limit = positions[index + 1] - gap
+                    // Prefer a free spot at or above the limit, so pulling a tag up does not
+                    // land it on a candle — the same trap the old stacking pass fell into.
+                    positions[index] = nearestFreeY(limit, obstacles: obstacles, half: inset,
+                                                    low: low, high: limit) ?? limit
+                }
+            } else {
+                // Genuinely too many tags for the pane: space them evenly and keep them all
+                // readable rather than letting the tail pile up on the last one.
+                let compressed = (high - low) / CGFloat(positions.count - 1)
+                for index in positions.indices {
+                    positions[index] = low + CGFloat(index) * compressed
                 }
             }
         }
+
         return sorted.indices.map { index in
             let candidate = sorted[index]
             return PlanLabelPlacement(group: candidate.group, anchorY: min(max(candidate.anchorY, low), high),

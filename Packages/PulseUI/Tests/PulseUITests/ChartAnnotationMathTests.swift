@@ -56,6 +56,84 @@ struct ChartAnnotationMathTests {
         #expect(result.allSatisfy { $0.labelY >= 10 && $0.labelY <= 70 })
     }
 
+    @Test("a tag pushed aside by its neighbour clears the bars instead of landing back on them")
+    func stackingNeverUndoesObstacleAvoidance() {
+        // The bug Cora hit on the daily chart: tags dodged the bars, then the stacking pass
+        // used `max()` to push them apart without consulting the bars at all, shoving the
+        // second tag straight back onto the candle block the first had just stepped off.
+        let first = planGroup(price: 100, id: UUID(uuidString: "00000000-0000-0000-0000-0000000000D1")!)
+        let second = planGroup(price: 101, id: UUID(uuidString: "00000000-0000-0000-0000-0000000000D2")!)
+        let block: ClosedRange<CGFloat> = 100...200
+        let result = ChartAnnotationMath.placePlanLabels(
+            [PlanLabelCandidate(group: first, anchorY: 95, desiredY: 95),
+             PlanLabelCandidate(group: second, anchorY: 92, desiredY: 92)],
+            bounds: 0...400,
+            gap: 24,
+            inset: 10.5,
+            obstacles: [block]
+        )
+        #expect(result.count == 2)
+        let half: CGFloat = 10.5
+        for placement in result {
+            let coversBlock = block.lowerBound < placement.labelY + half
+                && block.upperBound > placement.labelY - half
+            #expect(!coversBlock)
+        }
+        #expect(result[1].labelY - result[0].labelY >= 24)
+    }
+
+    @Test("separate candle blocks leave their gap usable as a tag position")
+    func tagsUseGapsBetweenCandleBlocks() {
+        let group = planGroup(price: 100, id: UUID(uuidString: "00000000-0000-0000-0000-0000000000D3")!)
+        // Two blocks with a real gap between them; the tag's price sits inside the gap.
+        let upper: ClosedRange<CGFloat> = 0...80
+        let lower: ClosedRange<CGFloat> = 160...300
+        let result = ChartAnnotationMath.placePlanLabels(
+            [PlanLabelCandidate(group: group, anchorY: 120, desiredY: 120)],
+            bounds: 0...400,
+            gap: 24,
+            inset: 10.5,
+            obstacles: [upper, lower]
+        )
+        // The gap is free, so the tag stays exactly where its price is.
+        #expect(result.count == 1)
+        #expect(result[0].labelY == 120)
+    }
+
+    @Test("overlapping candle spans merge but keep genuinely separate blocks apart")
+    func candleSpansMergeOnlyWhenTheyTouch() {
+        let merged = ChartAnnotationMath.mergingOverlapping([
+            10...20, 25...40, 38...55, 60...70, 69...80
+        ])
+        #expect(merged.count == 3)
+        #expect(merged[0] == 10...20)
+        #expect(merged[1] == 25...55)
+        #expect(merged[2] == 60...80)
+        // A dense run of touching candles collapses, which is the only case where the tag has
+        // no vertical room and has to fall back.
+        #expect(ChartAnnotationMath.mergingOverlapping([0...10, 10...20, 20...30]).count == 1)
+    }
+
+    @Test("a fully blocked pane still yields every tag rather than dropping one")
+    func blockedPaneStillPlacesEveryTag() {
+        let groups = (0..<3).map { index in
+            planGroup(price: Double(100 + index),
+                      id: UUID(uuidString: String(format: "00000000-0000-0000-0000-0000000000E%d", index))!)
+        }
+        let candidates = groups.enumerated().map { index, group in
+            PlanLabelCandidate(group: group, anchorY: CGFloat(150 + index), desiredY: CGFloat(150 + index))
+        }
+        // One block covering the whole pane: nothing can be avoided, but every tag must still
+        // come back so no plan silently disappears from the chart.
+        let result = ChartAnnotationMath.placePlanLabels(candidates, bounds: 0...400, gap: 24,
+                                                         inset: 10.5, obstacles: [0...400])
+        #expect(result.count == 3)
+        #expect(result.allSatisfy { $0.labelY >= 0 && $0.labelY <= 400 })
+        for index in 1..<result.count {
+            #expect(result[index].labelY > result[index - 1].labelY)
+        }
+    }
+
     @Test("a trend line extends to both price pane edges")
     func trendLineExtendsToPaneEdges() {
         let pane = CGRect(x: 0, y: 0, width: 200, height: 100)

@@ -327,8 +327,10 @@ public struct CandlestickChartView: View {
             return ChartAnchor(time: candles[movedIndex].time, price: price)
         }
         // The plan tag column sits over the newest bars, so a tag has to know their price
-        // envelope to step clear of it. Average lines count too: a tag on top of MA20 is just
-        // as unreadable as one on top of a candle.
+        // ranges to step clear of them. Each bar contributes its own span rather than one
+        // merged envelope: on a daily chart the tag column covers ~30 bars, and their union is
+        // most of the pane, which would leave a tag almost nowhere to stand. Keeping the spans
+        // separate lets a tag settle between two candles, where there is nothing to cover.
         func obstacleSpans() -> [ClosedRange<CGFloat>] {
             let labelWidth = min(max(plot.width * 0.36, 74), 128)
             guard visibleRange.upperBound > visibleRange.lowerBound,
@@ -340,21 +342,25 @@ public struct CandlestickChartView: View {
             let end = min(visibleRange.upperBound, candles.count)
             guard start < end else { return [] }
 
-            var low = Double.greatestFiniteMagnitude
-            var high = -Double.greatestFiniteMagnitude
+            var spans: [ClosedRange<CGFloat>] = []
             for index in start..<end {
-                low = min(low, candles[index].low)
-                high = max(high, candles[index].high)
+                var low = candles[index].low
+                var high = candles[index].high
+                // Average lines are thin and cross the bars, so they belong to the bar they
+                // pass through instead of forming an obstacle of their own.
                 for series in movingAverages {
-                    if let value = series.values[safe: index] ?? nil {
+                    if let value = series.values[safe: index] ?? nil, value.isFinite {
                         low = min(low, value)
                         high = max(high, value)
                     }
                 }
+                guard low.isFinite, high.isFinite, low <= high,
+                      let top = yForPrice(high), let bottom = yForPrice(low) else { continue }
+                spans.append(min(top, bottom)...max(top, bottom))
             }
-            guard low.isFinite, high.isFinite, low <= high,
-                  let top = yForPrice(high), let bottom = yForPrice(low) else { return [] }
-            return [min(top, bottom)...max(top, bottom)]
+            // Merge only spans that genuinely touch. Adjacent candles overlap constantly, so
+            // this collapses a dense run into a few blocks while leaving the real gaps open.
+            return ChartAnnotationMath.mergingOverlapping(spans)
         }
 
         return ChartAnnotationCoordinates(
