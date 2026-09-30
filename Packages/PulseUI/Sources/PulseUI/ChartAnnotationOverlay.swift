@@ -466,7 +466,24 @@ struct ChartAnnotationOverlay: View {
     /// size and the amount. Staying readable means the placement pass has to step the tag clear
     /// of the candles underneath it instead.
     private var planLabelSize: CGSize {
-        CGSize(width: min(max(coordinates.plot.width * 0.36, 74), 128), height: 19)
+        CGSize(width: min(max(coordinates.plot.width * 0.36, 74), 128), height: planLabelHeight)
+    }
+
+    /// The tag grows by a second line only when there is money to put on it.
+    ///
+    /// A quote is missing outside trading hours, and on those charts the tag
+    /// keeps the single-line height it has always had, so the placement pass
+    /// gets the narrower rows back rather than reserving space for a figure
+    /// that is not there.
+    private var planLabelHeight: CGFloat {
+        planLabelHasCostLine ? Self.planLabelTwoLineHeight : Self.planLabelOneLineHeight
+    }
+
+    private static let planLabelOneLineHeight: CGFloat = 19
+    private static let planLabelTwoLineHeight: CGFloat = 30
+
+    private var planLabelHasCostLine: Bool {
+        visiblePlanGroups.contains { planCost(for: $0) != nil }
     }
 
     private var planLabelCenterX: CGFloat {
@@ -524,13 +541,15 @@ struct ChartAnnotationOverlay: View {
             } label: {
                 planLabelContents(kind: kind, price: price, quantity: quantity, unit: unit,
                                   count: group.plans.count, reached: reached, arrow: arrow,
-                                  color: planColor(first.kind), edgeHint: edgeHint?.percent)
+                                  color: planColor(first.kind), edgeHint: edgeHint?.percent,
+                                  cost: planCost(for: group))
             }
             .buttonStyle(.plain)
             .disabled(controller.tool != .browse)
             .help(planTooltip(group, reached: reached) + (edgeHint.map { "\n\($0.detail)" } ?? ""))
             .accessibilityLabel(planAccessibilityLabel(kind: kind, price: price, quantity: quantity,
-                                                       unit: unit, count: group.plans.count)
+                                                       unit: unit, count: group.plans.count,
+                                                       cost: planCost(for: group)?.text)
                                 + (edgeHint.map { " · \($0.detail)" } ?? ""))
         } else if group.plans.count == 1 {
             Button {
@@ -539,13 +558,15 @@ struct ChartAnnotationOverlay: View {
             } label: {
                 planLabelContents(kind: kind, price: price, quantity: quantity, unit: unit,
                                   count: 1, reached: reached, arrow: arrow,
-                                  color: planColor(first.kind), edgeHint: nil)
+                                  color: planColor(first.kind), edgeHint: nil,
+                                  cost: planCost(for: group))
             }
             .buttonStyle(.plain)
             .disabled(controller.tool != .browse)
             .help(planTooltip(group, reached: reached))
             .accessibilityLabel(planAccessibilityLabel(kind: kind, price: price, quantity: quantity,
-                                                       unit: unit, count: 1))
+                                                       unit: unit, count: 1,
+                                                       cost: planCost(for: group)?.text))
         } else {
             Menu {
                 ForEach(group.plans) { plan in
@@ -559,40 +580,73 @@ struct ChartAnnotationOverlay: View {
             } label: {
                 planLabelContents(kind: kind, price: price, quantity: quantity, unit: unit,
                                   count: group.plans.count, reached: reached, arrow: arrow,
-                                  color: planColor(first.kind), edgeHint: nil)
+                                  color: planColor(first.kind), edgeHint: nil,
+                                  cost: planCost(for: group))
             }
             .menuStyle(.borderlessButton)
             .disabled(controller.tool != .browse)
             .help(planTooltip(group, reached: reached))
             .accessibilityLabel(planAccessibilityLabel(kind: kind, price: price, quantity: quantity,
-                                                       unit: unit, count: group.plans.count))
+                                                       unit: unit, count: group.plans.count,
+                                                       cost: planCost(for: group)?.text))
         }
 
     }
 
     private func planLabelContents(kind: String, price: String, quantity: Double, unit: String?,
                                    count: Int, reached: Bool, arrow: String, color: Color,
-                                   edgeHint: String?) -> some View {
-        HStack(spacing: 3) {
-            if reached { Text("●").foregroundStyle(.green) }
-            Text("\(arrow)\(kind) \(price)").lineLimit(1)
-            if let edgeHint {
-                Text(edgeHint).foregroundStyle(.secondary).lineLimit(1)
-            } else {
-                Text("· \(PriceFormatter.quantity(quantity))\(unit.map { " \($0)" } ?? "")")
-                    .foregroundStyle(.secondary).lineLimit(1)
+                                   edgeHint: String?, cost: (text: String, tone: TradePlan.CostTone)?) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 3) {
+                if reached { Text("●").foregroundStyle(.green) }
+                Text("\(arrow)\(kind) \(price)").lineLimit(1)
+                if let edgeHint {
+                    Text(edgeHint).foregroundStyle(.secondary).lineLimit(1)
+                } else {
+                    Text("· \(PriceFormatter.quantity(quantity))\(unit.map { " \($0)" } ?? "")")
+                        .foregroundStyle(.secondary).lineLimit(1)
+                }
+                if count > 1 { Text("×\(count)").foregroundStyle(.secondary) }
             }
-            if count > 1 { Text("×\(count)").foregroundStyle(.secondary) }
+            // The money line sits under the price because it is the number that
+            // answers "and what does that cost me" — the tag already carries the
+            // price and the size, so this is the part worth widening for. A quote
+            // moving against the plan is coloured, which is the whole point of
+            // putting it on the chart at all.
+            if let cost {
+                Text(cost.text)
+                    .lineLimit(1)
+                    .foregroundStyle(cost.tone.isAdverse ? Self.planCostAdverse : Color.secondary)
+            }
         }
         .font(.system(size: 9, weight: .semibold, design: .rounded).monospacedDigit())
         .padding(.horizontal, 5)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // A single-line tag keeps the centred content it has always had. Only a
+        // two-line tag becomes a left-aligned block, because centring would
+        // leave the money floating under the middle of the price instead of
+        // lining up with it.
+        .frame(maxWidth: .infinity, maxHeight: .infinity,
+               alignment: cost == nil ? .center : .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4).stroke(color.opacity(0.8), lineWidth: 0.8))
     }
 
-    /// The tag itself is only wide enough for the price now, so the tooltip leads with the
-    /// full line — side, price, size — before the amount and the note.
+    /// Amber rather than red: on a chart already painted red and green for
+    /// direction, a red money line would read as a falling price instead of as
+    /// a warning about the plan.
+    private static let planCostAdverse = Color(red: 0.95, green: 0.62, blue: 0.16)
+
+    /// The money between the quote and this group's price, or nil when the tag
+    /// should stay a single line.
+    private func planCost(for group: PlanGroup) -> (text: String, tone: TradePlan.CostTone)? {
+        PlanCostText.string(for: group.plans,
+                            current: configuration.currentPrice,
+                            currencyCode: configuration.currencyCode)
+    }
+
+    /// The tag carries the side, the price, the size, and the money at a glance; the
+    /// tooltip repeats those for the reader who wants them spelled out, then adds the
+    /// plan's own notional and the note.
     private func planTooltip(_ group: PlanGroup, reached: Bool) -> String {
         let first = group.plans[0]
         let kind = PulseLocalization.localizedString(first.kind == .buy ? "plan.kind.buy" : "plan.kind.sell")
@@ -601,8 +655,9 @@ struct ChartAnnotationOverlay: View {
         let headline = "\(kind) \(PriceFormatter.price(first.price, market: coordinates.market))"
             + " · \(PriceFormatter.quantity(quantity))\(unit.map { " \($0)" } ?? "")"
             + (group.plans.count > 1 ? " ×\(group.plans.count)" : "")
-        return ([headline,
-                 PriceFormatter.money(group.plans.reduce(0) { $0 + $1.estimatedAmount }, currencyCode: configuration.currencyCode)]
+        return ([headline]
+            + (planCost(for: group).map { [$0.text] } ?? [])
+            + [PriceFormatter.money(group.plans.reduce(0) { $0 + $1.estimatedAmount }, currencyCode: configuration.currencyCode)]
             + group.plans.compactMap(\.note).filter { !$0.isEmpty }
             + (reached ? [PulseLocalization.localizedString("plan.reached")] : [])).joined(separator: "\n")
     }
@@ -649,8 +704,11 @@ struct ChartAnnotationOverlay: View {
     }
 
     private func planAccessibilityLabel(kind: String, price: String, quantity: Double,
-                                        unit: String?, count: Int) -> String {
-        "\(kind) \(price) · \(PriceFormatter.quantity(quantity))\(unit.map { " \($0)" } ?? "")\(count > 1 ? " · \(count)" : "")"
+                                        unit: String?, count: Int,
+                                        cost: String? = nil) -> String {
+        let core = "\(kind) \(price) · \(PriceFormatter.quantity(quantity))\(unit.map { " \($0)" } ?? "")\(count > 1 ? " · \(count)" : "")"
+        guard let cost else { return core }
+        return "\(core) · \(cost)"
     }
 
     private var planQuantityUnit: String? {

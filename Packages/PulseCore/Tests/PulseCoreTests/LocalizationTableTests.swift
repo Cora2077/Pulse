@@ -95,6 +95,22 @@ struct LocalizationTableTests {
         }
     }
 
+    /// A tone's key is chosen in code and its wording lives in the tables, so the
+    /// two can drift: rename a case, or add a fifth direction, and the chart tag
+    /// silently prints `plan.cost.something` at the reader. Pairing them here
+    /// means the tables have to keep up with the enum.
+    @Test("Every cost tone ships its wording in every language")
+    func everyCostToneIsTranslated() throws {
+        for language in Self.languages {
+            guard let table = Self.table(language) else { continue }
+            for tone in TradePlan.CostTone.allCases {
+                let value = try #require(table[tone.localizationKey],
+                                         "\(language) is missing \(tone.localizationKey)")
+                #expect(value.contains("%@"), "\(language) \(tone.localizationKey) has no amount slot")
+            }
+        }
+    }
+
     @Test("No translation was left empty or untranslated as its own key")
     func valuesAreRealText() throws {
         for language in Self.languages {

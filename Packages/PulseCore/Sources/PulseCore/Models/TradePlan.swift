@@ -112,6 +112,28 @@ public extension TradePlan {
         case earnsLess
         /// A sell whose quote sits above the plan price.
         case earnsMore
+
+        /// The wording for this direction, kept beside the cases so a new tone
+        /// cannot be added without one. Both the list surfaces and the chart tag
+        /// read from here rather than each running its own four-way switch.
+        public var localizationKey: String {
+            switch self {
+            case .paysMore: "plan.cost.paysMore"
+            case .paysLess: "plan.cost.paysLess"
+            case .earnsLess: "plan.cost.earnsLess"
+            case .earnsMore: "plan.cost.earnsMore"
+            }
+        }
+
+        /// Whether the quote has moved against the plan: the buy that now costs
+        /// more, or the sell that now raises less. These are the two a reader
+        /// wants to be told about, so they are also the two worth colouring.
+        public var isAdverse: Bool {
+            switch self {
+            case .paysMore, .earnsLess: true
+            case .paysLess, .earnsMore: false
+            }
+        }
     }
 
     /// The money between the live quote and the plan price, sized by the plan's
