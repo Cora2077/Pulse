@@ -137,8 +137,7 @@
 
 ### 待办
 
-- **iCloud 双机实测**（唯一没做的）：macmini 打开 `~/Applications/Pulse Dev.app` → 选 `iCloud Drive/PulseSyncTest` → 与本机双向同步。**本机已配置好并写出了同步文件，iCloud 链路已验证通**（macmini 已收到同一文件）。
-- macmini 的**屏幕共享仍连不上**：需在它的「系统设置 → 通用 → 共享」里关掉「远程管理」、打开「屏幕共享」（两者互斥）。
+- 无。**iCloud 双机实测已通过**（2026-09-30 Cora 确认：两台 Mac 双向同步稳定，含 v3 格式）。macmini 的屏幕共享不再处理。
 
 ## 用户已确定的方向
 

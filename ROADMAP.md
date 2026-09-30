@@ -2,35 +2,8 @@
 
 2026-09-30 记。这里放**已明确要做、但还没动手**的功能。做完一项就移进对应的设计文档（如 `CHART-TOOLS-DESIGN.md`）或直接删掉这里。
 
-## 1. 均线与 MACD 指标系统
+> 已完成并移出：
+> - **计划卡片按现价估算成本 / 利润差**（2026-09-30 实现，口径 `TradePlan.costDelta(from:)`，展示层 `PulseMac/Sources/PlanCostText.swift`）。
+> - **均线与 MACD 指标系统**（2026-09-30 实现）：计算在 `PulseCore/Models/ChartIndicators.swift`（SMA / EMA / MACD 纯函数 + 单测）；渲染在 `CandlestickChartView`（均线用 `LineMark`，MACD 复用底部 band，见 `ChartBands`）；配置与配色在 `PulseUI/ChartIndicatorConfiguration.swift`；开关与图例在 `MainInstrumentView.indicatorMenu` + `CandleIndicatorLegend`。
 
-**目标**：K 线图支持叠加均线（先 MA5 / MA10 / MA20 / MA60），并增加独立 MACD 副图（DIF、DEA、柱）。
-
-**现状**：
-
-- `CandlestickChartView` 目前只有 K 线本体、成交量预留带、成交 B/S 标记和手绘对象，没有任何指标层。
-- `ChartPriceRangePolicy.pricePane(plot:reservesVolume:volumeFraction:)` 已有「从主图里扣掉一段留给成交量」的机制，MACD 副图可以复用同一套布局思路。
-
-**要定的**：
-
-- 均线参数是否用户可改、按标的保存还是全局保存。
-- 副图占比，以及价格区 / 成交量 / MACD 三者怎么排（是否需要三段式）。
-- 指标计算放 `PulseCore`（纯函数 + 单测），渲染放 `PulseUI`，与现有分层保持一致。
-- 分时页要不要均线（分时通常只有均价线，口径另定）。
-
-## 2. 计划卡片按现价估算成本 / 利润差
-
-**目标**：现在计划只显示「差 x% 成交」（文案 key `plan.gap`，数值来自 `TradePlan.gapPercent(from:)`，见 `PlanListView.trailingState` 和 `DetailView` 的计划区）。在此基础上再给一行**按现价成交的金额代价**：
-
-- 买入计划：以现价买入比按计划价买入**多花多少钱**。
-- 卖出计划：以现价卖出比按计划价卖出**少赚多少钱**（现价高于计划价时则是多赚）。
-
-**口径**：`(现价 − 计划价) × 计划数量`，按买卖方向决定措辞；涨跌配色沿用 `ChangePalette`（红涨绿跌）。
-
-**要定的**：
-
-- 是否计入交易费用（项目已有手续费记录能力）；若计入，用已配置的费率还是单独的估算费率。
-- 计划数量缺失或为 0 时，只显示百分比、不显示金额。
-- 展示位置：计划卡片内新起一行，还是放进悬停提示。
-- 文案要四种语言一起加（`PulseMac/Resources/*.lproj/Localizable.strings`），否则 `LocalizationTableTests` 会挂。
-- 倾向纯展示，不做「按现价成交」的一键操作，避免误触。
+（当前没有待办项。）
