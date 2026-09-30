@@ -84,12 +84,15 @@ public struct CandlestickChartView: View {
         // one x scale means bars and candles align exactly, and the date axis sits at the
         // true bottom of the chart. Symbols without volume data reclaim the band.
         let maxVolume = visible.compactMap(\.volume).max() ?? 0
+        let naturalPriceRange = ChartPriceRangePolicy.range(
+            of: visible.flatMap { [$0.low, $0.high] }
+        )
         let yDomain = yDomain(
             for: visible,
             hasBuyMarkers: visibleTradeMarkers.contains { $0.side == .buy },
             hasSellMarkers: visibleTradeMarkers.contains { $0.side == .sell },
             reserveVolumeBand: maxVolume > 0,
-            additionalPrices: plansToFit
+            additionalPrices: fittedPlanPrices(naturalRange: naturalPriceRange)
         )
         let tradeMarkerPlacements = tradeMarkerPlacements(
             for: visibleTradeMarkers,
@@ -154,6 +157,7 @@ public struct CandlestickChartView: View {
                                 visibleRange: range,
                                 xDomain: xDomain,
                                 yDomain: yDomain,
+                                latestRealClose: candles.last?.close,
                                 scope: scope
                             )
                         )
@@ -207,13 +211,18 @@ public struct CandlestickChartView: View {
         return .candles(period: period)
     }
 
-    private var plansToFit: [Double] {
-        guard let annotations, annotations.controller.fitsPlans else { return [] }
-        return annotations.plans.compactMap { plan in
-            guard (annotations.controller.showsHistoricalPlans || plan.status == .active),
-                  plan.price.isFinite, plan.price > 0 else { return nil }
-            return plan.price
-        }
+    private func fittedPlanPrices(naturalRange: ClosedRange<Double>?) -> [Double] {
+        guard let annotations, annotations.controller.showsPlans, let naturalRange else { return [] }
+        let visible = ChartPriceRangePolicy.visiblePlanPrices(
+            annotations.plans,
+            showsHistorical: annotations.controller.showsHistoricalPlans
+        )
+        return ChartPriceRangePolicy.pricesToFit(
+            visible,
+            naturalRange: naturalRange,
+            focusedPrice: annotations.controller.focusedPlanPrice,
+            fitsAll: annotations.controller.fitsPlans
+        )
     }
 
     private func candleCoordinates(
@@ -223,6 +232,7 @@ public struct CandlestickChartView: View {
         visibleRange: Range<Int>,
         xDomain: ClosedRange<Int>,
         yDomain: ClosedRange<Double>,
+        latestRealClose: Double?,
         scope: ChartDrawingScope
     ) -> ChartAnnotationCoordinates {
         let times = candles.map(\.time)
@@ -234,7 +244,6 @@ public struct CandlestickChartView: View {
             return ChartAnnotationMath.xCoordinate(index: index, domain: xDomain, plot: plot)
         }
         func indexForX(_ x: CGFloat) -> Int? {
-            if let raw: Int = proxy.value(atX: x - plot.minX), candles.indices.contains(raw) { return raw }
             return ChartAnnotationMath.nearestIndex(atX: x, domain: xDomain, plot: plot, count: candles.count)
         }
         func priceForY(_ y: CGFloat) -> Double? {
@@ -251,6 +260,17 @@ public struct CandlestickChartView: View {
                   let price = priceForY(point.y) else { return nil }
             return ChartAnchor(time: candles[index].time, price: price)
         }
+        func snappedAnchorAt(_ point: CGPoint) -> ChartAnchor? {
+            guard pricePane.contains(point), let index = indexForX(point.x),
+                  let freeAnchor = anchorAt(point) else { return nil }
+            let candle = candles[index]
+            let price = ChartAnchorSnapPolicy.nearestPrice(
+                atY: point.y,
+                candidates: [candle.open, candle.high, candle.low, candle.close],
+                yForPrice: yForPrice
+            ) ?? freeAnchor.price
+            return ChartAnchor(time: candle.time, price: price)
+        }
         func shift(_ anchor: ChartAnchor, _ dx: CGFloat, _ dy: CGFloat) -> ChartAnchor? {
             guard let index = ChartAnnotationMath.exactIndex(for: anchor.time, sampleTimes: times),
                   let x = xForIndex(index), let y = yForPrice(anchor.price),
@@ -264,11 +284,13 @@ public struct CandlestickChartView: View {
             market: market,
             palette: palette,
             scopeForNewTrend: scope,
+            latestRealClose: latestRealClose,
             xForTime: { time in
                 guard let index = ChartAnnotationMath.exactIndex(for: time, sampleTimes: times) else { return nil }
                 return xForIndex(index)
             },
             anchorAt: anchorAt,
+            snappedAnchorAt: snappedAnchorAt,
             onHover: { point in
                 viewport.cursorInside = point != nil
                 guard let point, !visibleRange.isEmpty, plot.width > 0,

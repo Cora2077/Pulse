@@ -343,6 +343,7 @@ struct MainInstrumentView: View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 7) {
                 toolButtons
+                snappingButton
                 Toggle(PulseLocalization.localizedString("main.chart.plans"), isOn: planVisibility)
                     .toggleStyle(.checkbox)
                     .fixedSize()
@@ -350,13 +351,16 @@ struct MainInstrumentView: View {
                     .toggleStyle(.checkbox)
                     .fixedSize()
                 Button {
-                    annotationController.fitsPlans.toggle()
+                    clearPlanFocusOrToggleFit()
                 } label: {
                     Label(PulseLocalization.localizedString("main.chart.fitPlans"), systemImage: "arrow.up.left.and.arrow.down.right")
-                        .foregroundStyle(annotationController.fitsPlans ? Color.accentColor : Color.primary)
+                        .foregroundStyle(isPlanFitActive ? Color.accentColor : Color.primary)
                 }
                 .buttonStyle(.borderless)
-                .help(PulseLocalization.localizedString("main.chart.fitPlans"))
+                .help(PulseLocalization.localizedString(isPlanFitActive
+                    ? "main.chart.fitPlans.resetHelp"
+                    : "main.chart.fitPlans.help"))
+                .accessibilityAddTraits(isPlanFitActive ? .isSelected : [])
                 annotationMoreMenu
                 Spacer(minLength: 0)
             }
@@ -375,6 +379,41 @@ struct MainInstrumentView: View {
             chartToolButton(.horizontal, symbolName: "line.3.horizontal")
             chartToolButton(.trend, symbolName: "chart.line.uptrend.xyaxis")
             chartToolButton(.measure, symbolName: "ruler")
+        }
+    }
+
+    private var snappingButton: some View {
+        Button {
+            annotationController.snappingEnabled.toggle()
+        } label: {
+            Label(PulseLocalization.localizedString("main.chart.snap"), systemImage: "scope")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(annotationController.snappingEnabled ? Color.accentColor : Color.secondary)
+                .padding(.horizontal, 5)
+                .frame(height: 24)
+                .background {
+                    if annotationController.snappingEnabled {
+                        RoundedRectangle(cornerRadius: 5).fill(Color.accentColor.opacity(0.13))
+                    }
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .help(PulseLocalization.localizedString("main.chart.snap.help"))
+        .accessibilityLabel(PulseLocalization.localizedString("main.chart.snap"))
+        .accessibilityAddTraits(annotationController.snappingEnabled ? .isSelected : [])
+    }
+
+    private var isPlanFitActive: Bool {
+        annotationController.fitsPlans || annotationController.focusedPlanPrice != nil
+    }
+
+    private func clearPlanFocusOrToggleFit() {
+        if annotationController.focusedPlanPrice != nil {
+            annotationController.focusedPlanPrice = nil
+            annotationController.fitsPlans = false
+        } else {
+            annotationController.fitsPlans.toggle()
         }
     }
 
@@ -404,24 +443,29 @@ struct MainInstrumentView: View {
         Menu {
             Toggle(PulseLocalization.localizedString("main.chart.plans"), isOn: planVisibility)
             Toggle(PulseLocalization.localizedString("main.chart.drawings"), isOn: drawingVisibility)
+            Toggle(PulseLocalization.localizedString("main.chart.snap"), isOn: snappingBinding)
+                .help(PulseLocalization.localizedString("main.chart.snap.help"))
             Divider()
             Toggle(PulseLocalization.localizedString("main.chart.historicalPlans"), isOn: historicalPlanVisibility)
             Button {
-                annotationController.fitsPlans.toggle()
+                clearPlanFocusOrToggleFit()
             } label: {
                 Label(PulseLocalization.localizedString("main.chart.fitPlans"), systemImage: "arrow.up.left.and.arrow.down.right")
-                    .foregroundStyle(annotationController.fitsPlans ? Color.accentColor : Color.primary)
+                    .foregroundStyle(isPlanFitActive ? Color.accentColor : Color.primary)
             }
+            .help(PulseLocalization.localizedString(isPlanFitActive
+                ? "main.chart.fitPlans.resetHelp"
+                : "main.chart.fitPlans.help"))
             Button {
                 annotationController.clearMeasurement()
             } label: {
-                Label(PulseLocalization.localizedString("main.chart.clearMeasure"), systemImage: "eraser")
+                Label(PulseLocalization.localizedString("chart.annotation.measure.clear"), systemImage: "eraser")
             }
             Divider()
-            Button(PulseLocalization.localizedString("main.chart.deleteDrawing"), role: .destructive) {
-                annotationController.deleteSelected()
+            Button(PulseLocalization.localizedString("main.chart.deleteSelected"), role: .destructive) {
+                _ = annotationController.deleteSelected()
             }
-            .disabled(annotationController.selectedDrawingID == nil)
+            .disabled(!annotationController.canDeleteSelected)
         } label: {
             Label(PulseLocalization.localizedString("main.chart.more"), systemImage: "ellipsis")
         }
@@ -439,6 +483,10 @@ struct MainInstrumentView: View {
 
     private var historicalPlanVisibility: Binding<Bool> {
         Binding(get: { annotationController.showsHistoricalPlans }, set: { annotationController.showsHistoricalPlans = $0 })
+    }
+
+    private var snappingBinding: Binding<Bool> {
+        Binding(get: { annotationController.snappingEnabled }, set: { annotationController.snappingEnabled = $0 })
     }
 
     private func chartToolTitleKey(_ tool: ChartAnnotationTool) -> String {
@@ -493,10 +541,11 @@ struct MainInstrumentView: View {
             } else if chartMode == .intraday {
                 IntradayChartView(
                     candles: sourceCandles,
-                    previousClose: quote?.previousClose ?? sourceCandles.first?.open ?? 0,
+                    previousClose: quote?.previousClose ?? 0,
                     market: symbol.market,
                     palette: appState.palette,
                     showsExtendedHours: appState.showsExtendedHours(for: symbol),
+                    showsPercentageAxis: true,
                     annotations: chartAnnotations
                 )
             } else {
@@ -578,7 +627,7 @@ struct MainInstrumentView: View {
             controller: annotationController,
             drawings: (item?.drawings ?? []).filter { !$0.isDeleted },
             plans: item?.plans ?? [],
-            currentPrice: quote?.price,
+            currentPrice: annotationReferencePrice,
             scope: chartDrawingScope,
             currencyCode: currencyCode,
             quantityUnit: symbol.cryptoPair?.baseAsset ?? PulseLocalization.localizedString("trade.unit.shares"),
@@ -587,6 +636,11 @@ struct MainInstrumentView: View {
             onEditDrawing: { id in editDrawing(id, for: symbol) },
             onEditPlan: { id in route = .plan(symbol, id, .detail(symbol)) }
         )
+    }
+
+    private var annotationReferencePrice: Double? {
+        if let price = quote?.price, price.isFinite, price > 0 { return price }
+        return nil
     }
 
     private var chartDrawingScope: ChartDrawingScope {
@@ -689,15 +743,16 @@ struct MainInstrumentView: View {
         }
         guard annotationController.tool != .browse
                 || annotationController.isInteracting
-                || annotationController.selectedDrawingID != nil else { return false }
+                || annotationController.selectedDrawingID != nil
+                || annotationController.hasMeasurement
+                || annotationController.isMeasurementSelected else { return false }
         annotationController.cancelInteraction()
         return true
     }
 
     private func handleChartDelete() -> Bool {
-        guard annotationController.selectedDrawingID != nil else { return false }
-        annotationController.deleteSelected()
-        return true
+        guard annotationController.canDeleteSelected else { return false }
+        return annotationController.deleteSelected()
     }
 
     private func handleChartUndo() -> Bool {

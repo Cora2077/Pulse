@@ -19,17 +19,20 @@ public struct IntradayChartView: View {
     let market: Market
     let palette: ChangePalette
     let showsExtendedHours: Bool
+    let showsPercentageAxis: Bool
     let annotations: ChartAnnotationConfiguration?
     @State private var crosshairState = IntradayCrosshairState()
 
     public init(candles: [Candle], previousClose: Double, market: Market, palette: ChangePalette,
                 showsExtendedHours: Bool = false,
+                showsPercentageAxis: Bool = false,
                 annotations: ChartAnnotationConfiguration? = nil) {
         self.candles = candles
         self.previousClose = previousClose
         self.market = market
         self.palette = palette
         self.showsExtendedHours = showsExtendedHours
+        self.showsPercentageAxis = showsPercentageAxis
         self.annotations = annotations
     }
 
@@ -39,10 +42,20 @@ public struct IntradayChartView: View {
         let trend = IntradayTrendSnapshot(candles: candles, market: market,
                                           includesExtendedHours: showsExtendedHours)
         let session = trend.session
-        let domain = yDomain(for: trend.candles, additionalPrices: plansToFit)
+        let naturalRange = trend.candles.isEmpty ? nil : ChartPriceRangePolicy.range(
+            of: trend.candles.map(\.close) + (validPreviousClose.map { [$0] } ?? [])
+        )
+        let domain = yDomain(
+            for: trend.candles,
+            additionalPrices: fittedPlanPrices(naturalRange: naturalRange)
+        )
         let tint = tint(for: trend)
         let segments = lineSegments(for: trend)
         let formatter = Self.axisFormatter(for: market)
+        let percentageAxisEnabled = showsPercentageAxis && validPreviousClose != nil
+        let axisTicks = percentageAxisEnabled
+            ? ChartPriceRangePolicy.priceAxisTicks(in: domain, including: validPreviousClose)
+            : []
 
         Chart {
             marks(segments: segments, session: session, tint: tint,
@@ -65,10 +78,32 @@ public struct IntradayChartView: View {
             }
         }
         .chartYAxis {
-            AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { value in
-                AxisGridLine().foregroundStyle(.quaternary)
-                if let v = value.as(Double.self) {
-                    AxisValueLabel(PriceFormatter.price(v, market: market)).font(.caption2)
+            if percentageAxisEnabled {
+                AxisMarks(position: .leading, values: axisTicks) { value in
+                    if let price = value.as(Double.self),
+                       let change = ChartPriceRangePolicy.percentageChange(
+                        price: price,
+                        previousClose: previousClose
+                       ) {
+                        AxisValueLabel {
+                            Text(PriceFormatter.percent(change))
+                                .font(.caption2)
+                                .foregroundStyle(palette.color(for: change))
+                        }
+                    }
+                }
+                AxisMarks(position: .trailing, values: axisTicks) { value in
+                    AxisGridLine().foregroundStyle(.quaternary)
+                    if let price = value.as(Double.self) {
+                        AxisValueLabel(PriceFormatter.price(price, market: market)).font(.caption2)
+                    }
+                }
+            } else {
+                AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { value in
+                    AxisGridLine().foregroundStyle(.quaternary)
+                    if let price = value.as(Double.self) {
+                        AxisValueLabel(PriceFormatter.price(price, market: market)).font(.caption2)
+                    }
                 }
             }
         }
@@ -104,6 +139,7 @@ public struct IntradayChartView: View {
                                 domain: domain,
                                 candles: trend.candles,
                                 crosshairState: crosshairState,
+                                latestRealClose: trend.candles.last?.close,
                                 scope: scope
                             )
                         )
@@ -138,9 +174,11 @@ public struct IntradayChartView: View {
                                                 startPoint: .top, endPoint: .bottom))
             }
         }
-        RuleMark(y: .value("Prev Close", previousClose))
-            .foregroundStyle(.secondary.opacity(0.5))
-            .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+        if let previousClose = validPreviousClose {
+            RuleMark(y: .value("Prev Close", previousClose))
+                .foregroundStyle(.secondary.opacity(0.5))
+                .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+        }
     }
 
     // MARK: - Trading-minute axis
@@ -209,28 +247,40 @@ public struct IntradayChartView: View {
     /// Day-change tint, anchored on the regular session so a gray post-market wing
     /// doesn't recolor the whole chart after the close.
     private func tint(for trend: IntradayTrendSnapshot) -> Color {
+        guard let previousClose = validPreviousClose else { return .secondary }
         let session = trend.session
         let reference = trend.candles.last(where: { session.sessionKind(for: $0.time) == .regular })
             ?? trend.candles.last
-        guard let reference else { return .secondary }
+        guard let reference, reference.close.isFinite, reference.close > 0 else { return .secondary }
         return palette.color(for: reference.close - previousClose)
     }
 
     private func yDomain(for candles: [Candle], additionalPrices: [Double] = []) -> ClosedRange<Double> {
-        let closes = candles.map(\.close)
-        let lo = min(closes.min() ?? previousClose, previousClose, additionalPrices.min() ?? .infinity)
-        let hi = max(closes.max() ?? previousClose, previousClose, additionalPrices.max() ?? -.infinity)
+        let prices = candles.map(\.close).filter { $0.isFinite && $0 > 0 }
+            + (validPreviousClose.map { [$0] } ?? [])
+            + additionalPrices.filter { $0.isFinite && $0 > 0 }
+        guard let lo = prices.min(), let hi = prices.max() else { return 0...1 }
         let pad = max((hi - lo) * 0.1, hi * 0.001)
+        guard pad.isFinite, pad > 0 else { return 0...1 }
         return (lo - pad)...(hi + pad)
     }
 
-    private var plansToFit: [Double] {
-        guard let annotations, annotations.controller.fitsPlans else { return [] }
-        return annotations.plans.compactMap { plan in
-            guard (annotations.controller.showsHistoricalPlans || plan.status == .active),
-                  plan.price.isFinite, plan.price > 0 else { return nil }
-            return plan.price
-        }
+    private var validPreviousClose: Double? {
+        previousClose.isFinite && previousClose > 0 ? previousClose : nil
+    }
+
+    private func fittedPlanPrices(naturalRange: ClosedRange<Double>?) -> [Double] {
+        guard let annotations, annotations.controller.showsPlans, let naturalRange else { return [] }
+        let visible = ChartPriceRangePolicy.visiblePlanPrices(
+            annotations.plans,
+            showsHistorical: annotations.controller.showsHistoricalPlans
+        )
+        return ChartPriceRangePolicy.pricesToFit(
+            visible,
+            naturalRange: naturalRange,
+            focusedPrice: annotations.controller.focusedPlanPrice,
+            fitsAll: annotations.controller.fitsPlans
+        )
     }
 
     private func intradayAnnotationScope(
@@ -255,6 +305,7 @@ public struct IntradayChartView: View {
         domain: ClosedRange<Double>,
         candles: [Candle],
         crosshairState: IntradayCrosshairState,
+        latestRealClose: Double?,
         scope: ChartDrawingScope
     ) -> ChartAnnotationCoordinates {
         let times = candles.map(\.time)
@@ -294,6 +345,18 @@ public struct IntradayChartView: View {
                   let candle = closestCandle(to: minute), let price = priceForY(point.y) else { return nil }
             return ChartAnchor(time: candle.time, price: price)
         }
+        func snappedAnchorAt(_ point: CGPoint) -> ChartAnchor? {
+            guard plot.contains(point), let minute = minuteForX(point.x),
+                  let candle = closestCandle(to: minute) else { return nil }
+            let freeAnchor = anchorAt(point)
+            let price = ChartAnchorSnapPolicy.nearestPrice(
+                atY: point.y,
+                candidates: [candle.close],
+                yForPrice: yForPrice
+            ) ?? freeAnchor?.price
+            guard let price else { return nil }
+            return ChartAnchor(time: candle.time, price: price)
+        }
         func shift(_ anchor: ChartAnchor, _ dx: CGFloat, _ dy: CGFloat) -> ChartAnchor? {
             guard ChartAnnotationMath.exactIndex(for: anchor.time, sampleTimes: times) != nil,
                   let x = xForMinute(session.minuteOffset(for: anchor.time)),
@@ -313,11 +376,13 @@ public struct IntradayChartView: View {
             market: market,
             palette: palette,
             scopeForNewTrend: scope,
+            latestRealClose: latestRealClose,
             xForTime: { time in
                 guard ChartAnnotationMath.exactIndex(for: time, sampleTimes: times) != nil else { return nil }
                 return xForMinute(session.minuteOffset(for: time))
             },
             anchorAt: anchorAt,
+            snappedAnchorAt: snappedAnchorAt,
             onHover: { point in
                 guard let point, plot.insetBy(dx: -2, dy: -2).contains(point),
                       let minute = minuteForX(point.x) else {

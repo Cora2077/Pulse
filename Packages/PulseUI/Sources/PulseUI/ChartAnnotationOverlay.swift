@@ -10,8 +10,10 @@ struct ChartAnnotationCoordinates {
     var market: Market?
     var palette: ChangePalette
     var scopeForNewTrend: ChartDrawingScope
+    var latestRealClose: Double?
     var xForTime: (Date) -> CGFloat?
     var anchorAt: (CGPoint) -> ChartAnchor?
+    var snappedAnchorAt: (CGPoint) -> ChartAnchor?
     var onHover: (CGPoint?) -> Void
     var yForPrice: (Double) -> CGFloat?
     var shiftAnchor: (ChartAnchor, CGFloat, CGFloat) -> ChartAnchor?
@@ -32,11 +34,19 @@ struct ChartAnnotationOverlay: View {
     @State private var previewDrawing: ChartDrawing?
     @State private var pendingDrawingID = UUID()
     @State private var lastPanX: CGFloat?
+    @State private var measurementCardHitRect: CGRect = .zero
 
     private var controller: ChartAnnotationController { configuration.controller }
 
+    private var visiblePersistentDrawingIDs: Set<UUID> {
+        guard controller.showsDrawings else { return [] }
+        return Set(configuration.drawings.filter {
+            !$0.isDeleted && $0.isValid && drawing($0, matches: coordinates.scopeForNewTrend)
+        }.map(\.id))
+    }
+
     var body: some View {
-        let _ = controller.attach(configuration)
+        let _ = controller.attach(configuration, visibleDrawingIDs: visiblePersistentDrawingIDs)
         ZStack(alignment: .topLeading) {
             Rectangle()
                 .fill(.clear)
@@ -55,7 +65,7 @@ struct ChartAnnotationOverlay: View {
             case .active(let point):
                 coordinates.onHover(point)
                 cursorAnchor = controller.tool == .trend || controller.tool == .measure
-                    ? coordinates.anchorAt(point) : nil
+                    ? interactionAnchor(at: point) : nil
             case .ended:
                 coordinates.onHover(nil)
                 cursorAnchor = nil
@@ -66,12 +76,23 @@ struct ChartAnnotationOverlay: View {
             guard controller.tool == .browse,
                   coordinates.pricePane.contains(value.location),
                   drawingTarget(at: value.location) == nil,
+                  measurementHandle(at: value.location) == nil,
+                  !isMeasurementSelectionHit(value.location),
                   !isPlanLabelHit(value.location) else { return }
             coordinates.resetView()
         })
-        .onAppear { controller.attach(configuration) }
-        .onChange(of: configuration.drawings) { _, _ in controller.attach(configuration) }
+        .onAppear {
+            controller.attach(configuration, visibleDrawingIDs: visiblePersistentDrawingIDs)
+        }
+        .onChange(of: configuration.drawings) { _, _ in
+            controller.attach(configuration, visibleDrawingIDs: visiblePersistentDrawingIDs)
+        }
+        .onChange(of: ObjectIdentifier(controller)) { _, _ in
+            clearTransientState()
+            controller.attach(configuration, visibleDrawingIDs: visiblePersistentDrawingIDs)
+        }
         .onChange(of: controller.transientResetID) { _, _ in clearTransientState() }
+        .onChange(of: controller.measurementClearID) { _, _ in clearMeasurementState() }
         .onChange(of: controller.tool) { _, _ in
             pendingStart = nil
             previewDrawing = nil
@@ -83,7 +104,11 @@ struct ChartAnnotationOverlay: View {
             coordinates.onHover(nil)
             cursorAnchor = nil
         }
-        .onDisappear { coordinates.onHover(nil) }
+        .onChange(of: coordinates.scopeForNewTrend) { _, _ in controller.resetTransientState() }
+        .onDisappear {
+            coordinates.onHover(nil)
+            clearTransientState()
+        }
     }
 
     private var pointerGesture: some Gesture {
@@ -119,8 +144,12 @@ struct ChartAnnotationOverlay: View {
             interaction = .tool(controller.tool, origin: point)
         case .browse:
             if let measurementHandle = measurementHandle(at: point) {
+                controller.selectMeasurement()
                 controller.beginInteraction()
                 interaction = .measureHandle(measurementHandle, origin: point)
+            } else if isMeasurementSelectionHit(point) {
+                controller.selectMeasurement()
+                interaction = .ignore
             } else if let target = drawingTarget(at: point) {
                 controller.selectDrawing(target.drawing.id)
                 guard !target.drawing.isLocked else {
@@ -143,12 +172,12 @@ struct ChartAnnotationOverlay: View {
     private func updatePointerInteraction(_ interaction: PointerInteraction, location: CGPoint) {
         switch interaction {
         case .tool(let tool, _):
-            if tool == .trend || tool == .measure { cursorAnchor = coordinates.anchorAt(location) }
+            if tool == .trend || tool == .measure { cursorAnchor = interactionAnchor(at: location) }
         case .moveDrawing(let target, let origin):
             guard let updated = movedDrawing(target, from: origin, to: location) else { return }
             previewDrawing = updated
         case .measureHandle(let handle, _):
-            guard let anchor = coordinates.anchorAt(location), var measurement else { return }
+            guard let anchor = interactionAnchor(at: location), var measurement else { return }
             measurement.update(handle, to: anchor)
             self.measurement = measurement
         case .pan:
@@ -168,7 +197,7 @@ struct ChartAnnotationOverlay: View {
             let moved = hypot(translation.width, translation.height) > 3
             // A click creates one point; a drag may complete a trend or measurement in
             // one gesture, while the usual two-click flow remains available.
-            guard let end = coordinates.anchorAt(moved ? point : origin) else { return }
+            guard let end = interactionAnchor(at: moved ? point : origin) else { return }
             finishTool(tool, at: end)
         case .moveDrawing(let target, let origin):
             let moved = hypot(translation.width, translation.height) > 3
@@ -178,7 +207,8 @@ struct ChartAnnotationOverlay: View {
             configuration.onUpsert(committed)
             controller.selectDrawing(committed.id)
         case .measureHandle(let handle, _):
-            if let anchor = coordinates.anchorAt(point), var measurement {
+            let moved = hypot(translation.width, translation.height) > 3
+            if moved, let anchor = interactionAnchor(at: point), var measurement {
                 measurement.update(handle, to: anchor)
                 self.measurement = measurement
             }
@@ -222,6 +252,9 @@ struct ChartAnnotationOverlay: View {
         case .measure:
             if let start = pendingStart {
                 measurement = TemporaryMeasurement(start: start, end: anchor)
+                measurementCardHitRect = .zero
+                controller.setMeasurementAvailable(true)
+                controller.selectMeasurement()
                 pendingStart = nil
                 controller.tool = .browse
             } else {
@@ -237,7 +270,7 @@ struct ChartAnnotationOverlay: View {
         let dy = point.y - origin.y
         switch source.geometry {
         case .horizontal:
-            guard let price = coordinates.anchorAt(point)?.price else { return nil }
+            guard let price = interactionAnchor(at: point)?.price else { return nil }
             var copy = source
             copy.geometry = .horizontal(price: price)
             return copy
@@ -245,10 +278,10 @@ struct ChartAnnotationOverlay: View {
             var copy = source
             switch target.part {
             case .start:
-                guard let updated = coordinates.anchorAt(point) else { return nil }
+                guard let updated = interactionAnchor(at: point) else { return nil }
                 copy.geometry = .trend(start: updated, end: end)
             case .end:
-                guard let updated = coordinates.anchorAt(point) else { return nil }
+                guard let updated = interactionAnchor(at: point) else { return nil }
                 copy.geometry = .trend(start: start, end: updated)
             case .line:
                 guard let movedStart = coordinates.shiftAnchor(start, dx, dy),
@@ -387,10 +420,16 @@ struct ChartAnnotationOverlay: View {
         .padding(.vertical, 2)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4).stroke(styleColor(drawing.style.color).opacity(0.55), lineWidth: 0.7))
-        .position(x: coordinates.plot.maxX - 48, y: y)
+        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in
+            if controller.tool == .browse { controller.selectDrawing(drawing.id) }
+        })
+        .onTapGesture {
+            if controller.tool == .browse { controller.selectDrawing(drawing.id) }
+        }
         .onTapGesture(count: 2) { configuration.onEditDrawing(drawing.id) }
         .contextMenu { drawingMenu(for: drawing) }
         .help(drawing.note ?? text)
+        .position(x: coordinates.plot.maxX - 48, y: y)
     }
 
     @ViewBuilder
@@ -414,25 +453,8 @@ struct ChartAnnotationOverlay: View {
 
     private var planLayer: some View {
         guard controller.showsPlans, !coordinates.sampleTimes.isEmpty else { return AnyView(EmptyView()) }
-        let plans = configuration.plans.filter {
-            $0.price.isFinite && $0.price > 0
-                && (controller.showsHistoricalPlans || $0.status == .active)
-        }
-        let grouped = Dictionary(grouping: plans, by: { PlanGroupKey(kind: $0.kind, price: $0.price) })
-        let groups = grouped.map { key, plans in
-            PlanGroup(key: key, plans: TradePlan.ordered(plans))
-        }.sorted { lhs, rhs in
-            if lhs.key.price != rhs.key.price { return lhs.key.price < rhs.key.price }
-            return lhs.key.kind == .buy && rhs.key.kind == .sell
-        }
-        let candidates = groups.compactMap { group -> PlanLabelCandidate? in
-            guard let y = coordinates.yForPrice(group.key.price) else { return nil }
-            let clippedY = min(max(y, coordinates.pricePane.minY + 10), coordinates.pricePane.maxY - 10)
-            return PlanLabelCandidate(group: group, anchorY: clippedY, desiredY: y)
-        }
-        let placements = ChartAnnotationMath.placePlanLabels(candidates,
-                                                              bounds: coordinates.pricePane.minY...coordinates.pricePane.maxY,
-                                                              gap: 21)
+        let groups = visiblePlanGroups
+        let placements = planLabelPlacements
         return AnyView(ZStack(alignment: .topLeading) {
             ForEach(groups) { group in
                 if let y = coordinates.yForPrice(group.key.price) {
@@ -470,13 +492,30 @@ struct ChartAnnotationOverlay: View {
         } ?? false
         let unit = configuration.quantityUnit ?? planQuantityUnit
         let arrow = beyondEdge ? (coordinates.yForPrice(first.price).map { $0 < coordinates.pricePane.minY } == true ? "↑ " : "↓ ") : ""
-        if group.plans.count == 1 {
+        let edgeHint = beyondEdge ? planEdgeHint(for: first.price) : nil
+        if beyondEdge {
+            Button {
+                guard controller.tool == .browse else { return }
+                controller.focusedPlanPrice = first.price
+            } label: {
+                planLabelContents(kind: kind, price: price, quantity: quantity, unit: unit,
+                                  count: group.plans.count, reached: reached, arrow: arrow,
+                                  color: planColor(first.kind), edgeHint: edgeHint?.percent)
+            }
+            .buttonStyle(.plain)
+            .disabled(controller.tool != .browse)
+            .help(planTooltip(group, reached: reached) + (edgeHint.map { "\n\($0.detail)" } ?? ""))
+            .accessibilityLabel(planAccessibilityLabel(kind: kind, price: price, quantity: quantity,
+                                                       unit: unit, count: group.plans.count)
+                                + (edgeHint.map { " · \($0.detail)" } ?? ""))
+        } else if group.plans.count == 1 {
             Button {
                 guard controller.tool == .browse else { return }
                 configuration.onEditPlan(first.id)
             } label: {
                 planLabelContents(kind: kind, price: price, quantity: quantity, unit: unit,
-                                  count: 1, reached: reached, arrow: arrow, color: planColor(first.kind))
+                                  count: 1, reached: reached, arrow: arrow,
+                                  color: planColor(first.kind), edgeHint: nil)
             }
             .buttonStyle(.plain)
             .disabled(controller.tool != .browse)
@@ -496,7 +535,7 @@ struct ChartAnnotationOverlay: View {
             } label: {
                 planLabelContents(kind: kind, price: price, quantity: quantity, unit: unit,
                                   count: group.plans.count, reached: reached, arrow: arrow,
-                                  color: planColor(first.kind))
+                                  color: planColor(first.kind), edgeHint: nil)
             }
             .menuStyle(.borderlessButton)
             .disabled(controller.tool != .browse)
@@ -508,12 +547,17 @@ struct ChartAnnotationOverlay: View {
     }
 
     private func planLabelContents(kind: String, price: String, quantity: Double, unit: String?,
-                                   count: Int, reached: Bool, arrow: String, color: Color) -> some View {
+                                   count: Int, reached: Bool, arrow: String, color: Color,
+                                   edgeHint: String?) -> some View {
         HStack(spacing: 3) {
             if reached { Text("●").foregroundStyle(.green) }
             Text("\(arrow)\(kind) \(price)").lineLimit(1)
-            Text("· \(PriceFormatter.quantity(quantity))\(unit.map { " \($0)" } ?? "")")
-                .foregroundStyle(.secondary).lineLimit(1)
+            if let edgeHint {
+                Text(edgeHint).foregroundStyle(.secondary).lineLimit(1)
+            } else {
+                Text("· \(PriceFormatter.quantity(quantity))\(unit.map { " \($0)" } ?? "")")
+                    .foregroundStyle(.secondary).lineLimit(1)
+            }
             if count > 1 { Text("×\(count)").foregroundStyle(.secondary) }
         }
         .font(.system(size: 9, weight: .semibold, design: .rounded).monospacedDigit())
@@ -527,6 +571,44 @@ struct ChartAnnotationOverlay: View {
         ([PriceFormatter.money(group.plans.reduce(0) { $0 + $1.estimatedAmount }, currencyCode: configuration.currencyCode)]
             + group.plans.compactMap(\.note).filter { !$0.isEmpty }
             + (reached ? [PulseLocalization.localizedString("plan.reached")] : [])).joined(separator: "\n")
+    }
+
+    private var visiblePlanGroups: [PlanGroup] {
+        let plans = configuration.plans.filter {
+            $0.price.isFinite && $0.price > 0
+                && (controller.showsHistoricalPlans || $0.status == .active)
+        }
+        return Dictionary(grouping: plans, by: { PlanGroupKey(kind: $0.kind, price: $0.price) })
+            .map { key, plans in PlanGroup(key: key, plans: TradePlan.ordered(plans)) }
+            .sorted { lhs, rhs in
+                if lhs.key.price != rhs.key.price { return lhs.key.price < rhs.key.price }
+                return lhs.key.kind == .buy && rhs.key.kind == .sell
+            }
+    }
+
+    private var planLabelPlacements: [PlanLabelPlacement] {
+        let candidates = visiblePlanGroups.compactMap { group -> PlanLabelCandidate? in
+            guard let y = coordinates.yForPrice(group.key.price) else { return nil }
+            let clippedY = min(max(y, coordinates.pricePane.minY + 10), coordinates.pricePane.maxY - 10)
+            return PlanLabelCandidate(group: group, anchorY: clippedY, desiredY: y)
+        }
+        return ChartAnnotationMath.placePlanLabels(candidates,
+                                                   bounds: coordinates.pricePane.minY...coordinates.pricePane.maxY,
+                                                   gap: 21)
+    }
+
+    private func planEdgeHint(for price: Double) -> (percent: String, detail: String)? {
+        let reference = [configuration.currentPrice, coordinates.latestRealClose]
+            .compactMap { $0 }
+            .first(where: { $0.isFinite && $0 > 0 })
+        guard let reference else { return nil }
+        let percent = (price - reference) / reference * 100
+        guard percent.isFinite else { return nil }
+        let formattedPercent = PriceFormatter.percent(percent)
+        return (formattedPercent,
+                PulseLocalization.localizedString("chart.annotation.plan.edgeHint",
+                                                  PriceFormatter.price(price, market: coordinates.market),
+                                                  formattedPercent))
     }
 
     private func planAccessibilityLabel(kind: String, price: String, quantity: Double,
@@ -553,14 +635,19 @@ struct ChartAnnotationOverlay: View {
                     let rect = CGRect(x: min(first.x, second.x), y: min(first.y, second.y),
                                       width: max(1, abs(second.x - first.x)),
                                       height: max(1, abs(second.y - first.y)))
+                    let selected = controller.isMeasurementSelected
                     Rectangle()
-                        .fill(Color.accentColor.opacity(0.12))
-                        .overlay(Rectangle().stroke(Color.accentColor.opacity(0.85), style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
+                        .fill(Color.accentColor.opacity(selected ? 0.2 : 0.1))
+                        .overlay(Rectangle().stroke(Color.accentColor.opacity(selected ? 1 : 0.65),
+                                                    style: StrokeStyle(lineWidth: selected ? 2 : 1,
+                                                                       dash: selected ? [] : [3, 2])))
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
                         .allowsHitTesting(false)
-                    measurementHandleView(at: first)
-                    measurementHandleView(at: second)
+                    if selected {
+                        measurementHandleView(at: first)
+                        measurementHandleView(at: second)
+                    }
                     if let result = ChartMeasurement(start: measurement.start, end: measurement.end,
                                                      sampleTimes: coordinates.sampleTimes) {
                         measurementCard(result, at: CGPoint(x: rect.midX, y: rect.minY - 6))
@@ -582,8 +669,9 @@ struct ChartAnnotationOverlay: View {
     }
 
     private func measurementHandleView(at point: CGPoint) -> some View {
-        Circle().fill(.background).overlay(Circle().stroke(Color.accentColor, lineWidth: 1.5))
-            .frame(width: 9, height: 9)
+        Circle().fill(Color.accentColor.opacity(0.92))
+            .overlay(Circle().stroke(.background, lineWidth: 1.5))
+            .frame(width: 11, height: 11)
             .position(point)
             .allowsHitTesting(false)
     }
@@ -609,9 +697,26 @@ struct ChartAnnotationOverlay: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator.opacity(0.6), lineWidth: 0.6))
         .fixedSize()
+        .background {
+            GeometryReader { proxy in
+                let frame = proxy.frame(in: .named("chart-annotation"))
+                Color.clear
+                    .onAppear { measurementCardHitRect = frame }
+                    .onChange(of: frame) { _, updated in measurementCardHitRect = updated }
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if controller.tool == .browse { controller.selectMeasurement() }
+        }
+        .contextMenu {
+            Button(PulseLocalization.localizedString("chart.annotation.measure.clear")) {
+                controller.clearMeasurement()
+            }
+        }
+        .help(PulseLocalization.localizedString("chart.annotation.measure.clear"))
         .position(x: min(max(point.x, coordinates.pricePane.minX + 62), coordinates.pricePane.maxX - 62),
                   y: min(max(point.y, coordinates.pricePane.minY + 21), coordinates.pricePane.maxY - 21))
-        .allowsHitTesting(false)
     }
 
     private func elapsedLabel(_ seconds: TimeInterval) -> String {
@@ -625,6 +730,13 @@ struct ChartAnnotationOverlay: View {
     private func projected(_ anchor: ChartAnchor) -> CGPoint? {
         guard let x = coordinates.xForTime(anchor.time), let y = coordinates.yForPrice(anchor.price) else { return nil }
         return CGPoint(x: x, y: y)
+    }
+
+    private func interactionAnchor(at point: CGPoint) -> ChartAnchor? {
+        if controller.snappingEnabled, let snapped = coordinates.snappedAnchorAt(point) {
+            return snapped
+        }
+        return coordinates.anchorAt(point)
     }
 
     private func drawingTarget(at point: CGPoint) -> DrawingTarget? {
@@ -654,6 +766,25 @@ struct ChartAnnotationOverlay: View {
         return nil
     }
 
+    private func isMeasurementSelectionHit(_ point: CGPoint) -> Bool {
+        guard measurement != nil else { return false }
+        if measurementCardHitRect.width > 0, measurementCardHitRect.height > 0,
+           measurementCardHitRect.contains(point) {
+            return true
+        }
+        guard let measurement,
+              let first = projected(measurement.start), let second = projected(measurement.end) else {
+            return false
+        }
+        let rect = CGRect(x: min(first.x, second.x), y: min(first.y, second.y),
+                          width: max(1, abs(second.x - first.x)),
+                          height: max(1, abs(second.y - first.y)))
+        let tolerance: CGFloat = 8
+        guard rect.insetBy(dx: -tolerance, dy: -tolerance).contains(point) else { return false }
+        return [abs(point.x - rect.minX), abs(point.x - rect.maxX),
+                abs(point.y - rect.minY), abs(point.y - rect.maxY)].contains { $0 <= tolerance }
+    }
+
     private func clamped(_ point: CGPoint) -> CGPoint {
         CGPoint(x: min(max(point.x, coordinates.pricePane.minX), coordinates.pricePane.maxX),
                 y: min(max(point.y, coordinates.pricePane.minY), coordinates.pricePane.maxY))
@@ -664,8 +795,27 @@ struct ChartAnnotationOverlay: View {
         pendingDrawingID = UUID()
         cursorAnchor = nil
         measurement = nil
+        measurementCardHitRect = .zero
         interaction = nil
         previewDrawing = nil
+        controller.finishInteraction()
+        controller.setMeasurementAvailable(false)
+    }
+
+    private func clearMeasurementState() {
+        measurement = nil
+        measurementCardHitRect = .zero
+        if controller.tool == .measure { pendingStart = nil }
+        if let interaction {
+            switch interaction {
+            case .measureHandle, .tool(.measure, _):
+                self.interaction = nil
+                controller.finishInteraction()
+            default:
+                break
+            }
+        }
+        controller.setMeasurementAvailable(false)
     }
 
     private func styleColor(_ color: ChartDrawingColor) -> Color {
@@ -688,18 +838,10 @@ struct ChartAnnotationOverlay: View {
     }
 
     private func isPlanLabelHit(_ point: CGPoint) -> Bool {
-        guard controller.showsPlans else { return false }
+        guard controller.showsPlans, !coordinates.sampleTimes.isEmpty else { return false }
         let minX = coordinates.plot.maxX - min(max(coordinates.plot.width * 0.36, 74), 128)
         guard point.x >= minX, point.x <= coordinates.plot.maxX else { return false }
-        let plans = configuration.plans.filter {
-            $0.price.isFinite && $0.price > 0
-                && (controller.showsHistoricalPlans || $0.status == .active)
-        }
-        return plans.contains { plan in
-            guard let y = coordinates.yForPrice(plan.price) else { return false }
-            let edgeY = min(max(y, coordinates.pricePane.minY + 10), coordinates.pricePane.maxY - 10)
-            return abs(point.y - edgeY) <= 12
-        }
+        return planLabelPlacements.contains { abs(point.y - $0.labelY) <= 12 }
     }
 
     private func distance(_ point: CGPoint, _ other: CGPoint) -> CGFloat {

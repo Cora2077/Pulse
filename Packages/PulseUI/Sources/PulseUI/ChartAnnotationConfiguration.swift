@@ -23,14 +23,23 @@ public final class ChartAnnotationController {
     public var showsDrawings = true
     public var showsHistoricalPlans = false
     public var fitsPlans = false
+    public var snappingEnabled = false
+    public var focusedPlanPrice: Double?
     public var selectedDrawingID: UUID?
+    public private(set) var hasMeasurement = false
+    public private(set) var isMeasurementSelected = false
     public private(set) var isInteracting = false
 
     /// Changed by Escape/reset so an overlay can discard in-progress previews and
     /// temporary measurements without owning persistent state in the host.
     private(set) var transientResetID = 0
 
+    /// A measurement-only invalidation signal. Clearing a temporary measurement
+    /// must not reset drawing selection or an unrelated pending chart interaction.
+    private(set) var measurementClearID = 0
+
     @ObservationIgnored private var visibleDrawings: [ChartDrawing] = []
+    @ObservationIgnored private var visibleDrawingIDs: Set<UUID> = []
     @ObservationIgnored private var upsert: (@MainActor (ChartDrawing) -> Void)?
     @ObservationIgnored private var delete: (@MainActor (UUID) -> Void)?
     @ObservationIgnored private var undoRequest: (@MainActor () -> Void)?
@@ -43,6 +52,7 @@ public final class ChartAnnotationController {
     public func cancelInteraction() {
         transientResetID &+= 1
         isInteracting = false
+        clearMeasurementAvailability()
         if tool == .browse {
             selectedDrawingID = nil
         } else {
@@ -56,28 +66,48 @@ public final class ChartAnnotationController {
         transientResetID &+= 1
         isInteracting = false
         selectedDrawingID = nil
+        focusedPlanPrice = nil
+        clearMeasurementAvailability()
     }
 
     /// Clears the temporary two-point measurement while leaving the current tool
     /// selected. The host may call this from its Clear Measurement command.
     public func clearMeasurement() {
-        transientResetID &+= 1
-        isInteracting = false
+        measurementClearID &+= 1
+        clearMeasurementAvailability()
     }
 
     public func selectDrawing(_ id: UUID?) {
         selectedDrawingID = id
+        isMeasurementSelected = false
+    }
+
+    public func selectMeasurement() {
+        guard hasMeasurement else { return }
+        selectedDrawingID = nil
+        isMeasurementSelected = true
     }
 
     /// Deletes the selected drawing through the host callback; the host records this
     /// mutation in its instrument-session history.
-    public func deleteSelected() {
-        guard let id = selectedDrawingID,
-              visibleDrawings.contains(where: { $0.id == id && !$0.isDeleted }) else {
-            return
+    public var canDeleteSelected: Bool {
+        if isMeasurementSelected { return hasMeasurement }
+        guard let id = selectedDrawingID, delete != nil else { return false }
+        return visibleDrawingIDs.contains(id)
+            && visibleDrawings.contains(where: { $0.id == id && !$0.isDeleted && $0.isValid })
+    }
+
+    @discardableResult
+    public func deleteSelected() -> Bool {
+        if isMeasurementSelected, hasMeasurement {
+            clearMeasurement()
+            return true
         }
+        guard let id = selectedDrawingID,
+              canDeleteSelected else { return false }
         delete?(id)
         selectedDrawingID = nil
+        return true
     }
 
     /// Routes undo/redo to the host's instrument-session history, which can include
@@ -98,10 +128,21 @@ public final class ChartAnnotationController {
 
     func finishInteraction() { isInteracting = false }
 
-    func attach(_ configuration: ChartAnnotationConfiguration) {
-        visibleDrawings = configuration.drawings
+    func setMeasurementAvailable(_ available: Bool) {
+        hasMeasurement = available
+        if !available { isMeasurementSelected = false }
+    }
+
+    func attach(_ configuration: ChartAnnotationConfiguration, visibleDrawingIDs: Set<UUID>) {
+        self.visibleDrawingIDs = visibleDrawingIDs
+        visibleDrawings = configuration.drawings.filter { visibleDrawingIDs.contains($0.id) }
         upsert = configuration.onUpsert
         delete = configuration.onDelete
+    }
+
+    private func clearMeasurementAvailability() {
+        hasMeasurement = false
+        isMeasurementSelected = false
     }
 
 }
