@@ -607,6 +607,7 @@
 "main.holdings.sort.title" = "정렬";
 "main.holdings.sort.ascending" = "오름차순";
 "main.holdings.sort.descending" = "내림차순";
+"main.holdings.sort.reset" = "기본 정렬 복원";
 "main.holdings.subtitle" = "종목 %d개";
 "main.holdings.title" = "보유 종목";
 "main.holdings.unit.crypto" = "단위";

@@ -217,6 +217,14 @@ struct MainHoldingsView: View {
                     .accessibilityLabel(PulseLocalization.localizedString(sortAscending
                                                                            ? "main.holdings.sort.ascending"
                                                                            : "main.holdings.sort.descending"))
+
+                    Button(PulseLocalization.localizedString("main.holdings.sort.reset")) {
+                        sortField = .name
+                        sortAscending = true
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(sortField == .name && sortAscending)
                     Spacer(minLength: 0)
                 }
             }

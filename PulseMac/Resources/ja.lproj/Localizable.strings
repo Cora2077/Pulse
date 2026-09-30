@@ -607,6 +607,7 @@
 "main.holdings.sort.title" = "並べ替え";
 "main.holdings.sort.ascending" = "昇順";
 "main.holdings.sort.descending" = "降順";
+"main.holdings.sort.reset" = "標準の並び順に戻す";
 "main.holdings.subtitle" = "%d 銘柄";
 "main.holdings.title" = "保有銘柄";
 "main.holdings.unit.crypto" = "単位";

@@ -607,6 +607,7 @@
 "main.holdings.sort.title" = "Sort";
 "main.holdings.sort.ascending" = "Ascending";
 "main.holdings.sort.descending" = "Descending";
+"main.holdings.sort.reset" = "Restore Default Sort";
 "main.holdings.subtitle" = "%d instruments";
 "main.holdings.title" = "Holdings";
 "main.holdings.unit.crypto" = "units";

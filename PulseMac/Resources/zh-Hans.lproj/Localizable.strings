@@ -607,6 +607,7 @@
 "main.holdings.sort.title" = "排序";
 "main.holdings.sort.ascending" = "升序";
 "main.holdings.sort.descending" = "降序";
+"main.holdings.sort.reset" = "恢复默认排序";
 "main.holdings.subtitle" = "%d 个标的";
 "main.holdings.title" = "持仓总览";
 "main.holdings.unit.crypto" = "单位";
