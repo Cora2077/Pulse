@@ -670,6 +670,10 @@
 "main.chart.snap" = "자석";
 "main.chart.snap.help" = "가까운 캔들 가격이나 분봉 지점에 맞춥니다. 멀리서는 자유롭게 그릴 수 있습니다";
 "main.chart.more" = "차트 도구 더 보기";
+"main.chart.indicators" = "지표";
+"main.chart.indicators.help" = "캔들에 이동평균선을 겹치거나 거래량 아래에 MACD 보조지표를 추가합니다";
+"main.chart.indicators.movingAverages" = "이동평균선(MA5/10/20/60)";
+"main.chart.indicators.macd" = "MACD 보조지표(12, 26, 9)";
 "main.chart.historicalPlans" = "완료 및 중단된 계획 표시";
 "main.chart.clearMeasure" = "측정 지우기";
 "main.chart.deleteDrawing" = "선택한 그리기 삭제";

@@ -23,6 +23,7 @@ public struct CandlestickChartView: View {
     let transactions: [PositionTransaction]
     let currencyCode: String?
     let annotations: ChartAnnotationConfiguration?
+    let indicators: ChartIndicatorConfiguration
 
     @State private var viewport: CandleChartViewport
 
@@ -38,7 +39,8 @@ public struct CandlestickChartView: View {
         transactions: [PositionTransaction] = [],
         currencyCode: String? = nil,
         viewport: CandleChartViewport? = nil,
-        annotations: ChartAnnotationConfiguration? = nil
+        annotations: ChartAnnotationConfiguration? = nil,
+        indicators: ChartIndicatorConfiguration = .hidden
     ) {
         self.candles = candles
         self.palette = palette
@@ -48,6 +50,7 @@ public struct CandlestickChartView: View {
         self.transactions = transactions
         self.currencyCode = currencyCode
         self.annotations = annotations
+        self.indicators = indicators
         _viewport = State(initialValue: viewport ?? CandleChartViewport())
     }
 
@@ -57,9 +60,7 @@ public struct CandlestickChartView: View {
         }
     }
 
-    /// Fraction of the y-domain the in-pane volume band occupies. The price domain reserves
-    /// slightly more (28%) below the lowest wick so the tallest bar never touches a candle.
-    private static let volumeBandFraction = 0.20
+    /// Band sizes live in `ChartBands`; the price pane keeps whatever is left over.
 
     @ViewBuilder
     private func content(containerWidth: CGFloat) -> some View {
@@ -80,10 +81,12 @@ public struct CandlestickChartView: View {
             : []
         let visibleTradeMarkers = tradeMarkers.filter { range.contains($0.candleIndex) }
         let showsDateOnIntradayAxis = visibleSpansMultipleDays(visible)
-        // Volume shares the coordinate system as a bottom band (TradingView-style overlay):
-        // one x scale means bars and candles align exactly, and the date axis sits at the
-        // true bottom of the chart. Symbols without volume data reclaim the band.
+        // Volume and MACD share the coordinate system as bottom bands (TradingView-style
+        // overlay): one x scale means bars, candles and indicators align exactly, and the
+        // date axis sits at the true bottom of the chart. Symbols without volume data
+        // reclaim that band.
         let maxVolume = visible.compactMap(\.volume).max() ?? 0
+        let bands = ChartBands(hasVolume: maxVolume > 0, hasMACD: indicators.showsMACD)
         let naturalPriceRange = ChartPriceRangePolicy.range(
             of: visible.flatMap { [$0.low, $0.high] }
         )
@@ -92,6 +95,7 @@ public struct CandlestickChartView: View {
             hasBuyMarkers: visibleTradeMarkers.contains { $0.side == .buy },
             hasSellMarkers: visibleTradeMarkers.contains { $0.side == .sell },
             reserveVolumeBand: maxVolume > 0,
+            reserveMACDBand: indicators.showsMACD,
             additionalPrices: fittedPlanPrices(naturalRange: naturalPriceRange)
         )
         let tradeMarkerPlacements = tradeMarkerPlacements(
@@ -99,18 +103,48 @@ public struct CandlestickChartView: View {
             visibleRange: range,
             yDomain: yDomain
         )
+        // Indicators run over every loaded bar, but only the visible window is drawn, so
+        // zooming and panning never change the shape of a curve.
+        let movingAverageSeries = indicators.movingAverages.map { period in
+            MovingAverageSeries(
+                period: period,
+                values: ChartIndicatorMath.simpleMovingAverage(
+                    ChartIndicatorMath.closes(of: candles),
+                    period: period.period
+                )
+            )
+        }
+        let macdSeries = indicators.showsMACD ? ChartIndicatorMath.macd(ChartIndicatorMath.closes(of: candles)) : nil
+        let macdScale = macdSeries.map {
+            MACDValueScale(series: $0, range: range, band: bands.macdBand(in: yDomain))
+        }
         // `.ratio` widths collapse to hairlines on a continuous Int scale, which turns the
         // candles into bare wicks — size the bodies explicitly from the visible density.
         let barWidth = Self.barWidth(forVisible: range.count, containerWidth: containerWidth)
+        // The legend and the OHLC readout both want the plot's top-left corner. When the
+        // legend is up the readout is nudged below it so the two never overlap.
+        let showsIndicatorLegend = !movingAverageSeries.isEmpty || macdSeries != nil
+        let readoutTopInset = showsIndicatorLegend ? CandleIndicatorLegend.height : 0
 
         Chart {
             if highlightsExtendedHours, market == .us {
                 extendedSessionMarks(range: range, slotWidth: barWidth / 0.62, yDomain: yDomain)
             }
+            if let macdSeries, let macdScale {
+                macdMarks(range: range, barWidth: barWidth, series: macdSeries, scale: macdScale)
+            }
             if maxVolume > 0 {
-                volumeMarks(range: range, barWidth: barWidth, yDomain: yDomain, maxVolume: maxVolume)
+                volumeMarks(
+                    range: range,
+                    barWidth: barWidth,
+                    band: bands.volumeBand(in: yDomain),
+                    maxVolume: maxVolume
+                )
             }
             candleMarks(range: range, priceDomain: yDomain, barWidth: barWidth)
+            if !movingAverageSeries.isEmpty {
+                movingAverageMarks(range: range, series: movingAverageSeries)
+            }
             tradeMarks(tradeMarkerPlacements)
         }
         .chartYScale(domain: yDomain)
@@ -139,13 +173,13 @@ public struct CandlestickChartView: View {
                                        xDomain: xDomain, palette: palette, period: period,
                                        market: market, tradeMarkers: tradeMarkers,
                                        currencyCode: currencyCode,
-                                       proxy: proxy, geo: geo)
+                                       proxy: proxy, geo: geo,
+                                       readoutTopInset: readoutTopInset)
                     if let annotations {
                         let plot = proxy.plotFrame.map { geo[$0] } ?? .zero
                         let pricePane = ChartAnnotationMath.pricePane(
                             plot: plot,
-                            reservesVolume: maxVolume > 0,
-                            volumeFraction: Self.volumeBandFraction
+                            reservingBottomFraction: bands.bottomReserved
                         )
                         let scope = candleAnnotationScope(annotations.scope)
                         ChartAnnotationOverlay(
@@ -158,11 +192,25 @@ public struct CandlestickChartView: View {
                                 xDomain: xDomain,
                                 yDomain: yDomain,
                                 latestRealClose: candles.last?.close,
-                                scope: scope
+                                scope: scope,
+                                movingAverages: movingAverageSeries
                             )
                         )
                     }
                 }
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if showsIndicatorLegend {
+                CandleIndicatorLegend(
+                    viewport: viewport,
+                    series: movingAverageSeries,
+                    macd: macdSeries,
+                    range: range,
+                    market: market
+                )
+                .padding(.leading, 6)
+                .padding(.top, 2)
             }
         }
         .contentShape(Rectangle())
@@ -233,7 +281,8 @@ public struct CandlestickChartView: View {
         xDomain: ClosedRange<Int>,
         yDomain: ClosedRange<Double>,
         latestRealClose: Double?,
-        scope: ChartDrawingScope
+        scope: ChartDrawingScope,
+        movingAverages: [MovingAverageSeries]
     ) -> ChartAnnotationCoordinates {
         let times = candles.map(\.time)
         func xForIndex(_ index: Int) -> CGFloat? {
@@ -356,18 +405,82 @@ public struct CandlestickChartView: View {
         }
     }
 
-    /// Volume bars scaled into the bottom band of the price domain, tallest bar = full band.
+    /// Volume bars scaled into their own band of the price domain, tallest bar = full band.
     @ChartContentBuilder
     private func volumeMarks(range: Range<Int>, barWidth: CGFloat,
-                             yDomain: ClosedRange<Double>, maxVolume: Double) -> some ChartContent {
-        let bandHeight = (yDomain.upperBound - yDomain.lowerBound) * Self.volumeBandFraction
+                             band: ChartBand, maxVolume: Double) -> some ChartContent {
         ForEach(range, id: \.self) { index in
             let candle = candles[index]
             BarMark(x: .value("i", index),
-                    yStart: .value("VolumeBase", yDomain.lowerBound),
-                    yEnd: .value("Volume", yDomain.lowerBound + bandHeight * (candle.volume ?? 0) / maxVolume),
+                    yStart: .value("VolumeBase", band.bottom),
+                    yEnd: .value("Volume", band.bottom + band.height * (candle.volume ?? 0) / maxVolume),
                     width: .fixed(barWidth))
                 .foregroundStyle(palette.color(isUp: candle.isUp).opacity(0.35))
+        }
+    }
+
+    /// Moving averages as plain lines. A bar whose window is not warm yet carries no mark at
+    /// all, so the warm-up leaves an honest gap at the left edge instead of a fake value.
+    @ChartContentBuilder
+    private func movingAverageMarks(range: Range<Int>,
+                                    series: [MovingAverageSeries]) -> some ChartContent {
+        let palette = ChartIndicatorPalette()
+        ForEach(series, id: \.period) { entry in
+            ForEach(range, id: \.self) { index in
+                if let value = entry.values[safe: index] ?? nil {
+                    LineMark(
+                        x: .value("i", index),
+                        y: .value(entry.period.label, value),
+                        series: .value("Series", entry.period.label)
+                    )
+                    .foregroundStyle(palette.color(for: entry.period))
+                    .lineStyle(StrokeStyle(lineWidth: 1.1, lineCap: .round, lineJoin: .round))
+                    .interpolationMethod(.linear)
+                }
+            }
+        }
+    }
+
+    /// MACD pane: one histogram bar per candle from the zero line, plus the DIF and DEA
+    /// lines. Values are mapped onto the pane's own slice of the shared price domain.
+    @ChartContentBuilder
+    private func macdMarks(range: Range<Int>, barWidth: CGFloat,
+                           series: MACDSeries, scale: MACDValueScale) -> some ChartContent {
+        let zero = scale.zeroY
+        ForEach(range, id: \.self) { index in
+            if let histogram = series.histogram[safe: index] ?? nil {
+                BarMark(
+                    x: .value("i", index),
+                    yStart: .value("MACD Zero", zero),
+                    yEnd: .value("MACD Histogram", scale.y(histogram)),
+                    width: .fixed(barWidth)
+                )
+                .foregroundStyle(palette.color(isUp: histogram >= 0).opacity(0.5))
+            }
+        }
+        ForEach(range, id: \.self) { index in
+            if let dif = series.dif[safe: index] ?? nil {
+                LineMark(
+                    x: .value("i", index),
+                    y: .value("MACD DIF", scale.y(dif)),
+                    series: .value("Series", "DIF")
+                )
+                .foregroundStyle(ChartIndicatorPalette.dif)
+                .lineStyle(StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                .interpolationMethod(.linear)
+            }
+        }
+        ForEach(range, id: \.self) { index in
+            if let dea = series.dea[safe: index] ?? nil {
+                LineMark(
+                    x: .value("i", index),
+                    y: .value("MACD DEA", scale.y(dea)),
+                    series: .value("Series", "DEA")
+                )
+                .foregroundStyle(ChartIndicatorPalette.dea)
+                .lineStyle(StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                .interpolationMethod(.linear)
+            }
         }
     }
 
@@ -450,6 +563,7 @@ public struct CandlestickChartView: View {
         hasBuyMarkers: Bool,
         hasSellMarkers: Bool,
         reserveVolumeBand: Bool,
+        reserveMACDBand: Bool = false,
         additionalPrices: [Double] = []
     ) -> ClosedRange<Double> {
         let lo = min(visible.map(\.low).min() ?? 0, additionalPrices.min() ?? .infinity)
@@ -463,7 +577,10 @@ public struct CandlestickChartView: View {
             bottomPad = span * (hasBuyMarkers ? 0.16 : 0.05)
         }
         let topPad = span * (hasSellMarkers ? 0.16 : 0.05)
-        return (lo - bottomPad)...(hi + topPad)
+        // The MACD pane takes its height out of the price pane, so the domain grows by exactly
+        // the share the pane needs and the candles keep the screen band they had before.
+        let extraPad = reserveMACDBand ? (span + bottomPad + topPad) * ChartBands.macdDomainGrowth : 0
+        return (lo - bottomPad - extraPad)...(hi + topPad)
     }
 
     /// Badges sit outside the local candle envelope rather than at the execution price.
@@ -529,6 +646,86 @@ public struct CandlestickChartView: View {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = market?.timeZone ?? .current
         return !calendar.isDate(first.time, inSameDayAs: last.time)
+    }
+}
+
+/// One moving-average overlay: the window and its aligned values.
+private struct MovingAverageSeries {
+    var period: MovingAveragePeriod
+    var values: [Double?]
+}
+
+/// Vertical split of the price domain, measured from the bottom up. The volume strip and the
+/// MACD pane are carved out of the same axis the candles use, which keeps every mark on one x
+/// scale and leaves the annotation layer's single plot frame untouched.
+private struct ChartBands {
+    /// Volume strip with and without the MACD pane competing for the same space.
+    static let volumeAlone = 0.20
+    static let volumeWithMACD = 0.15
+    /// MACD pane as a fraction of the domain.
+    static let macd = 0.22
+    /// Extra domain height (as a multiple of the un-expanded domain) that buying the MACD
+    /// pane costs the axis, so the price pane keeps its pixel height.
+    static let macdDomainGrowth = 0.587
+
+    let volume: Double
+    let macd: Double
+
+    init(hasVolume: Bool, hasMACD: Bool) {
+        volume = hasVolume ? (hasMACD ? Self.volumeWithMACD : Self.volumeAlone) : 0
+        macd = hasMACD ? Self.macd : 0
+    }
+
+    /// Everything carved out below the candles, and therefore what the annotation layer
+    /// must keep clear of.
+    var bottomReserved: Double { volume + macd }
+
+    /// MACD sits lowest; the volume strip rides directly above it.
+    func macdBand(in domain: ClosedRange<Double>) -> ChartBand {
+        ChartBand(bottom: domain.lowerBound, height: (domain.upperBound - domain.lowerBound) * macd)
+    }
+
+    func volumeBand(in domain: ClosedRange<Double>) -> ChartBand {
+        let span = domain.upperBound - domain.lowerBound
+        return ChartBand(bottom: domain.lowerBound + span * macd, height: span * volume)
+    }
+}
+
+/// A slice of the y-domain, expressed in domain units.
+private struct ChartBand {
+    var bottom: Double
+    var height: Double
+
+    var center: Double { bottom + height / 2 }
+}
+
+/// Maps MACD values onto the pane's band. The scale is symmetric about zero, so the zero line
+/// stays at a fixed height and the pane does not jump around as the visible range shifts.
+private struct MACDValueScale {
+    let magnitude: Double
+    let band: ChartBand
+
+    init(series: MACDSeries, range: Range<Int>, band: ChartBand) {
+        var peak = 0.0
+        for index in range {
+            let candidates = [
+                series.dif[safe: index] ?? nil,
+                series.dea[safe: index] ?? nil,
+                series.histogram[safe: index] ?? nil
+            ]
+            for value in candidates {
+                if let value, value.isFinite { peak = max(peak, abs(value)) }
+            }
+        }
+        magnitude = peak > 0 ? peak : 1
+        self.band = band
+    }
+
+    var zeroY: Double { band.center }
+
+    func y(_ value: Double) -> Double {
+        let normalized = min(max(value / magnitude, -1), 1)
+        return band.center + normalized * band.height / 2
     }
 }
 
@@ -659,6 +856,60 @@ public final class CandleChartViewport {
     #endif
 }
 
+// MARK: - Indicator legend
+
+/// Legend pinned to the plot's top-left corner: one swatch per enabled overlay showing the
+/// value at the hovered bar, or at the last visible bar while the cursor is away. It reads the
+/// shared hover index itself, so only this strip re-renders as the cursor moves — never the
+/// candle marks behind it.
+private struct CandleIndicatorLegend: View {
+    /// Height the strip reserves at the top of the plot, so the OHLC readout starts below it.
+    static let height: CGFloat = 18
+
+    let viewport: CandleChartViewport
+    let series: [MovingAverageSeries]
+    let macd: MACDSeries?
+    let range: Range<Int>
+    let market: Market?
+
+    private var palette: ChartIndicatorPalette { ChartIndicatorPalette() }
+
+    var body: some View {
+        let last = max(range.upperBound - 1, range.lowerBound)
+        let index = min(max(viewport.hoveredIndex ?? last, range.lowerBound), last)
+        HStack(spacing: 9) {
+            ForEach(series, id: \.period) { entry in
+                swatch(label: entry.period.label,
+                       color: palette.color(for: entry.period),
+                       value: entry.values[safe: index] ?? nil)
+            }
+            if let macd {
+                swatch(label: "DIF", color: ChartIndicatorPalette.dif,
+                       value: macd.dif[safe: index] ?? nil)
+                swatch(label: "DEA", color: ChartIndicatorPalette.dea,
+                       value: macd.dea[safe: index] ?? nil)
+            }
+        }
+        .font(.system(size: 9).monospacedDigit())
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(.thickMaterial))
+        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
+            .stroke(.separator.opacity(0.5), lineWidth: 0.5))
+        .fixedSize()
+        .allowsHitTesting(false)
+    }
+
+    private func swatch(label: String, color: Color, value: Double?) -> some View {
+        HStack(spacing: 3) {
+            Circle().fill(color).frame(width: 5, height: 5)
+            Text(label).foregroundStyle(color)
+            Text(value.map { PriceFormatter.price($0, market: market) } ?? "—")
+                .foregroundStyle(.primary)
+        }
+    }
+}
+
 // MARK: - Crosshair overlays
 
 /// Price-pane crosshair, OHLC readout and axis tags. A separate view so hover-state
@@ -675,6 +926,8 @@ private struct CandlePriceOverlay: View {
     let currencyCode: String?
     let proxy: ChartProxy
     let geo: GeometryProxy
+    /// Space to leave above the readout so it clears the indicator legend.
+    var readoutTopInset: CGFloat = 0
 
     var body: some View {
         let plot = proxy.plotFrame.map { geo[$0] } ?? .zero
@@ -692,7 +945,8 @@ private struct CandlePriceOverlay: View {
                     previous: candles[safe: index - 1],
                     tradeMarkers: tradeMarkers.filter { $0.candleIndex == index }
                 )
-                    .padding(4)
+                    .padding(EdgeInsets(top: 4 + readoutTopInset, leading: 4,
+                                        bottom: 4, trailing: 4))
                     .frame(width: plot.width, height: plot.height,
                            alignment: px > plot.midX ? .topLeading : .topTrailing)
                     .offset(x: plot.origin.x, y: plot.origin.y)

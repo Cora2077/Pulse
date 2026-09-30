@@ -670,6 +670,10 @@
 "main.chart.snap" = "スナップ";
 "main.chart.snap.help" = "近くのローソク足の価格や分足の点に吸着します。離れた位置では自由に描画できます";
 "main.chart.more" = "その他のチャートツール";
+"main.chart.indicators" = "インジケーター";
+"main.chart.indicators.help" = "ローソク足に移動平均線を重ねるか、出来高の下に MACD パネルを追加します";
+"main.chart.indicators.movingAverages" = "移動平均線（MA5/10/20/60）";
+"main.chart.indicators.macd" = "MACD パネル（12, 26, 9）";
 "main.chart.historicalPlans" = "完了・中止した計画を表示";
 "main.chart.clearMeasure" = "計測をクリア";
 "main.chart.deleteDrawing" = "選択した描画を削除";

@@ -30,6 +30,12 @@ struct MainInstrumentView: View {
     @State private var hostWindow: NSWindow?
     @State private var isWindowActiveVisible = false
 
+    /// Chart overlays are a viewing preference rather than instrument data, so they stay in
+    /// this machine's defaults and out of the store and the sync file. The moving averages
+    /// share one bitmask so the menu can toggle each window on its own.
+    @AppStorage("pulse.chart.movingAverages.v2") private var movingAverageMask = MovingAveragePeriod.allMask
+    @AppStorage("pulse.chart.macd.v1") private var showsMACD = false
+
     init(symbol: SymbolID) {
         self.symbol = symbol
         _route = State(initialValue: .detail(symbol))
@@ -41,6 +47,25 @@ struct MainInstrumentView: View {
             ?? appState.watchlist.retainedHistoryItem(for: symbol)
     }
     private var currencyCode: String? { quote?.currencyCode ?? symbol.currencyCode }
+    private var enabledMovingAverages: [MovingAveragePeriod] {
+        MovingAveragePeriod.allCases.filter { movingAverageMask & $0.mask != 0 }
+    }
+    private var indicatorConfiguration: ChartIndicatorConfiguration {
+        ChartIndicatorConfiguration(movingAverages: enabledMovingAverages, showsMACD: showsMACD)
+    }
+    /// Binds one window to its bit, so the menu toggles MA5 / MA10 / MA20 / MA60 separately.
+    private func movingAverageBinding(_ period: MovingAveragePeriod) -> Binding<Bool> {
+        Binding(
+            get: { movingAverageMask & period.mask != 0 },
+            set: { isOn in
+                if isOn {
+                    movingAverageMask |= period.mask
+                } else {
+                    movingAverageMask &= ~period.mask
+                }
+            }
+        )
+    }
     private var symbolSupportsPosition: Bool {
         let type: InstrumentType?
         if let resolved = item?.resolvedInstrumentType {
@@ -361,11 +386,13 @@ struct MainInstrumentView: View {
                     ? "main.chart.fitPlans.resetHelp"
                     : "main.chart.fitPlans.help"))
                 .accessibilityAddTraits(isPlanFitActive ? .isSelected : [])
+                indicatorMenu
                 annotationMoreMenu
                 Spacer(minLength: 0)
             }
             HStack(spacing: 7) {
                 toolButtons
+                indicatorMenu
                 annotationMoreMenu
                 Spacer(minLength: 0)
             }
@@ -473,6 +500,29 @@ struct MainInstrumentView: View {
         .help(PulseLocalization.localizedString("main.chart.more"))
     }
 
+    /// Overlays are frequent enough to deserve their own entry rather than a trip into the
+    /// annotation menu, so it sits in the toolbar and survives the narrow fallback layout.
+    private var indicatorMenu: some View {
+        Menu {
+            Section(PulseLocalization.localizedString("main.chart.indicators.movingAverages")) {
+                ForEach(MovingAveragePeriod.allCases, id: \.self) { period in
+                    Toggle(period.label, isOn: movingAverageBinding(period))
+                }
+            }
+            Divider()
+            Toggle(PulseLocalization.localizedString("main.chart.indicators.macd"), isOn: $showsMACD)
+        } label: {
+            Label(
+                PulseLocalization.localizedString("main.chart.indicators"),
+                systemImage: "chart.xyaxis.line"
+            )
+            .foregroundStyle(indicatorConfiguration.isHidden ? Color.secondary : Color.accentColor)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(PulseLocalization.localizedString("main.chart.indicators.help"))
+    }
+
     private var planVisibility: Binding<Bool> {
         Binding(get: { annotationController.showsPlans }, set: { annotationController.showsPlans = $0 })
     }
@@ -559,7 +609,8 @@ struct MainInstrumentView: View {
                     transactions: chartMode.period == .day ? item?.materializedTransactions() ?? [] : [],
                     currencyCode: currencyCode,
                     viewport: candleViewport,
-                    annotations: chartAnnotations
+                    annotations: chartAnnotations,
+                    indicators: indicatorConfiguration
                 )
             }
         }

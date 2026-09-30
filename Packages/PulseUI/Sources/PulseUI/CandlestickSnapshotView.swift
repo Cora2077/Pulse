@@ -21,7 +21,7 @@ public struct CandlestickSnapshotView: View {
     }
 
     /// Fraction of the y-domain the in-pane volume band occupies; mirrors
-    /// `CandlestickChartView.volumeBandFraction` and its 28% price-domain reserve.
+    /// `ChartBands.volumeAlone` and its 28% price-domain reserve.
     private static let volumeBandFraction = 0.20
 
     public var body: some View {

@@ -669,6 +669,10 @@
 "main.chart.snap" = "Snap";
 "main.chart.snap.help" = "Snap to nearby candle prices or intraday points; draw freely away from them";
 "main.chart.more" = "More chart tools";
+"main.chart.indicators" = "Indicators";
+"main.chart.indicators.help" = "Overlay moving averages on the candles, or add a MACD pane below the volume strip";
+"main.chart.indicators.movingAverages" = "Moving averages (MA5/10/20/60)";
+"main.chart.indicators.macd" = "MACD pane (12, 26, 9)";
 "main.chart.historicalPlans" = "Show completed and abandoned plans";
 "main.chart.clearMeasure" = "Clear measurement";
 "main.chart.deleteDrawing" = "Delete selected drawing";

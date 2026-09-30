@@ -669,6 +669,10 @@
 "main.chart.snap" = "吸附";
 "main.chart.snap.help" = "靠近 K 线价位或分时行情点时自动吸附，远处仍可自由画线";
 "main.chart.more" = "更多图表工具";
+"main.chart.indicators" = "指标";
+"main.chart.indicators.help" = "在 K 线上叠加均线，或在成交量下方增加 MACD 副图";
+"main.chart.indicators.movingAverages" = "均线（MA5/10/20/60）";
+"main.chart.indicators.macd" = "MACD 副图（12, 26, 9）";
 "main.chart.historicalPlans" = "显示已完成和已放弃的计划";
 "main.chart.clearMeasure" = "清除测量";
 "main.chart.deleteDrawing" = "删除所选画线";
