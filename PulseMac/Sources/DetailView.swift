@@ -953,10 +953,14 @@ struct DetailView: View {
             } else if period == .minute1 {
                 IntradayChartView(
                     candles: sourceCandles,
-                    previousClose: quote?.previousClose ?? sourceCandles.first?.open ?? 0,
+                    // Same convention as the main window: a missing previous close
+                    // leaves the axis without a percentage scale instead of
+                    // passing the open off as yesterday's close.
+                    previousClose: quote?.previousClose ?? 0,
                     market: symbol.market,
                     palette: appState.palette,
-                    showsExtendedHours: appState.showsExtendedHours(for: symbol)
+                    showsExtendedHours: appState.showsExtendedHours(for: symbol),
+                    showsPercentageAxis: true
                 )
                 .transition(.opacity)
             } else {

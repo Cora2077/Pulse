@@ -3,7 +3,7 @@ import Charts
 import Observation
 import PulseCore
 
-/// Intraday chart: today's trend plus a dashed previous-close baseline; the overall tint follows the price change.
+/// Intraday chart: today's trend plus a solid previous-close baseline; the overall tint follows the price change.
 /// The x axis is measured in trading minutes with the lunch break collapsed, so the morning and afternoon
 /// sessions each get width proportional to actual trading time — the standard layout for CN/HK minute charts.
 /// The domain always spans the full session, so an in-progress day fills in from the left.
@@ -177,7 +177,7 @@ public struct IntradayChartView: View {
         if let previousClose = validPreviousClose {
             RuleMark(y: .value("Prev Close", previousClose))
                 .foregroundStyle(.secondary.opacity(0.5))
-                .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+                .lineStyle(StrokeStyle(lineWidth: 0.8))
         }
     }
 

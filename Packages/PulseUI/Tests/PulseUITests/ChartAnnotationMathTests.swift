@@ -56,6 +56,43 @@ struct ChartAnnotationMathTests {
         #expect(result.allSatisfy { $0.labelY >= 10 && $0.labelY <= 70 })
     }
 
+    @Test("a trend line extends to both price pane edges")
+    func trendLineExtendsToPaneEdges() {
+        let pane = CGRect(x: 0, y: 0, width: 200, height: 100)
+        let extended = ChartAnnotationMath.extendedLine(through: CGPoint(x: 50, y: 50),
+                                                        and: CGPoint(x: 100, y: 50),
+                                                        within: pane)
+        #expect(extended.start == CGPoint(x: 0, y: 50))
+        #expect(extended.end == CGPoint(x: 200, y: 50))
+    }
+
+    @Test("the extension preserves the slope of a diagonal line")
+    func diagonalLineKeepsSlope() {
+        let pane = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let extended = ChartAnnotationMath.extendedLine(through: CGPoint(x: 40, y: 40),
+                                                        and: CGPoint(x: 60, y: 60),
+                                                        within: pane)
+        #expect(extended.start == CGPoint(x: 0, y: 0))
+        #expect(extended.end == CGPoint(x: 100, y: 100))
+    }
+
+    @Test("degenerate and fully outside lines keep the user's two points")
+    func degenerateAndOutsideLinesStayPut() {
+        let pane = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let degenerate = ChartAnnotationMath.extendedLine(through: CGPoint(x: 20, y: 20),
+                                                          and: CGPoint(x: 20, y: 20),
+                                                          within: pane)
+        #expect(degenerate.start == CGPoint(x: 20, y: 20))
+        #expect(degenerate.end == CGPoint(x: 20, y: 20))
+
+        // Parallel to the pane and above it: nothing of it can be shown.
+        let outside = ChartAnnotationMath.extendedLine(through: CGPoint(x: 10, y: -30),
+                                                       and: CGPoint(x: 60, y: -30),
+                                                       within: pane)
+        #expect(outside.start == CGPoint(x: 10, y: -30))
+        #expect(outside.end == CGPoint(x: 60, y: -30))
+    }
+
     private func planGroup(price: Double, id: UUID) -> PlanGroup {
         let plan = TradePlan(id: id, kind: .buy, price: price, quantity: 10)
         return PlanGroup(key: PlanGroupKey(kind: .buy, price: price), plans: [plan])

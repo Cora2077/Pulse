@@ -298,12 +298,12 @@ struct ChartAnnotationOverlay: View {
         return ZStack(alignment: .topLeading) {
             ForEach(projected) { projection in
                 let selected = projection.drawing.id == controller.selectedDrawingID
-                AnnotationSegment(start: projection.start, end: projection.end)
+                AnnotationSegment(start: projection.line.start, end: projection.line.end)
                     .stroke(styleColor(projection.drawing.style.color).opacity(0.96),
                             style: StrokeStyle(lineWidth: projection.drawing.style.lineWidth + (selected ? 0.5 : 0),
                                                lineCap: .round,
                                                dash: projection.isPreview ? [4, 3] : []))
-                    .contentShape(AnnotationSegment(start: projection.start, end: projection.end)
+                    .contentShape(AnnotationSegment(start: projection.line.start, end: projection.line.end)
                         .stroke(style: StrokeStyle(lineWidth: 13, lineCap: .round)))
                     .onTapGesture {
                         if controller.tool == .browse {
@@ -399,10 +399,17 @@ struct ChartAnnotationOverlay: View {
                   let x2 = coordinates.xForTime(second.time), let y2 = coordinates.yForPrice(second.price) else {
                 return nil
             }
+            let anchorStart = CGPoint(x: x1, y: y1)
+            let anchorEnd = CGPoint(x: x2, y: y2)
+            // A trend line reads as an infinite line through both anchors: the drawn
+            // line and its hit area run to the price pane edges, while the handles and
+            // the drag anchors stay on the two points the user actually placed.
+            let extended = ChartAnnotationMath.extendedLine(through: anchorStart, and: anchorEnd,
+                                                            within: coordinates.pricePane)
             return DrawingProjection(drawing: drawing,
-                                     line: AnnotationSegment(start: CGPoint(x: x1, y: y1), end: CGPoint(x: x2, y: y2)),
-                                     start: CGPoint(x: x1, y: y1), end: CGPoint(x: x2, y: y2),
-                                     handles: [CGPoint(x: x1, y: y1), CGPoint(x: x2, y: y2)],
+                                     line: AnnotationSegment(start: extended.start, end: extended.end),
+                                     start: anchorStart, end: anchorEnd,
+                                     handles: [anchorStart, anchorEnd],
                                      isPreview: !configuration.drawings.contains(where: { $0.id == drawing.id }))
         }
     }
@@ -750,7 +757,7 @@ struct ChartAnnotationOverlay: View {
             case .trend:
                 if distance(point, item.start) <= 10 { return DrawingTarget(drawing: item.drawing, part: .start) }
                 if distance(point, item.end) <= 10 { return DrawingTarget(drawing: item.drawing, part: .end) }
-                if distance(point, from: item.start, to: item.end) <= 8 {
+                if distance(point, from: item.line.start, to: item.line.end) <= 8 {
                     return DrawingTarget(drawing: item.drawing, part: .line)
                 }
             }
@@ -893,6 +900,56 @@ enum ChartAnnotationMath {
         guard lengthSquared > 0 else { return hypot(point.x - start.x, point.y - start.y) }
         let t = min(max(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0), 1)
         return hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy))
+    }
+
+    /// Extends the line through two screen-space points to the boundary of `rect`,
+    /// so a trend line reads as an infinite line instead of a two-point segment.
+    /// The two anchors stay the line's identity — this only widens what is drawn
+    /// and hit-tested. A degenerate line, or one entirely outside `rect`, comes
+    /// back unchanged so callers never lose the user's points.
+    static func extendedLine(
+        through first: CGPoint,
+        and second: CGPoint,
+        within rect: CGRect
+    ) -> (start: CGPoint, end: CGPoint) {
+        let dx = second.x - first.x
+        let dy = second.y - first.y
+        guard dx.isFinite, dy.isFinite, hypot(dx, dy) > 0.001,
+              rect.width > 0, rect.height > 0 else {
+            return (first, second)
+        }
+
+        // Liang-Barsky: intersect the infinite line with the four half-planes of
+        // the rect and keep the widest parameter interval that stays inside.
+        var lower = -CGFloat.infinity
+        var upper = CGFloat.infinity
+        let edges: [(slope: CGFloat, offset: CGFloat)] = [
+            (-dx, first.x - rect.minX),
+            (dx, rect.maxX - first.x),
+            (-dy, first.y - rect.minY),
+            (dy, rect.maxY - first.y)
+        ]
+        for edge in edges {
+            if abs(edge.slope) < 0.0001 {
+                // Parallel to this edge: outside it means nothing is visible.
+                if edge.offset < 0 { return (first, second) }
+                continue
+            }
+            let ratio = edge.offset / edge.slope
+            if edge.slope < 0 {
+                lower = max(lower, ratio)
+            } else {
+                upper = min(upper, ratio)
+            }
+        }
+        guard lower.isFinite, upper.isFinite, lower <= upper else { return (first, second) }
+
+        let start = CGPoint(x: first.x + lower * dx, y: first.y + lower * dy)
+        let end = CGPoint(x: first.x + upper * dx, y: first.y + upper * dy)
+        guard start.x.isFinite, start.y.isFinite, end.x.isFinite, end.y.isFinite else {
+            return (first, second)
+        }
+        return (start, end)
     }
 
     static func pricePane(plot: CGRect, reservesVolume: Bool, volumeFraction: CGFloat) -> CGRect {
