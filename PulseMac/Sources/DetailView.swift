@@ -75,31 +75,9 @@ struct DetailView: View {
         .onChange(of: period) { _, _ in
             appState.onboarding.completeStep(.kline)
         }
-        // Real-time push while the page is on screen: each tick lands in the store, and the
-        // price / market-time views animate through their existing transitions. Closing the
-        // page cancels the task, which unsubscribes upstream; polling remains the fallback.
+        // Real-time push is shared across detail pages for the same symbol.
         .task(id: symbol) {
-            guard let stream = appState.provider.quoteStream(for: [symbol]) else { return }
-            do {
-                for try await quote in stream {
-                    appState.ingestStreamedQuote(quote)
-                }
-            } catch {
-                // Stream dropped (e.g. socket reconnect) — the 15s polling loop still updates the page.
-            }
-        }
-        // Symbols opened from search aren't in the watchlist, so the engine's polling
-        // loop never covers them; the page runs its own light poll until it closes
-        // (or the symbol gets added, at which point the engine takes over).
-        .task(id: symbol) {
-            while !Task.isCancelled {
-                if appState.watchlist.item(for: symbol) == nil {
-                    if let quote = try? await appState.provider.quotes(for: [symbol]).first {
-                        appState.ingestStreamedQuote(quote)
-                    }
-                }
-                try? await Task.sleep(for: .seconds(15))
-            }
+            await appState.detailMarketData.run(symbol: symbol)
         }
         .task(id: chartRequest) {
             let request = chartRequest
@@ -125,8 +103,8 @@ struct DetailView: View {
                 spinnerDelay.cancel()
                 isLoading = false
             }
-            let loaded = await appState.engine.loadCandles(
-                for: request.symbol, period: request.period,
+            let loaded = await appState.detailMarketData.loadCandles(
+                symbol: request.symbol, period: request.period,
                 count: candleCount(for: request.period)
             )
             if isFirstLoad {
@@ -140,7 +118,7 @@ struct DetailView: View {
                 }
                 isFirstLoad = false
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, chartRequest == request else { return }
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
                 candles = loaded
                 candlesKey = request

@@ -48,6 +48,15 @@ enum SelfTest {
     @MainActor
     static func runIfRequested() {
         #if DEBUG
+        if CommandLine.arguments.contains("--detail-market-selftest") {
+            Task { @MainActor in
+                let passed = await DetailMarketDataSelfTest.run()
+                fflush(stdout)
+                exit(passed ? 0 : 1)
+            }
+            return
+        }
+
         if CommandLine.arguments.contains("--reorder-diagnostics-selftest") {
             let diagnostics = ReorderDiagnostics.shared
             diagnostics.reorderModeEntered(

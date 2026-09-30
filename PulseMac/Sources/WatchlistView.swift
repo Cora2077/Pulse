@@ -200,6 +200,13 @@ struct WatchlistView: View {
     }
 
     @ViewBuilder private var moreMenuContent: some View {
+        Button {
+            openWindow(id: MainWindow.id)
+            MainWindow.activate()
+        } label: {
+            Label(PulseLocalization.localizedString("main.openWindow"), systemImage: "macwindow")
+        }
+        Divider()
         Menu {
             ForEach(WatchRowMetricMode.allCases, id: \.self) { mode in
                 Toggle(mode.displayName, isOn: metricModeBinding(mode))
@@ -306,6 +313,14 @@ struct WatchlistView: View {
     /// The panel's action cluster: `ClusterIcon` draws its own compact chip, including
     /// the tinted background that marks an active toggle.
     @ViewBuilder private var actionButtons: some View {
+        ClusterIcon(
+            systemName: "macwindow",
+            help: PulseLocalization.localizedString("main.openWindow"),
+            isActive: false
+        ) {
+            openWindow(id: MainWindow.id)
+            MainWindow.activate()
+        }
         // The glyph names what the control governs; whether it is lit says if the window
         // is up. A `pin.slash` for the on-state would read as "off" — a slash means muted
         // or disabled everywhere else — and would clash with the search toggle beside it,

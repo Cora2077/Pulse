@@ -38,11 +38,20 @@ struct PulseMacApp: App {
     @State private var appState: AppState
 
     init() {
+        #if DEBUG
+        let isOfflinePreview = CommandLine.arguments.contains("--main-window-demo")
+            || CommandLine.arguments.contains("--detail-market-selftest")
+            || CommandLine.arguments.contains("--share-selftest")
+        #else
+        let isOfflinePreview = false
+        #endif
         SelfTest.runIfRequested()
-        SoftwareUpdateController.shared.start()
+        if !isOfflinePreview { SoftwareUpdateController.shared.start() }
         let state = AppState()
-        PulseTelemetry.configure(collectionEnabled: state.settings.shareAnonymousUsageData)
-        PulseTelemetry.signal(.appLaunched)
+        if !isOfflinePreview {
+            PulseTelemetry.configure(collectionEnabled: state.settings.shareAnonymousUsageData)
+            PulseTelemetry.signal(.appLaunched)
+        }
         // Decided once here, not read live in `body`: the welcome item is marked seen
         // while the window is up, and launch behavior must not flip mid-session.
         state.onboarding.welcomeSessionActive = state.onboarding.shouldPresentWelcomeWindow
@@ -62,7 +71,23 @@ struct PulseMacApp: App {
         }
         .menuBarExtraStyle(.window)
 
+        mainWindowBase
         pinnedWindowBase
+    }
+
+    private var mainWindowBase: some Scene {
+        Window(PulseLocalization.localizedString("main.window.title"), id: MainWindow.id) {
+            MainWindowHost {
+                MainWindowView()
+                    .windowContainerBackgroundCompat()
+            }
+            .defaultAppStorage(MainWindow.preferenceDefaults)
+            .environment(appState)
+            .environment(\.locale, appState.settings.locale)
+        }
+        .defaultSize(width: 1200, height: 800)
+        .windowResizability(.contentMinSize)
+        .commands { PulseCommands() }
     }
 
     private var pinnedWindowBase: some Scene {
@@ -169,17 +194,22 @@ struct MenuBarLabel: View {
         // the only reliable place to hand the AppKit delegate a scene-scoped action.
         .onAppear {
             AppDelegate.reopenHandler = {
-                openWindow(id: PinnedWindow.id)
-                PinnedWindow.activate()
+                openWindow(id: MainWindow.id)
+                MainWindow.activate()
             }
             guard !didApplyInitialWindowPresentation else { return }
             didApplyInitialWindowPresentation = true
-            guard appState.settings.pinnedWindowVisible || appState.onboarding.welcomeSessionActive else {
+            guard !CommandLine.arguments.contains(where: { $0.localizedCaseInsensitiveContains("selftest") }) else {
                 return
             }
-            openWindow(id: PinnedWindow.id)
-            if appState.onboarding.welcomeSessionActive {
-                PinnedWindow.activate()
+            let defaults = MainWindow.preferenceDefaults
+            let shouldShowMainWindow = (defaults.object(forKey: MainWindow.visibilityKey) as? Bool) ?? true
+            if shouldShowMainWindow {
+                openWindow(id: MainWindow.id)
+                MainWindow.activate()
+            } else if appState.settings.pinnedWindowVisible || appState.onboarding.welcomeSessionActive {
+                openWindow(id: PinnedWindow.id)
+                if appState.onboarding.welcomeSessionActive { PinnedWindow.activate() }
             }
         }
     }

@@ -20,7 +20,23 @@ final class AppState {
     let folderSync: FolderSyncController
     let market: MarketStore
     let engine: RefreshEngine
+    let isMainWindowDemo: Bool
+    @ObservationIgnored private let isOfflinePreview: Bool
     @ObservationIgnored let provider: CompositeProvider
+    @ObservationIgnored lazy var detailMarketData = DetailMarketDataController(
+        provider: provider,
+        engine: engine,
+        market: market,
+        watchlist: watchlist,
+        isDemo: isOfflinePreview,
+        onQuote: { [weak self] quote in
+            self?.ingestStreamedQuote(quote)
+        },
+        onInterestsChanged: { [weak self] symbols in
+            self?.detailInterestedSymbols = symbols
+            self?.restartWatchlistStream()
+        }
+    )
     @ObservationIgnored let binance: BinanceProvider
     @ObservationIgnored let longbridge: LongbridgeProvider
     @ObservationIgnored let fuyao: FuyaoProvider
@@ -62,11 +78,18 @@ final class AppState {
 
     init() {
         #if DEBUG
+        let isMainWindowDemo = CommandLine.arguments.contains("--main-window-demo")
+        let isDetailMarketSelfTest = CommandLine.arguments.contains("--detail-market-selftest")
+        let isOfflinePreview = isMainWindowDemo || isDetailMarketSelfTest
         // `--onboarding-demo` rehearses a pristine first launch: every store reads a
         // throwaway suite that is wiped on the way in, so the developer container's
         // real data is neither shown nor touched.
         let storeDefaults: UserDefaults
-        if CommandLine.arguments.contains("--onboarding-demo"),
+        if isOfflinePreview,
+           let demo = UserDefaults(suiteName: MainWindowDemo.userDefaultsSuite) {
+            demo.removePersistentDomain(forName: MainWindowDemo.userDefaultsSuite)
+            storeDefaults = demo
+        } else if CommandLine.arguments.contains("--onboarding-demo"),
            let demo = UserDefaults(suiteName: "app.pulse.mac.demo") {
             demo.removePersistentDomain(forName: "app.pulse.mac.demo")
             storeDefaults = demo
@@ -74,8 +97,12 @@ final class AppState {
             storeDefaults = .standard
         }
         #else
+        let isMainWindowDemo = false
+        let isOfflinePreview = false
         let storeDefaults = UserDefaults.standard
         #endif
+        self.isMainWindowDemo = isMainWindowDemo
+        self.isOfflinePreview = isOfflinePreview
         let settings = AppSettings(defaults: storeDefaults)
         // Before WatchlistStore: its first load persists an empty snapshot, which would
         // make every install look like an upgrade to the fresh-install check.
@@ -85,21 +112,24 @@ final class AppState {
         let market = MarketStore()
         // Image-rendering self-tests do not need live credentials. Skipping Keychain access
         // also keeps the headless test from waiting on an authorization prompt.
-        let authContext: (LongbridgeAuth?, LongbridgeAuthState) = CommandLine.arguments.contains("--share-selftest")
+        let authContext: (LongbridgeAuth?, LongbridgeAuthState) = isOfflinePreview
+            || CommandLine.arguments.contains("--share-selftest")
             ? (nil, .none)
             : Self.loadLongbridgeAuth()
         let (auth, authState) = authContext
         let longbridge = LongbridgeProvider(auth: auth)
-        let fuyaoKey = CommandLine.arguments.contains("--share-selftest")
+        let fuyaoKey = isOfflinePreview || CommandLine.arguments.contains("--share-selftest")
             ? nil
             : ProviderCredentialStore.load(providerID: FuyaoProvider.providerID)?["apiKey"]
         let fuyao = FuyaoProvider(apiKey: fuyaoKey)
         let binance = BinanceProvider()
+        let providers: [any QuoteProvider] = [longbridge, fuyao, binance, TencentProvider(), NaverProvider(), YahooProvider(), SinaProvider(),
+                                              ShanghaiGoldExchangeProvider(), EastmoneyProvider()]
         var disabledIDs = settings.disabledProviderIDs
         if authState == .none { disabledIDs.insert(LongbridgeProvider.providerID) }
         if fuyaoKey == nil { disabledIDs.insert(FuyaoProvider.providerID) }
-        let provider = CompositeProvider(providers: [longbridge, fuyao, binance, TencentProvider(), NaverProvider(), YahooProvider(), SinaProvider(),
-                                                     ShanghaiGoldExchangeProvider(), EastmoneyProvider()],
+        if isOfflinePreview { disabledIDs.formUnion(providers.map { $0.descriptor.id }) }
+        let provider = CompositeProvider(providers: providers,
                                          disabledIDs: disabledIDs)
         self.settings = settings
         self.onboarding = onboarding
@@ -126,14 +156,17 @@ final class AppState {
         self.engine = RefreshEngine(provider: provider, store: market, watchlist: watchlist,
                                     pollOverrides: settings.providerPollIntervals)
         self.liveStreaming = false
-        engine.start()
+        #if DEBUG
+        if isMainWindowDemo { MainWindowDemo.seed(state: self) }
+        #endif
+        if !isOfflinePreview { engine.start() }
         let isSelfTestMode = CommandLine.arguments.contains { $0.contains("selftest") }
-        if !isSelfTestMode { folderSync.start() }
-        startRotation()
+        if !isSelfTestMode && !isOfflinePreview { folderSync.start() }
+        if !isOfflinePreview { startRotation() }
         observeMenuTracking()
         // Image-rendering self-tests must not touch the Keychain (the MCP token
         // lives there), so they run without the agent endpoint entirely.
-        if !CommandLine.arguments.contains("--share-selftest") {
+        if !CommandLine.arguments.contains("--share-selftest") && !isOfflinePreview {
             let commands = AgentWatchlistCommands(store: watchlist, market: market, searcher: self)
             let server = MCPAgentServer(commands: commands) { [weak self] in
                 self?.engine.poke()
@@ -142,17 +175,20 @@ final class AppState {
             agentServer = server
             if settings.mcpEnabled { server.start() }
         }
-        if !disabledIDs.contains(BinanceProvider.providerID),
+        if !isOfflinePreview,
+           !disabledIDs.contains(BinanceProvider.providerID),
            !CommandLine.arguments.contains("--share-selftest") {
             Task { try? await binance.refreshSymbolCatalogIfNeeded() }
         }
-        Task { [weak self, longbridge] in
-            let updates = await longbridge.connectionStatusUpdates()
-            for await status in updates {
-                guard let self else { return }
-                self.longbridgeConnectionStatus = status
-                if status == .connected, !self.isUpdatingLongbridgeAuth {
-                    await self.refreshLongbridgeQuoteAccess()
+        if !isOfflinePreview {
+            Task { [weak self, longbridge] in
+                let updates = await longbridge.connectionStatusUpdates()
+                for await status in updates {
+                    guard let self else { return }
+                    self.longbridgeConnectionStatus = status
+                    if status == .connected, !self.isUpdatingLongbridgeAuth {
+                        await self.refreshLongbridgeQuoteAccess()
+                    }
                 }
             }
         }
@@ -186,6 +222,7 @@ final class AppState {
     }
 
     func setProvider(_ id: String, enabled: Bool) {
+        guard !isOfflinePreview else { return }
         if enabled {
             settings.disabledProviderIDs.remove(id)
         } else {
@@ -233,7 +270,7 @@ final class AppState {
             // A push subscription checks availability only when it starts, so an
             // already-running stream would keep delivering from a source the user
             // just turned off — resubscribe against the new availability.
-            if isAnyHostVisible { restartWatchlistStream() }
+            if isAnyHostVisible || !detailInterestedSymbols.isEmpty { restartWatchlistStream() }
         }
     }
 
@@ -242,6 +279,7 @@ final class AppState {
     /// Runs the browser OAuth flow end to end: authorize → validate against the live
     /// gateway → persist. A failed attempt rolls back to whatever auth was active before.
     func connectLongbridgeOAuth() async throws {
+        guard !isOfflinePreview else { throw CancellationError() }
         let tokens = try await longbridgeOAuth.authorize { url in
             Task { @MainActor in NSWorkspace.shared.open(url) }
         }
@@ -260,12 +298,14 @@ final class AppState {
 
     /// Forwards `bundleid://oauth/callback?...` URLs from the system to the pending flow.
     func handleOAuthCallback(_ url: URL) {
+        guard !isOfflinePreview else { return }
         Task { _ = await longbridgeOAuth.handleCallback(url) }
     }
 
     /// Validates against the live gateway before persisting; invalid credentials are rolled
     /// back so a previously working configuration is never destroyed by a failed edit.
     func saveLongbridgeCredentials(_ credentials: LongbridgeCredentials) async throws {
+        guard !isOfflinePreview else { throw CancellationError() }
         isUpdatingLongbridgeAuth = true
         defer { isUpdatingLongbridgeAuth = false }
         try await activate(auth: .apiKey(credentials))
@@ -292,6 +332,7 @@ final class AppState {
     /// Validates the key against the live service before persisting; an invalid key is
     /// rolled back so a previously working configuration is never destroyed by a failed edit.
     func saveFuyaoAPIKey(_ key: String) async throws {
+        guard !isOfflinePreview else { throw CancellationError() }
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         await fuyao.updateAPIKey(trimmed)
         do {
@@ -307,6 +348,7 @@ final class AppState {
     }
 
     func clearFuyaoAPIKey() {
+        guard !isOfflinePreview else { return }
         ProviderCredentialStore.clear(providerID: FuyaoProvider.providerID)
         fuyaoConfigured = false
         Task { await fuyao.updateAPIKey(nil) }
@@ -314,6 +356,7 @@ final class AppState {
     }
 
     func clearLongbridgeCredentials() {
+        guard !isOfflinePreview else { return }
         LongbridgeCredentialStore.clear()
         LongbridgeCredentialStore.clearOAuthTokens()
         longbridgeAuthState = .none
@@ -330,12 +373,13 @@ final class AppState {
     /// Retries only the market-data transport. OAuth credentials stay intact, and the
     /// provider's circuit breaker is cleared so the request is not delayed by cooldown.
     func retryLongbridgeConnection() {
+        guard !isOfflinePreview else { return }
         guard longbridgeConfigured, isProviderEnabled(LongbridgeProvider.providerID) else { return }
         Task {
             await longbridge.resetConnection()
             await provider.resetHealth(LongbridgeProvider.providerID)
             engine.poke()
-            if isAnyHostVisible { restartWatchlistStream() }
+            if isAnyHostVisible || !detailInterestedSymbols.isEmpty { restartWatchlistStream() }
         }
     }
 
@@ -546,6 +590,7 @@ final class AppState {
     @ObservationIgnored private var watchlistStreamTask: Task<Void, Never>?
     @ObservationIgnored private var watchlistStreamSessionID: UUID?
     @ObservationIgnored private var visibleHosts: Set<PulseHost> = []
+    @ObservationIgnored private var detailInterestedSymbols: Set<SymbolID> = []
     @ObservationIgnored private var pendingPushes: [SymbolID: Quote] = [:]
     @ObservationIgnored private var pushFlushTask: Task<Void, Never>?
 
@@ -571,18 +616,12 @@ final class AppState {
         // The reorder UI cannot outlive its host; if it was active on close,
         // release the quote hold so the menu bar keeps updating.
         if !isAnyHostVisible { setUserReordering(false) }
-        watchlistStreamTask?.cancel()
-        watchlistStreamTask = nil
-        watchlistStreamSessionID = nil
-        // Keep the last known/expected streaming state while the host disappears.
-        // Resetting it here makes the still-visible closing frame flash "quotes healthy".
-        guard isAnyHostVisible else { return }
         restartWatchlistStream()
     }
 
     /// Re-subscribes after watchlist edits while the watchlist is on screen.
     func watchlistSymbolsChanged() {
-        guard isAnyHostVisible else { return }
+        guard isAnyHostVisible || !detailInterestedSymbols.isEmpty else { return }
         restartWatchlistStream()
     }
 
@@ -595,7 +634,13 @@ final class AppState {
         watchlistStreamTask?.cancel()
         watchlistStreamTask = nil
         watchlistStreamSessionID = nil
-        let symbols = watchlist.symbols
+        let symbols = Set(isAnyHostVisible ? watchlist.symbols : [])
+            .union(detailInterestedSymbols)
+            .sorted { $0.displayCode < $1.displayCode }
+        guard !symbols.isEmpty else {
+            liveStreaming = false
+            return
+        }
         guard hasEnabledStreamingProvider(for: symbols),
               let stream = provider.quoteStream(for: symbols) else {
             liveStreaming = false
@@ -766,6 +811,9 @@ final class AppState {
     /// Errors are surfaced by the UI (to distinguish "no results" from "provider error")
     func search(_ query: String) async throws -> [SymbolInfo] {
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
+        #if DEBUG
+        if isOfflinePreview { return MainWindowDemo.search(query) }
+        #endif
         var results = try await provider.search(query)
         guard !results.isEmpty,
               let preferredNames = try? await provider.preferredSecurityNames(

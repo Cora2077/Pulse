@@ -11,10 +11,12 @@ import SwiftUI
 enum PulseHost: Hashable {
     case menuBar
     case pinnedWindow
+    case mainWindow
 }
 
 extension EnvironmentValues {
     @Entry var pulseHost: PulseHost = .menuBar
+    @Entry var mainRefreshGeneration: Int = 0
 }
 
 @MainActor
