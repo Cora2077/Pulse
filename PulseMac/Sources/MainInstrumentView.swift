@@ -516,20 +516,17 @@ struct MainInstrumentView: View {
 
     @ViewBuilder
     private func positionSummary(_ item: WatchItem) -> some View {
-        let metrics = quote.flatMap { PositionMetrics(item: item, quote: $0) }
         let basis = appState.settings.positionCostBasis
-        let averageCost = metrics?.averageCost ?? item.averageCost ?? 0
+        let valuation = quote.flatMap { PositionValuation(item: item, quote: $0, basis: basis) }
+        let averageCost = valuation?.averageCost ?? item.averageCost ?? 0
         let basisCost = basis == .diluted
-            ? item.ledger?.dilutedCost ?? averageCost
-            : averageCost
-        let invested = basisCost * (metrics?.quantity ?? item.positionQuantity)
-        let unrealized = (metrics?.marketValue ?? 0) - invested
-        let combined = metrics.map { $0.totalPnL + item.realizedPnL }
+            ? valuation?.costPrice ?? item.ledger?.dilutedCost ?? averageCost
+            : valuation?.costPrice ?? averageCost
 
         VStack(alignment: .leading, spacing: 8) {
-            if let metrics {
+            if let valuation {
                 HStack(spacing: 16) {
-                    metricCell("position.quantity", PriceFormatter.quantity(metrics.quantity))
+                    metricCell("position.quantity", PriceFormatter.quantity(valuation.quantity))
                     Button {
                         appState.settings.positionCostBasis = basis == .diluted ? .average : .diluted
                     } label: {
@@ -537,14 +534,13 @@ struct MainInstrumentView: View {
                     }
                     .buttonStyle(.plain)
                     .help(PulseLocalization.localizedString("position.costBasisHelp"))
-                    metricCell("position.marketValue", PriceFormatter.money(metrics.marketValue, currencyCode: currencyCode))
+                    metricCell("position.marketValue", PriceFormatter.money(valuation.marketValue, currencyCode: currencyCode))
                     metricCell(
                         "position.realizedPnL",
-                        basis == .average
-                            ? PriceFormatter.signedMoney(item.realizedPnL, currencyCode: currencyCode)
-                            : "—",
-                        color: basis == .average ? item.realizedPnL : nil
+                        PriceFormatter.signedMoney(item.realizedPnL, currencyCode: currencyCode),
+                        color: item.realizedPnL
                     )
+                    .help(PulseLocalization.localizedString("position.realizedPnLHelp"))
                     metricCell(
                         "position.totalFees",
                         (item.ledger?.totalFees ?? 0) > 0
@@ -556,13 +552,13 @@ struct MainInstrumentView: View {
                 HStack(spacing: 16) {
                     metricCell(
                         "metric.totalPnL",
-                        PriceFormatter.signedMoney(unrealized, currencyCode: currencyCode),
-                        color: unrealized
+                        PriceFormatter.signedMoney(valuation.holdingPnL, currencyCode: currencyCode),
+                        color: valuation.holdingPnL
                     )
                     metricCell(
                         "position.combinedPnL",
-                        PriceFormatter.signedMoney(combined ?? unrealized, currencyCode: currencyCode),
-                        color: combined ?? unrealized
+                        PriceFormatter.signedMoney(valuation.totalPnL, currencyCode: currencyCode),
+                        color: valuation.totalPnL
                     )
                     Spacer(minLength: 0)
                 }
@@ -577,11 +573,10 @@ struct MainInstrumentView: View {
                     HStack(spacing: 16) {
                         metricCell(
                             "position.realizedPnL",
-                            basis == .average
-                                ? PriceFormatter.signedMoney(item.realizedPnL, currencyCode: currencyCode)
-                                : "—",
-                            color: basis == .average ? item.realizedPnL : nil
+                            PriceFormatter.signedMoney(item.realizedPnL, currencyCode: currencyCode),
+                            color: item.realizedPnL
                         )
+                        .help(PulseLocalization.localizedString("position.realizedPnLHelp"))
                         metricCell("metric.totalPnL", "—")
                         metricCell("position.combinedPnL", "—")
                         metricCell("position.totalFees", (item.ledger?.totalFees ?? 0) > 0
@@ -596,6 +591,7 @@ struct MainInstrumentView: View {
             } else if item.hasPositionHistory {
                 HStack(spacing: 16) {
                     metricCell("position.realizedPnL", PriceFormatter.signedMoney(item.realizedPnL, currencyCode: currencyCode), color: item.realizedPnL)
+                        .help(PulseLocalization.localizedString("position.realizedPnLHelp"))
                     metricCell("position.combinedPnL", PriceFormatter.signedMoney(item.realizedPnL, currencyCode: currencyCode), color: item.realizedPnL)
                     metricCell("position.historyTrades", PulseLocalization.localizedString("position.tradeCount", item.transactions.count))
                     metricCell("position.totalFees", (item.ledger?.totalFees ?? 0) > 0

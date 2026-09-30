@@ -720,7 +720,8 @@ struct WatchlistView: View {
                 metrics: metrics,
                 mode: mode,
                 item: item,
-                palette: appState.palette
+                palette: appState.palette,
+                basis: appState.settings.positionCostBasis
             )
             let priceText = quote.map { PriceFormatter.price($0.price, market: item.symbol.market) } ?? "—"
             let sessionLabel = appState.isIndex(item.symbol)
@@ -1626,7 +1627,7 @@ struct WatchlistView: View {
         case .todayPnL:
             return metrics?.todayPnL
         case .totalPnL:
-            return metrics?.totalPnL
+            return PositionValuation(item: item, quote: quote, basis: appState.settings.positionCostBasis)?.holdingPnL
         case .marketValue:
             return metrics?.marketValue
         }
@@ -1995,7 +1996,8 @@ struct WatchRow: View {
             metrics: metrics,
             mode: metricMode,
             item: item,
-            palette: appState.palette
+            palette: appState.palette,
+            basis: appState.settings.positionCostBasis
         )
         let priceText = quote.map { PriceFormatter.price($0.price, market: item.symbol.market) } ?? "—"
         // Indices don't trade pre/post; their quote is just the last regular
@@ -2168,7 +2170,8 @@ struct WatchRow: View {
             metrics: metrics,
             mode: mode,
             item: item,
-            palette: appState.palette
+            palette: appState.palette,
+            basis: appState.settings.positionCostBasis
         )
         rowMetricView(display: display)
     }
@@ -2190,13 +2193,15 @@ struct WatchRow: View {
         metrics: PositionMetrics?,
         mode: WatchRowMetricMode,
         item: WatchItem,
-        palette: ChangePalette
+        palette: ChangePalette,
+        basis: PositionCostBasis = .average
     ) -> (text: String, color: Color) {
         let display = WatchRowMetricDisplay.resolve(
             quote: quote,
             metrics: metrics,
             mode: mode,
-            item: item
+            item: item,
+            basis: basis
         )
         return (
             display.text,

@@ -2,15 +2,25 @@ import SwiftUI
 import PulseCore
 
 struct MainWindowView: View {
+    private enum Overview: Hashable {
+        case holdings
+        case plans
+    }
+
     @Environment(AppState.self) private var appState
     @State private var selectedSymbol: SymbolID?
     @State private var route: PopoverRoute?
+    @State private var overview: Overview?
     @State private var refreshGeneration = 0
     @AppStorage("pulse.mainWindow.selectedSymbol.v1") private var selectedSymbolStorage = ""
 
     var body: some View {
         HStack(spacing: 0) {
-            MainWatchlistSidebar(selectedSymbol: sidebarSelection, onShowPlans: { route = .planList })
+            MainWatchlistSidebar(
+                selectedSymbol: sidebarSelection,
+                onShowHoldings: { showOverview(.holdings) },
+                onShowPlans: { showOverview(.plans) }
+            )
             detailContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(nsColor: .windowBackgroundColor))
@@ -36,22 +46,26 @@ struct MainWindowView: View {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button {
+                        overview = nil
                         route = nil
                     } label: {
                         Label(PulseLocalization.localizedString("main.dashboard"), systemImage: "chart.xyaxis.line")
                     }
                     Divider()
                     Button {
+                        overview = nil
                         route = .settings
                     } label: {
                         Label(PulseLocalization.localizedString("main.settings"), systemImage: "gearshape")
                     }
                     Button {
+                        overview = nil
                         route = .dataSettings
                     } label: {
                         Label(PulseLocalization.localizedString("main.data"), systemImage: "arrow.triangle.2.circlepath")
                     }
                     Button {
+                        overview = nil
                         route = .appearanceSettings
                     } label: {
                         Label(PulseLocalization.localizedString("settings.section.appearance"), systemImage: "paintpalette")
@@ -65,6 +79,23 @@ struct MainWindowView: View {
     }
 
     @ViewBuilder private var detailContent: some View {
+        if case .some(.plan(let symbol, let planID, let returnRoute)) = route {
+            PlanEditorView(
+                symbol: symbol,
+                planID: planID,
+                returnRoute: returnRoute,
+                route: routeBinding
+            )
+        } else if overview == .holdings {
+            MainHoldingsView(onSelect: selectSymbol)
+        } else if overview == .plans {
+            MainPlanListView(route: routeBinding)
+        } else {
+            routedDetailContent
+        }
+    }
+
+    @ViewBuilder private var routedDetailContent: some View {
         switch route {
         case .some(.settings):
             SettingsView(route: routeBinding)
@@ -83,14 +114,7 @@ struct MainWindowView: View {
         case .some(.mcpSettings):
             MCPSettingsView(route: routeBinding)
         case .some(.planList):
-            PlanListView(route: routeBinding)
-        case .some(.plan(let symbol, let planID, let returnRoute)):
-            PlanEditorView(
-                symbol: symbol,
-                planID: planID,
-                returnRoute: returnRoute,
-                route: routeBinding
-            )
+            MainPlanListView(route: routeBinding)
         case .some, .none:
             if let selectedSymbol {
                 MainInstrumentView(symbol: selectedSymbol)
@@ -106,12 +130,18 @@ struct MainWindowView: View {
             set: { newRoute in
                 switch newRoute {
                 case .detail(let symbol):
-                    selectedSymbol = symbol
-                    storeSelectedSymbol(symbol)
+                    selectSymbol(symbol)
+                case .planList:
+                    overview = .plans
                     route = nil
+                case .plan:
+                    overview = .plans
+                    route = newRoute
                 case .list:
+                    overview = nil
                     route = nil
                 default:
+                    overview = nil
                     route = newRoute
                 }
             }
@@ -122,10 +152,22 @@ struct MainWindowView: View {
         Binding(
             get: { selectedSymbol },
             set: { symbol in
-                selectedSymbol = symbol
-                route = nil
+                if let symbol { selectSymbol(symbol) }
+                else { overview = nil; route = nil }
             }
         )
+    }
+
+    private func selectSymbol(_ symbol: SymbolID) {
+        selectedSymbol = symbol
+        storeSelectedSymbol(symbol)
+        overview = nil
+        route = nil
+    }
+
+    private func showOverview(_ value: Overview) {
+        overview = value
+        route = nil
     }
 
     private var emptyDetail: some View {

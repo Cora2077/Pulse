@@ -12,9 +12,18 @@ enum MainWindowDemo {
         SymbolInfo(symbol: SymbolID(cryptoBase: "BTC", quote: "USDT"), name: "Bitcoin", type: .crypto),
     ]
 
+    private static let valuationFixtureInfos: [SymbolInfo] = [
+        SymbolInfo(symbol: SymbolID(market: .us, code: "DEMO1"), name: "Demo Partial Exit", type: .equity),
+        SymbolInfo(symbol: SymbolID(market: .us, code: "DEMO2"), name: "Demo Closed Position", type: .equity),
+        SymbolInfo(symbol: SymbolID(market: .us, code: "DEMO3"), name: "Demo Missing Quote", type: .equity),
+    ]
+
     static func seed(state: AppState) {
         guard let groupID = state.watchlist.selectedGroup?.id else { return }
         for info in infos {
+            state.watchlist.add(info, to: groupID)
+        }
+        for info in valuationFixtureInfos {
             state.watchlist.add(info, to: groupID)
         }
 
@@ -35,6 +44,22 @@ enum MainWindowDemo {
             ))
         }
 
+        let fixtureTrades: [(SymbolID, PositionTransaction.Kind, Double, Double)] = [
+            (valuationFixtureInfos[0].symbol, .buy, 100, 10),
+            (valuationFixtureInfos[0].symbol, .sell, 150, 5),
+            (valuationFixtureInfos[1].symbol, .buy, 100, 2),
+            (valuationFixtureInfos[1].symbol, .sell, 120, 2),
+            (valuationFixtureInfos[2].symbol, .buy, 80, 3),
+        ]
+        for (symbol, kind, price, quantity) in fixtureTrades {
+            state.watchlist.addTransaction(symbol, PositionTransaction(
+                kind: kind,
+                price: price,
+                quantity: quantity,
+                date: today
+            ))
+        }
+
         let thesis: [(SymbolID, String)] = [
             (infos[0].symbol, "Services growth and durable ecosystem support a long-term position."),
             (infos[1].symbol, "A strong platform business with room to recover as sentiment improves."),
@@ -49,6 +74,9 @@ enum MainWindowDemo {
             (infos[0].symbol, TradePlan(kind: .sell, price: 238, quantity: 4, note: "Trim into strength")),
             (infos[1].symbol, TradePlan(kind: .buy, price: 385, quantity: 50, note: "Scale in near support")),
             (infos[2].symbol, TradePlan(kind: .buy, price: 65_000, quantity: 0.05, note: "Add on a measured dip")),
+            (valuationFixtureInfos[2].symbol, TradePlan(kind: .buy, price: 75, quantity: 2, note: "Demo plan without a quote")),
+            (valuationFixtureInfos[1].symbol, TradePlan(kind: .buy, price: 105, quantity: 1, status: .done, note: "Demo completed plan")),
+            (valuationFixtureInfos[1].symbol, TradePlan(kind: .sell, price: 125, quantity: 1, status: .cancelled, note: "Demo abandoned plan")),
         ]
         for (symbol, plan) in plans {
             _ = state.watchlist.setTradePlan(plan, for: symbol)
@@ -73,6 +101,25 @@ enum MainWindowDemo {
             )
         }
         state.market.apply(quotes: quotes)
+
+        // Deliberately separate these from the normal per-market quote set:
+        // only the partial-exit fixture has a quote. The other two demonstrate
+        // closed and open positions with unknown market value.
+        state.market.apply(quotes: [Quote(
+            symbol: valuationFixtureInfos[0].symbol,
+            name: valuationFixtureInfos[0].name,
+            price: 90,
+            previousClose: 92,
+            open: 91,
+            high: 93,
+            low: 89,
+            volume: 1_000,
+            turnover: 90_000,
+            currencyCode: "USD",
+            sourceID: "demo",
+            sourceName: "Pulse Demo",
+            timestamp: now
+        )])
 
         for info in infos {
             for period in CandlePeriod.allCases {

@@ -76,42 +76,39 @@ struct PositionHubView: View {
     private func openPositionBody(_ item: WatchItem) -> some View {
         let basis = appState.settings.positionCostBasis
         let quote = self.quote
-        let metrics = quote.flatMap { PositionMetrics(item: item, quote: $0) }
-        // Realized plus unrealized: what a brokerage reports as the position's
-        // total result. The sum is the same under either cost basis, which is
-        // why this one does not move with the switch.
-        let combinedPnL = metrics.map { $0.totalPnL + item.realizedPnL }
+        let valuation = quote.flatMap { PositionValuation(item: item, quote: $0, basis: basis) }
+        let combinedPnL = valuation?.totalPnL
         VStack(alignment: .leading, spacing: 0) {
-            if let quote, let metrics {
-                // The two bases describe the same holding; only the split
-                // between cost and realized P&L moves. Everything below is
-                // computed from whichever basis is selected.
-                let costValue = basis == .diluted
-                    ? item.ledger?.dilutedCost ?? metrics.averageCost
-                    : metrics.averageCost
-                let invested = costValue * metrics.quantity
-                let unrealized = metrics.marketValue - invested
-                let unrealizedPercent = PositionMetrics.returnPercent(pnl: unrealized, invested: invested)
+            if let valuation {
                 // Two columns, not three: the combined figure sits beside the
                 // realized one it is made of, and a third cell here squeezes
                 // all of them until the amounts truncate.
                 HStack(spacing: 8) {
                     pnlCell(PulseLocalization.localizedString("metric.todayPnL"),
-                            amount: metrics.todayPnL, percent: metrics.todayReturnPercent)
+                            amount: valuation.todayPnL, percent: valuation.todayReturnPercent)
                     pnlCell(PulseLocalization.localizedString("metric.totalPnL"),
-                            amount: unrealized, percent: unrealizedPercent)
+                            amount: valuation.holdingPnL, percent: valuation.holdingReturnPercent)
                 }
                 HStack(spacing: 8) {
-                    stat(PulseLocalization.localizedString("position.quantity"), PriceFormatter.quantity(metrics.quantity))
-                    costBasisStat(value: costValue, basis: basis)
-                    stat(PulseLocalization.localizedString("position.marketValue"), PriceFormatter.money(metrics.marketValue, currencyCode: currencyCode))
+                    stat(PulseLocalization.localizedString("position.quantity"), PriceFormatter.quantity(valuation.quantity))
+                    costBasisStat(value: valuation.costPrice, basis: basis)
+                    stat(PulseLocalization.localizedString("position.marketValue"), PriceFormatter.money(valuation.marketValue, currencyCode: currencyCode))
                 }
                 .padding(.top, 10)
             } else {
-                Text(PulseLocalization.localizedString("position.waitingQuote"))
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.tertiary)
-                    .padding(.vertical, 6)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(PulseLocalization.localizedString("position.waitingQuote"))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                    HStack(spacing: 8) {
+                        stat(PulseLocalization.localizedString("position.quantity"), PriceFormatter.quantity(item.positionQuantity))
+                        let averageCost = item.averageCost ?? 0
+                        let costPrice = basis == .diluted ? item.ledger?.dilutedCost ?? averageCost : averageCost
+                        costBasisStat(value: costPrice, basis: basis)
+                        stat(PulseLocalization.localizedString("position.marketValue"), "—")
+                    }
+                }
+                .padding(.vertical, 6)
             }
             HStack(spacing: 8) {
                 realizedStat(item, basis: basis)
@@ -204,6 +201,7 @@ struct PositionHubView: View {
                     PriceFormatter.signedMoney(item.realizedPnL, currencyCode: currencyCode),
                     color: item.realizedPnL
                 )
+                .help(PulseLocalization.localizedString("position.realizedPnLHelp"))
                 stat(
                     PulseLocalization.localizedString("position.historyTrades"),
                     PulseLocalization.localizedString("position.tradeCount", item.transactions.count)
@@ -335,18 +333,13 @@ struct PositionHubView: View {
         .help(PulseLocalization.localizedString("position.costBasisHelp"))
     }
 
-    /// Under the diluted basis the closed-out result already sits inside the
-    /// cost, so a zero here would read as "you broke even" rather than "this is
-    /// counted elsewhere".
-    private func realizedStat(_ item: WatchItem, basis: PositionCostBasis) -> some View {
-        guard basis == .average else {
-            return stat(PulseLocalization.localizedString("position.realizedPnL"), "—")
-        }
+    private func realizedStat(_ item: WatchItem, basis _: PositionCostBasis) -> some View {
         return stat(
             PulseLocalization.localizedString("position.realizedPnL"),
             PriceFormatter.signedMoney(item.realizedPnL, currencyCode: currencyCode),
             color: item.transactions.isEmpty ? nil : item.realizedPnL
         )
+        .help(PulseLocalization.localizedString("position.realizedPnLHelp"))
     }
 
     private func combinedPnLStat(_ value: Double?) -> some View {

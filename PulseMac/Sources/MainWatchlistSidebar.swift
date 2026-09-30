@@ -18,6 +18,7 @@ struct MainWatchlistSidebar: View {
 
     @Environment(AppState.self) private var appState
     @Binding var selectedSymbol: SymbolID?
+    let onShowHoldings: () -> Void
     let onShowPlans: () -> Void
     @State private var selectedGroupID: UUID?
     @State private var filter: Filter = .all
@@ -62,7 +63,7 @@ struct MainWatchlistSidebar: View {
                 } else {
                     searchContent
                 }
-                planListButton
+                overviewButtons
             }
             .frame(width: sidebarWidth)
             .frame(maxHeight: .infinity)
@@ -144,6 +145,44 @@ struct MainWatchlistSidebar: View {
         .padding(.vertical, 8)
     }
 
+    private var overviewButtons: some View {
+        VStack(spacing: 0) {
+            holdingsButton
+            planListButton
+        }
+        .background(alignment: .top) { Divider() }
+    }
+
+    private var holdingsButton: some View {
+        Button(action: onShowHoldings) {
+            HStack(spacing: 9) {
+                Image(systemName: "briefcase")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(PulseLocalization.localizedString("main.holdings.title"))
+                        .font(.system(size: 12, weight: .medium))
+                    Text(PulseLocalization.localizedString("main.holdings.count", holdingCount))
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var holdingCount: Int {
+        appState.watchlist.allItems.filter { $0.supportsPosition && $0.hasPositionHistory }.count
+    }
+
     private var planListButton: some View {
         Button(action: onShowPlans) {
             HStack(spacing: 9) {
@@ -168,11 +207,10 @@ struct MainWatchlistSidebar: View {
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 9)
+            .padding(.vertical, 8)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(alignment: .top) { Divider() }
     }
 
     @ViewBuilder private var watchlistContent: some View {

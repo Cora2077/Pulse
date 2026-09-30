@@ -8,15 +8,17 @@ struct WatchRowMetricDisplay {
 
     static func resolve(
         quote: Quote?,
-        metrics: PositionMetrics?,
+        metrics _: PositionMetrics?,
         mode: WatchRowMetricMode,
-        item: WatchItem
+        item: WatchItem,
+        basis: PositionCostBasis = .average
     ) -> Self {
         guard let quote else {
             return Self(text: "…", colorValue: nil)
         }
 
         let currencyCode = quote.currencyCode ?? item.symbol.currencyCode
+        let valuation = PositionValuation(item: item, quote: quote, basis: basis)
         switch mode {
         case .changePercent:
             return Self(
@@ -24,20 +26,20 @@ struct WatchRowMetricDisplay {
                 colorValue: quote.change
             )
         case .todayPnL:
-            guard let metrics else {
+            guard let valuation else {
                 return fallbackPercent(quote)
             }
             return Self(
-                text: PriceFormatter.signedMoney(metrics.todayPnL, currencyCode: currencyCode),
-                colorValue: metrics.todayPnL
+                text: PriceFormatter.signedMoney(valuation.todayPnL, currencyCode: currencyCode),
+                colorValue: valuation.todayPnL
             )
         case .totalPnL, .summary:
-            guard let metrics else {
+            guard let valuation else {
                 return fallbackPercent(quote)
             }
             return Self(
-                text: PriceFormatter.signedMoney(metrics.totalPnL, currencyCode: currencyCode),
-                colorValue: metrics.totalPnL
+                text: PriceFormatter.signedMoney(valuation.holdingPnL, currencyCode: currencyCode),
+                colorValue: valuation.holdingPnL
             )
         }
     }

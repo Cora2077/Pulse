@@ -1290,31 +1290,41 @@ struct DetailView: View {
                                 .font(.system(size: 8, weight: .semibold))
                                 .foregroundStyle(.tertiary)
                         }
-                        if let quote, let metrics = PositionMetrics(item: item, quote: quote) {
+                        if let quote, let valuation = PositionValuation(
+                            item: item,
+                            quote: quote,
+                            basis: appState.settings.positionCostBasis
+                        ) {
                             // Read-only here: this whole block is one button that
                             // opens the position page, so the switch lives there.
                             // The numbers still follow whichever basis is set, and
                             // the label says which one is on screen.
                             let basis = appState.settings.positionCostBasis
-                            let costValue = basis == .diluted
-                                ? item.ledger?.dilutedCost ?? metrics.averageCost
-                                : metrics.averageCost
-                            let invested = costValue * metrics.quantity
-                            let unrealized = metrics.marketValue - invested
-                            let unrealizedPercent = PositionMetrics.returnPercent(pnl: unrealized, invested: invested)
                             HStack(spacing: 8) {
-                                pnlCell(PulseLocalization.localizedString("metric.todayPnL"), amount: metrics.todayPnL, percent: metrics.todayReturnPercent)
-                                pnlCell(PulseLocalization.localizedString("metric.totalPnL"), amount: unrealized, percent: unrealizedPercent)
+                                pnlCell(PulseLocalization.localizedString("metric.todayPnL"), amount: valuation.todayPnL, percent: valuation.todayReturnPercent)
+                                pnlCell(PulseLocalization.localizedString("metric.totalPnL"), amount: valuation.holdingPnL, percent: valuation.holdingReturnPercent)
                             }
                             HStack(spacing: 8) {
-                                stat(PulseLocalization.localizedString("position.quantity"), PriceFormatter.quantity(metrics.quantity))
-                                stat(PulseLocalization.localizedString(basis.labelKey), PriceFormatter.price(costValue))
-                                stat(PulseLocalization.localizedString("position.marketValue"), PriceFormatter.money(metrics.marketValue, currencyCode: currencyCode))
+                                stat(PulseLocalization.localizedString("position.quantity"), PriceFormatter.quantity(valuation.quantity))
+                                stat(PulseLocalization.localizedString(basis.labelKey), PriceFormatter.price(valuation.costPrice))
+                                stat(PulseLocalization.localizedString("position.marketValue"), PriceFormatter.money(valuation.marketValue, currencyCode: currencyCode))
                             }
                         } else {
-                            Text(PulseLocalization.localizedString("position.waitingQuote"))
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(.tertiary)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(PulseLocalization.localizedString("position.waitingQuote"))
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.tertiary)
+                                let basis = appState.settings.positionCostBasis
+                                let averageCost = item.averageCost ?? 0
+                                let costPrice = basis == .diluted
+                                    ? item.ledger?.dilutedCost ?? averageCost
+                                    : averageCost
+                                HStack(spacing: 8) {
+                                    stat(PulseLocalization.localizedString("position.quantity"), PriceFormatter.quantity(item.positionQuantity))
+                                    stat(PulseLocalization.localizedString(basis.labelKey), PriceFormatter.price(costPrice))
+                                    stat(PulseLocalization.localizedString("position.marketValue"), "—")
+                                }
+                            }
                         }
                     }
                     .contentShape(Rectangle())

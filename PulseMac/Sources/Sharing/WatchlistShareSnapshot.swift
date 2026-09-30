@@ -93,7 +93,8 @@ struct WatchlistShareSnapshot {
                 quote: quote,
                 metrics: metrics,
                 mode: appState.settings.watchRowMetricMode,
-                item: item
+                item: item,
+                basis: appState.settings.positionCostBasis
             )
             return Row(
                 id: item.symbol,

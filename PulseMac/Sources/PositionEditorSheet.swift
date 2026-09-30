@@ -5,6 +5,7 @@ import PulseUI
 /// Quick set ("calibrate"): overwrite quantity + average cost in one step.
 /// Saving records a single `.adjustment` ledger entry — no realized P&L.
 struct PositionEditorView: View {
+    @Environment(AppState.self) private var appState
     let item: WatchItem
     let quote: Quote?
     let palette: ChangePalette
@@ -48,13 +49,13 @@ struct PositionEditorView: View {
                 )
             }
 
-            if let metrics {
+            if let valuation {
                 VStack(spacing: 6) {
-                    previewRow(PulseLocalization.localizedString("position.marketValue"), PriceFormatter.money(metrics.marketValue, currencyCode: currencyCode))
-                    previewRow(PulseLocalization.localizedString("metric.todayPnL"), PriceFormatter.signedMoney(metrics.todayPnL, currencyCode: currencyCode),
-                               color: metrics.todayPnL)
-                    previewRow(PulseLocalization.localizedString("metric.totalPnL"), "\(PriceFormatter.signedMoney(metrics.totalPnL, currencyCode: currencyCode)) · \(PriceFormatter.percent(metrics.totalReturnPercent))",
-                               color: metrics.totalPnL)
+                    previewRow(PulseLocalization.localizedString("position.marketValue"), PriceFormatter.money(valuation.marketValue, currencyCode: currencyCode))
+                    previewRow(PulseLocalization.localizedString("metric.todayPnL"), PriceFormatter.signedMoney(valuation.todayPnL, currencyCode: currencyCode),
+                               color: valuation.todayPnL)
+                    previewRow(PulseLocalization.localizedString("metric.totalPnL"), "\(PriceFormatter.signedMoney(valuation.holdingPnL, currencyCode: currencyCode)) · \(PriceFormatter.percent(valuation.holdingReturnPercent))",
+                               color: valuation.holdingPnL)
                 }
                 .padding(.top, 2)
             }
@@ -129,7 +130,7 @@ struct PositionEditorView: View {
         parseDecimal(costText).flatMap { $0 > 0 ? $0 : nil }
     }
 
-    private var metrics: PositionMetrics? {
+    private var valuation: PositionValuation? {
         guard let quote, let quantity = parsedQuantity, let cost = parsedCost else { return nil }
         // Draft through the ledger (not legacy lots): lots are long-only, and
         // this is exactly the adjustment that saving will record.
@@ -141,7 +142,11 @@ struct PositionEditorView: View {
             addedAt: item.addedAt,
             transactions: [PositionTransaction(kind: .adjustment, price: cost, quantity: quantity)]
         )
-        return PositionMetrics(item: draft, quote: quote)
+        return PositionValuation(
+            item: draft,
+            quote: quote,
+            basis: appState.settings.positionCostBasis
+        )
     }
 
     private func previewRow(_ label: String, _ value: String, color: Double? = nil) -> some View {

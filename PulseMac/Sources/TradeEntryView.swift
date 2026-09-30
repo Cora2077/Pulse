@@ -88,6 +88,22 @@ struct TradeEntryView: View {
     private var quote: Quote? { appState.market.quote(for: symbol) }
     private var currencyCode: String? { quote?.currencyCode ?? symbol.currencyCode }
 
+    private var quantityUnit: String {
+        symbol.cryptoPair?.baseAsset
+            ?? PulseLocalization.localizedString("trade.unit.shares")
+    }
+
+    private var priceFieldLabel: String {
+        PulseLocalization.localizedString(
+            "trade.priceWithCurrency",
+            currencyCode ?? symbol.currencyCode
+        )
+    }
+
+    private var quantityFieldLabel: String {
+        PulseLocalization.localizedString("trade.quantityWithUnit", quantityUnit)
+    }
+
     /// The effective entry kind: the form's side in record mode, the stored
     /// kind (including adjustments) in edit mode.
     private var kind: PositionTransaction.Kind {
@@ -127,16 +143,21 @@ struct TradeEntryView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     PositionInputCell(
-                        label: PulseLocalization.localizedString("trade.price"),
+                        label: priceFieldLabel,
                         text: $priceText,
                         suggestion: currentPriceSuggestion,
                         autofocus: true
                     )
+                    .help(PulseLocalization.localizedString(
+                        "trade.priceUnitHelp",
+                        currencyCode ?? symbol.currencyCode
+                    ))
                     PositionInputCell(
-                        label: PulseLocalization.localizedString("position.quantity"),
+                        label: quantityFieldLabel,
                         text: $quantityText,
                         suggestion: availableToSellSuggestion
                     )
+                    .help(PulseLocalization.localizedString("trade.quantityUnitHelp", quantityUnit))
                 }
                 PositionInputCell(
                     label: PulseLocalization.localizedString("trade.fee"),
