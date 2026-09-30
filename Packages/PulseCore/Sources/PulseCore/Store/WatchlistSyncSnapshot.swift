@@ -95,7 +95,9 @@ public enum WatchlistSyncMerge {
                 in: &snapshot
             )
         }
-        snapshot.retainedHistoryItems.removeAll { $0.materializedTransactions().isEmpty }
+        snapshot.retainedHistoryItems.removeAll {
+            $0.materializedTransactions().isEmpty && $0.drawings.isEmpty
+        }
         return snapshot
     }
 
@@ -158,7 +160,9 @@ public enum WatchlistSyncMerge {
                 // merged membership says it was removed. A concurrently added
                 // trade survives as dormant history; it must not be normalized
                 // back into the default group as a group-less active item.
-                if !item.materializedTransactions().isEmpty || conflictedSymbols.contains(symbol) {
+                if !item.materializedTransactions().isEmpty
+                    || !item.drawings.isEmpty
+                    || conflictedSymbols.contains(symbol) {
                     retained[symbol] = item
                 }
             } else if localRetained.contains(symbol) || remoteRetained.contains(symbol) || baseRetained.contains(symbol) {
@@ -268,7 +272,12 @@ public enum WatchlistSyncMerge {
             // remote choice must have somewhere to place the edited trade
             // without restoring the deleted watchlist membership.
             let hasTransactionConflict = conflicts.count > initialConflictCount
-            guard !transactions.isEmpty || hasTransactionConflict else { return nil }
+            let drawings = ChartDrawingMerge.merge(
+                base: base?.drawings ?? [],
+                local: local?.drawings ?? [],
+                remote: remote?.drawings ?? []
+            )
+            guard !transactions.isEmpty || hasTransactionConflict || !drawings.isEmpty else { return nil }
             let source = local ?? remote ?? base
             return WatchItem(
                 symbol: symbol,
@@ -280,11 +289,10 @@ public enum WatchlistSyncMerge {
                 transactions: replay(transactions, preservingOrderFrom: [
                     base?.transactions ?? [], local?.transactions ?? [], remote?.transactions ?? []
                 ]),
-                // A plan is user intent, so a concurrent one follows the
-                // surviving trades into dormant history rather than vanishing
-                // with the deleted membership. Plans alone never resurrect the
-                // item: the guard above still requires a trade.
-                plans: mergePlans(base: base?.plans ?? [], local: local?.plans ?? [], remote: remote?.plans ?? [])
+                // Plans and drawings follow durable user-authored history into
+                // the retained item rather than vanishing with membership.
+                plans: mergePlans(base: base?.plans ?? [], local: local?.plans ?? [], remote: remote?.plans ?? []),
+                drawings: drawings
             )
         }
 
@@ -304,6 +312,11 @@ public enum WatchlistSyncMerge {
             base: base?.plans ?? [],
             local: local?.plans ?? [],
             remote: remote?.plans ?? []
+        )
+        result.drawings = ChartDrawingMerge.merge(
+            base: base?.drawings ?? [],
+            local: local?.drawings ?? [],
+            remote: remote?.drawings ?? []
         )
         result.transactions = replay(transactions, preservingOrderFrom: [
             base?.transactions ?? [], local?.transactions ?? [], remote?.transactions ?? []

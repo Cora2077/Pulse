@@ -22,6 +22,7 @@ public struct CandlestickChartView: View {
     let highlightsExtendedHours: Bool
     let transactions: [PositionTransaction]
     let currencyCode: String?
+    let annotations: ChartAnnotationConfiguration?
 
     @State private var viewport: CandleChartViewport
 
@@ -36,7 +37,8 @@ public struct CandlestickChartView: View {
         highlightsExtendedHours: Bool = false,
         transactions: [PositionTransaction] = [],
         currencyCode: String? = nil,
-        viewport: CandleChartViewport? = nil
+        viewport: CandleChartViewport? = nil,
+        annotations: ChartAnnotationConfiguration? = nil
     ) {
         self.candles = candles
         self.palette = palette
@@ -45,6 +47,7 @@ public struct CandlestickChartView: View {
         self.highlightsExtendedHours = highlightsExtendedHours
         self.transactions = transactions
         self.currencyCode = currencyCode
+        self.annotations = annotations
         _viewport = State(initialValue: viewport ?? CandleChartViewport())
     }
 
@@ -65,6 +68,9 @@ public struct CandlestickChartView: View {
         let range = viewport.visibleRange(dataCount: candles.count)
         let xDomain = (range.lowerBound - 1)...max(range.upperBound, 1)
         let visible = candles[safeRange: range]
+        let _ = (viewport.wheelZoomAllowed = annotations.map {
+            $0.controller.tool == .browse && !$0.controller.isInteracting
+        } ?? true)
         let tradeMarkers = period == .day
             ? CandleTradeMarker.dailyMarkers(
                 candles: candles,
@@ -82,7 +88,8 @@ public struct CandlestickChartView: View {
             for: visible,
             hasBuyMarkers: visibleTradeMarkers.contains { $0.side == .buy },
             hasSellMarkers: visibleTradeMarkers.contains { $0.side == .sell },
-            reserveVolumeBand: maxVolume > 0
+            reserveVolumeBand: maxVolume > 0,
+            additionalPrices: plansToFit
         )
         let tradeMarkerPlacements = tradeMarkerPlacements(
             for: visibleTradeMarkers,
@@ -124,11 +131,34 @@ public struct CandlestickChartView: View {
         }
         .chartOverlay { proxy in
             GeometryReader { geo in
-                CandlePriceOverlay(viewport: viewport, candles: candles, range: range,
-                                   xDomain: xDomain, palette: palette, period: period,
-                                   market: market, tradeMarkers: tradeMarkers,
-                                   currencyCode: currencyCode,
-                                   proxy: proxy, geo: geo)
+                ZStack(alignment: .topLeading) {
+                    CandlePriceOverlay(viewport: viewport, candles: candles, range: range,
+                                       xDomain: xDomain, palette: palette, period: period,
+                                       market: market, tradeMarkers: tradeMarkers,
+                                       currencyCode: currencyCode,
+                                       proxy: proxy, geo: geo)
+                    if let annotations {
+                        let plot = proxy.plotFrame.map { geo[$0] } ?? .zero
+                        let pricePane = ChartAnnotationMath.pricePane(
+                            plot: plot,
+                            reservesVolume: maxVolume > 0,
+                            volumeFraction: Self.volumeBandFraction
+                        )
+                        let scope = candleAnnotationScope(annotations.scope)
+                        ChartAnnotationOverlay(
+                            configuration: annotations,
+                            coordinates: candleCoordinates(
+                                proxy: proxy,
+                                plot: plot,
+                                pricePane: pricePane,
+                                visibleRange: range,
+                                xDomain: xDomain,
+                                yDomain: yDomain,
+                                scope: scope
+                            )
+                        )
+                    }
+                }
             }
         }
         .contentShape(Rectangle())
@@ -138,10 +168,21 @@ public struct CandlestickChartView: View {
             case .ended: viewport.cursorInside = false
             }
         }
-        .gesture(dragPan)
-        .onTapGesture(count: 2) { viewport.reset() }
+        // With annotations, keep the chart's own pan recognizer out of the way while
+        // allowing gestures on the chart overlay's child views to handle drawing tools.
+        .gesture(dragPan, including: annotations == nil ? .all : .subviews)
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded { viewport.reset() },
+            including: annotations == nil ? .all : .subviews
+        )
         .onChange(of: candles.count, initial: true) { _, count in viewport.dataCount = count }
-        .onChange(of: period) { _, _ in viewport.reset() }
+        .onChange(of: period) { _, _ in
+            viewport.reset()
+            viewport.cursorInside = false
+            viewport.hoveredIndex = nil
+            annotations?.controller.resetTransientState()
+        }
+        .onChange(of: annotations?.scope) { _, _ in annotations?.controller.resetTransientState() }
         .onChange(of: candles) { _, _ in viewport.hoveredIndex = nil }
         .onAppear { viewport.startMonitoring() }
         .onDisappear { viewport.stopMonitoring() }
@@ -155,6 +196,96 @@ public struct CandlestickChartView: View {
                 viewport.lastDragWidth = value.translation.width
             }
             .onEnded { _ in viewport.lastDragWidth = 0 }
+    }
+
+    /// Current annotation drawings are instrument scoped, while trend lines belong to
+    /// this exact candle period. A stale host scope is normalized to the visible period.
+    private func candleAnnotationScope(_ proposed: ChartDrawingScope) -> ChartDrawingScope {
+        if case .candles(let proposedPeriod) = proposed, proposedPeriod == period {
+            return proposed
+        }
+        return .candles(period: period)
+    }
+
+    private var plansToFit: [Double] {
+        guard let annotations, annotations.controller.fitsPlans else { return [] }
+        return annotations.plans.compactMap { plan in
+            guard (annotations.controller.showsHistoricalPlans || plan.status == .active),
+                  plan.price.isFinite, plan.price > 0 else { return nil }
+            return plan.price
+        }
+    }
+
+    private func candleCoordinates(
+        proxy: ChartProxy,
+        plot: CGRect,
+        pricePane: CGRect,
+        visibleRange: Range<Int>,
+        xDomain: ClosedRange<Int>,
+        yDomain: ClosedRange<Double>,
+        scope: ChartDrawingScope
+    ) -> ChartAnnotationCoordinates {
+        let times = candles.map(\.time)
+        func xForIndex(_ index: Int) -> CGFloat? {
+            if let position = proxy.position(forX: index) { return plot.minX + position }
+            // ChartProxy may not project a loaded point outside the visible index
+            // window; the chart uses a linear index scale, so extrapolate only that
+            // known sample index for clipping a partially visible trend.
+            return ChartAnnotationMath.xCoordinate(index: index, domain: xDomain, plot: plot)
+        }
+        func indexForX(_ x: CGFloat) -> Int? {
+            if let raw: Int = proxy.value(atX: x - plot.minX), candles.indices.contains(raw) { return raw }
+            return ChartAnnotationMath.nearestIndex(atX: x, domain: xDomain, plot: plot, count: candles.count)
+        }
+        func priceForY(_ y: CGFloat) -> Double? {
+            if let price: Double = proxy.value(atY: y - plot.minY), price.isFinite, price > 0 { return price }
+            return ChartAnnotationMath.price(atY: y, domain: yDomain, plot: plot)
+        }
+        func yForPrice(_ price: Double) -> CGFloat? {
+            if let position = proxy.position(forY: price) { return plot.minY + position }
+            // Keep known out-of-domain prices available for the pane-edge prompt.
+            return ChartAnnotationMath.yCoordinate(price: price, domain: yDomain, plot: plot)
+        }
+        func anchorAt(_ point: CGPoint) -> ChartAnchor? {
+            guard pricePane.contains(point), let index = indexForX(point.x),
+                  let price = priceForY(point.y) else { return nil }
+            return ChartAnchor(time: candles[index].time, price: price)
+        }
+        func shift(_ anchor: ChartAnchor, _ dx: CGFloat, _ dy: CGFloat) -> ChartAnchor? {
+            guard let index = ChartAnnotationMath.exactIndex(for: anchor.time, sampleTimes: times),
+                  let x = xForIndex(index), let y = yForPrice(anchor.price),
+                  let movedIndex = indexForX(x + dx), let price = priceForY(y + dy) else { return nil }
+            return ChartAnchor(time: candles[movedIndex].time, price: price)
+        }
+        return ChartAnnotationCoordinates(
+            plot: plot,
+            pricePane: pricePane,
+            sampleTimes: times,
+            market: market,
+            palette: palette,
+            scopeForNewTrend: scope,
+            xForTime: { time in
+                guard let index = ChartAnnotationMath.exactIndex(for: time, sampleTimes: times) else { return nil }
+                return xForIndex(index)
+            },
+            anchorAt: anchorAt,
+            onHover: { point in
+                viewport.cursorInside = point != nil
+                guard let point, !visibleRange.isEmpty, plot.width > 0,
+                      plot.insetBy(dx: -2, dy: -4).contains(point) else {
+                    viewport.hoveredIndex = nil
+                    return
+                }
+                let rel = (point.x - plot.origin.x) / plot.width
+                let raw = Double(xDomain.lowerBound)
+                    + Double(rel) * Double(xDomain.upperBound - xDomain.lowerBound)
+                viewport.hoveredIndex = min(max(Int(raw.rounded()), visibleRange.lowerBound), visibleRange.upperBound - 1)
+            },
+            yForPrice: yForPrice,
+            shiftAnchor: shift,
+            pan: { viewport.pan(byPoints: $0) },
+            resetView: { viewport.reset() }
+        )
     }
 
     // MARK: - Marks
@@ -296,10 +427,11 @@ public struct CandlestickChartView: View {
         for visible: ArraySlice<Candle>,
         hasBuyMarkers: Bool,
         hasSellMarkers: Bool,
-        reserveVolumeBand: Bool
+        reserveVolumeBand: Bool,
+        additionalPrices: [Double] = []
     ) -> ClosedRange<Double> {
-        let lo = visible.map(\.low).min() ?? 0
-        let hi = visible.map(\.high).max() ?? 1
+        let lo = min(visible.map(\.low).min() ?? 0, additionalPrices.min() ?? .infinity)
+        let hi = max(visible.map(\.high).max() ?? 1, additionalPrices.max() ?? -.infinity)
         let span = max(hi - lo, hi * 0.001, 0.0001)
         let bottomPad: Double
         if reserveVolumeBand {
@@ -409,6 +541,7 @@ public final class CandleChartViewport {
     @ObservationIgnored var dataCount = 0
     @ObservationIgnored var plotWidth: CGFloat = 300
     @ObservationIgnored var cursorInside = false
+    @ObservationIgnored var wheelZoomAllowed = true
     @ObservationIgnored var lastDragWidth: CGFloat = 0
     @ObservationIgnored private var panRemainder: Double = 0
     @ObservationIgnored private var monitor: Any?
@@ -477,7 +610,7 @@ public final class CandleChartViewport {
     }
 
     private func handle(_ event: NSEvent) -> Bool {
-        guard cursorInside, dataCount > 0 else { return false }
+        guard cursorInside, wheelZoomAllowed, dataCount > 0 else { return false }
         switch event.type {
         case .magnify:
             zoom(by: 1 + event.magnification)

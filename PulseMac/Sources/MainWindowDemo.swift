@@ -133,6 +133,51 @@ enum MainWindowDemo {
                 }
             }
         }
+
+        let apple = infos[0].symbol
+        let dayCandles = makeCandles(for: apple, period: .day, basePrice: quoteValues(for: apple).0)
+        if dayCandles.count > 24 {
+            _ = state.watchlist.setChartDrawing(
+                ChartDrawing(
+                    geometry: .horizontal(price: 238),
+                    style: ChartDrawingStyle(color: .purple, lineWidth: 1.5),
+                    note: "Overlaps the active sell plan"
+                ),
+                for: apple
+            )
+            _ = state.watchlist.setChartDrawing(
+                ChartDrawing(
+                    geometry: .trend(
+                        start: ChartAnchor(time: dayCandles[dayCandles.count - 24].time, price: dayCandles[dayCandles.count - 24].low),
+                        end: ChartAnchor(time: dayCandles[dayCandles.count - 4].time, price: dayCandles[dayCandles.count - 4].high)
+                    ),
+                    scope: .candles(period: .day),
+                    style: ChartDrawingStyle(color: .orange, lineWidth: 2),
+                    note: "Demo trend line"
+                ),
+                for: apple
+            )
+        }
+
+        let intradayCandles = makeCandles(for: apple, period: .minute1, basePrice: quoteValues(for: apple).0)
+        if let first = intradayCandles.dropLast().last,
+           let last = intradayCandles.last {
+            var marketCalendar = Calendar(identifier: .gregorian)
+            marketCalendar.timeZone = apple.market.timeZone
+            let sessionDay = marketCalendar.startOfDay(for: last.time)
+            _ = state.watchlist.setChartDrawing(
+                ChartDrawing(
+                    geometry: .trend(
+                        start: ChartAnchor(time: first.time, price: first.low),
+                        end: ChartAnchor(time: last.time, price: last.high)
+                    ),
+                    scope: .intraday(day: sessionDay),
+                    style: ChartDrawingStyle(color: .blue, lineWidth: 1.5),
+                    note: "Demo intraday trend"
+                ),
+                for: apple
+            )
+        }
     }
 
     static func search(_ query: String) -> [SymbolInfo] {

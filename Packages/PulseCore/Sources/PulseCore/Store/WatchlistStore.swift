@@ -147,9 +147,9 @@ public final class WatchlistStore {
         allItems.first { $0.symbol == symbol }
     }
 
-    /// Read-only view of dormant history: the retained item for the symbol, if
-    /// any. Exposure only — recording or editing still goes through
-    /// `materializeItem(_:)`, which restores the item without list membership.
+    /// Read-only access to dormant instrument history. `materializeItem(_:)`
+    /// restores the item without adding it to a list; chart drawing mutations
+    /// can also update this retained record in place.
     public func retainedHistoryItem(for symbol: SymbolID) -> WatchItem? {
         retainedHistoryItems.first { $0.symbol == symbol }
     }
@@ -225,7 +225,7 @@ public final class WatchlistStore {
     }
 
     /// Removes an instrument from the selected group. The active item survives in another tag;
-    /// after the final removal, its trade history remains dormant until the symbol is added again.
+    /// after the final removal, its position and drawing history remain dormant until re-added.
     public func remove(_ symbol: SymbolID) {
         guard let id = selectedGroup?.id else { return }
         setMembership(symbol, in: id, included: false)
@@ -486,7 +486,72 @@ public final class WatchlistStore {
         return (trimmed?.isEmpty ?? true) ? nil : trimmed
     }
 
-    public func updateLots(_ symbol: SymbolID, lots: [CostLot]) {        guard let index = allItems.firstIndex(where: { $0.symbol == symbol }) else { return }
+    // MARK: - Chart drawings
+
+    /// Creates or updates one saved chart drawing. Editing keeps the UUID and
+    /// original creation time; a deleted UUID cannot be reused to resurrect it.
+    @discardableResult
+    public func setChartDrawing(_ drawing: ChartDrawing, for symbol: SymbolID) -> Bool {
+        guard drawing.isValid, !drawing.isDeleted else { return false }
+
+        if let index = allItems.firstIndex(where: { $0.symbol == symbol }) {
+            guard Self.applyChartDrawing(drawing, to: &allItems[index].drawings, at: .now) else { return false }
+            save()
+            return true
+        }
+
+        guard let index = retainedHistoryItems.firstIndex(where: { $0.symbol == symbol }),
+              Self.applyChartDrawing(drawing, to: &retainedHistoryItems[index].drawings, at: .now) else {
+            return false
+        }
+        save()
+        return true
+    }
+
+    private static func applyChartDrawing(
+        _ drawing: ChartDrawing,
+        to drawings: inout [ChartDrawing],
+        at now: Date
+    ) -> Bool {
+        guard drawing.isValid, !drawing.isDeleted else { return false }
+        var updated = drawing
+        if let index = drawings.firstIndex(where: { $0.id == drawing.id }) {
+            guard !drawings[index].isDeleted else { return false }
+            updated.createdAt = drawings[index].createdAt
+        }
+        updated.updatedAt = now
+        updated.note = normalizedPlanNote(drawing.note)
+        guard updated.isValid else { return false }
+        drawings.removeAll { $0.id == drawing.id }
+        drawings.append(updated)
+        drawings = ChartDrawing.ordered(drawings)
+        return true
+    }
+
+    /// Stores a deletion tombstone under the drawing's UUID for sync convergence.
+    @discardableResult
+    public func deleteChartDrawing(_ id: UUID, for symbol: SymbolID) -> Bool {
+        if let index = allItems.firstIndex(where: { $0.symbol == symbol }),
+           let drawingIndex = allItems[index].drawings.firstIndex(where: { $0.id == id }),
+           !allItems[index].drawings[drawingIndex].isDeleted {
+            allItems[index].drawings[drawingIndex].deletedAt = .now
+            allItems[index].drawings[drawingIndex].updatedAt = .now
+            save()
+            return true
+        }
+        if let index = retainedHistoryItems.firstIndex(where: { $0.symbol == symbol }),
+           let drawingIndex = retainedHistoryItems[index].drawings.firstIndex(where: { $0.id == id }),
+           !retainedHistoryItems[index].drawings[drawingIndex].isDeleted {
+            retainedHistoryItems[index].drawings[drawingIndex].deletedAt = .now
+            retainedHistoryItems[index].drawings[drawingIndex].updatedAt = .now
+            save()
+            return true
+        }
+        return false
+    }
+
+    public func updateLots(_ symbol: SymbolID, lots: [CostLot]) {
+        guard let index = allItems.firstIndex(where: { $0.symbol == symbol }) else { return }
         // Preserve legacy index data until the user explicitly removes it, but
         // never create or replace a position for a non-tradable index.
         guard allItems[index].supportsPosition || lots.isEmpty else { return }
@@ -656,7 +721,8 @@ public final class WatchlistStore {
 
     // MARK: - Archive
 
-    /// The current watchlists in portable form, in the order they are shown.
+    /// The current grouped watchlists in portable form and display order.
+    /// Retained-only history remains dormant and is not added to an exported list.
     public func archive(exportedAt: Date = .now, app: String? = nil) -> WatchlistArchive {
         let itemsBySymbol = Dictionary(uniqueKeysWithValues: allItems.map { ($0.symbol, $0) })
         let lists = groups.map { group in
@@ -678,7 +744,8 @@ public final class WatchlistStore {
                     thesis: item.thesis,
                     // Plans are the user's intentions, so they travel with the
                     // reasoning that explains them.
-                    plans: item.plans.isEmpty ? nil : TradePlan.ordered(item.plans)
+                    plans: item.plans.isEmpty ? nil : TradePlan.ordered(item.plans),
+                    drawings: item.drawings.isEmpty ? nil : ChartDrawing.ordered(item.drawings)
                 )
             }
             return WatchlistArchive.List(name: group.name, entries: entries)
@@ -720,6 +787,8 @@ public final class WatchlistStore {
     public func importPlan(for archive: WatchlistArchive) -> WatchlistArchive.ImportPlan {
         var listPlans: [WatchlistArchive.ImportPlan.ListPlan] = []
         var itemID = 0
+        var originalDrawingsBySymbol: [SymbolID: [ChartDrawing]] = [:]
+        var plannedDrawingsBySymbol: [SymbolID: [ChartDrawing]] = [:]
 
         for (listIndex, list) in archive.lists.enumerated() {
             let name = normalizedName(list.name)
@@ -737,6 +806,20 @@ public final class WatchlistStore {
                 case .unknownMarket, .missingCode:
                     outcome = .skipped(resolution)
                 case .resolved(let symbol):
+                    if !name.isEmpty {
+                        if originalDrawingsBySymbol[symbol] == nil {
+                            let existing = item(for: symbol)?.drawings
+                                ?? retainedHistoryItem(for: symbol)?.drawings
+                                ?? []
+                            originalDrawingsBySymbol[symbol] = existing
+                            plannedDrawingsBySymbol[symbol] = existing
+                        }
+                        plannedDrawingsBySymbol[symbol] = ChartDrawingMerge.merge(
+                            base: [],
+                            local: plannedDrawingsBySymbol[symbol] ?? [],
+                            remote: entry.drawings ?? []
+                        )
+                    }
                     if plannedSymbols.contains(symbol) {
                         let hasEmptyLedger = item(for: symbol)?.materializedTransactions().isEmpty ?? false
                         let bringsTrades = !(entry.transactions ?? []).isEmpty
@@ -759,7 +842,13 @@ public final class WatchlistStore {
             ))
         }
 
-        return WatchlistArchive.ImportPlan(lists: listPlans)
+        let drawingCount = originalDrawingsBySymbol.reduce(into: 0) { count, entry in
+            count += ChartDrawingMerge.changedCount(
+                local: entry.value,
+                incoming: plannedDrawingsBySymbol[entry.key] ?? []
+            )
+        }
+        return WatchlistArchive.ImportPlan(lists: listPlans, drawingCount: drawingCount)
     }
 
     /// Adds everything in `archive` that is missing. Import is deliberately additive:
@@ -814,6 +903,13 @@ public final class WatchlistStore {
                        !archivedPlans.isEmpty {
                         allItems[itemIndex].plans = TradePlan.ordered(archivedPlans)
                     }
+                    if let archivedDrawings = entry.drawings, !archivedDrawings.isEmpty {
+                        allItems[itemIndex].drawings = ChartDrawingMerge.merge(
+                            base: [],
+                            local: allItems[itemIndex].drawings,
+                            remote: archivedDrawings
+                        )
+                    }
                 } else {
                     let archivedName = entry.name?
                         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -826,7 +922,8 @@ public final class WatchlistStore {
                         displayNameSource: nil,
                         instrumentType: entry.type,
                         thesis: entry.thesis,
-                        plans: TradePlan.ordered(entry.plans ?? [])
+                        plans: TradePlan.ordered(entry.plans ?? []),
+                        drawings: ChartDrawing.ordered(entry.drawings ?? [])
                     ))
                     if !archivedTransactions.isEmpty {
                         applyTransactions(archivedTransactions, at: allItems.count - 1)
@@ -917,7 +1014,8 @@ public final class WatchlistStore {
         let normalizedStoredItems = normalizedItems(allItems + retainedHistoryItems)
         allItems = normalizedStoredItems.filter { activeSymbols.contains($0.symbol) }
         retainedHistoryItems = normalizedStoredItems.filter {
-            !activeSymbols.contains($0.symbol) && !$0.materializedTransactions().isEmpty
+            !activeSymbols.contains($0.symbol)
+                && (!$0.materializedTransactions().isEmpty || !$0.drawings.isEmpty)
         }
 
         if groups.isEmpty {
@@ -959,6 +1057,7 @@ public final class WatchlistStore {
             // (`TradePlan.ordered`); normalizing on every load keeps a peer's
             // snapshot from looking different purely because of sequence.
             item.plans = TradePlan.ordered(item.plans)
+            item.drawings = ChartDrawingMerge.collapsed(item.drawings)
             if let existingIndex = itemIndexBySymbol[item.symbol] {
                 var existingLotIDs = Set(normalizedItems[existingIndex].lots.map(\.id))
                 normalizedItems[existingIndex].lots.append(
@@ -1002,6 +1101,11 @@ public final class WatchlistStore {
                         existingPlanIDs.insert($0.id).inserted
                     }
                 )
+                normalizedItems[existingIndex].drawings = ChartDrawingMerge.merge(
+                    base: [],
+                    local: normalizedItems[existingIndex].drawings,
+                    remote: item.drawings
+                )
             } else {
                 itemIndexBySymbol[item.symbol] = normalizedItems.count
                 normalizedItems.append(item)
@@ -1025,9 +1129,9 @@ public final class WatchlistStore {
         }
     }
 
-    /// Keeps removed ledger data outside the active watchlist so it neither renders nor refreshes.
+    /// Keeps removed ledger and drawing data outside the active watchlist so it neither renders nor refreshes.
     private func retainHistoryIfNeeded(from item: WatchItem) {
-        guard !item.materializedTransactions().isEmpty else { return }
+        guard !item.materializedTransactions().isEmpty || !item.drawings.isEmpty else { return }
         retainedHistoryItems = normalizedItems(retainedHistoryItems + [item])
     }
 

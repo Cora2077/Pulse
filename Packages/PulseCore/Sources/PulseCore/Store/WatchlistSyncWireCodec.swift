@@ -1,12 +1,11 @@
 import Foundation
 
 /// Versioned JSON representation shared by devices syncing watchlist state.
-/// Version 2 uses Codable's numeric Date representation, which preserves the
-/// subsecond timestamps used by the merge algorithm. Version 1 remains readable
-/// for files written with ISO-8601 dates.
+/// Version 2 introduced numeric dates; version 3 adds drawing tombstones while
+/// retaining that representation. Versions 1 and 2 remain readable.
 public enum WatchlistSyncWireCodec {
     public static let formatIdentifier = "pulse.device-sync"
-    public static let currentVersion = 2
+    public static let currentVersion = 3
 
     public struct File: Sendable, Equatable {
         public let format: String
@@ -41,6 +40,8 @@ public enum WatchlistSyncWireCodec {
         case duplicateTransactionID(UUID)
         case invalidTransactionFee(UUID)
         case duplicateTradePlanID(UUID)
+        case duplicateChartDrawingID(UUID)
+        case invalidChartDrawing(UUID)
     }
 
     private struct Header: Decodable {
@@ -85,7 +86,7 @@ public enum WatchlistSyncWireCodec {
         ))
     }
 
-    /// Decodes v1 ISO-8601 or current v2 payloads and validates IDs before a
+    /// Decodes v1 ISO-8601, v2, or current v3 payloads and validates IDs before a
     /// decoded snapshot can reach merge code that assumes uniqueness.
     public static func decode(_ data: Data, expectedDeviceID: String? = nil) throws -> File {
         let header: Header
@@ -95,7 +96,7 @@ public enum WatchlistSyncWireCodec {
             throw CodecError.invalidEnvelope
         }
         guard header.format == formatIdentifier else { throw CodecError.unsupportedFormat }
-        guard header.version == 1 || header.version == currentVersion else {
+        guard (1...currentVersion).contains(header.version) else {
             throw CodecError.unsupportedVersion(header.version)
         }
 
@@ -127,7 +128,7 @@ public enum WatchlistSyncWireCodec {
 
     private static func validate(_ file: File) throws {
         guard file.format == formatIdentifier else { throw CodecError.unsupportedFormat }
-        guard file.version == 1 || file.version == currentVersion else {
+        guard (1...currentVersion).contains(file.version) else {
             throw CodecError.unsupportedVersion(file.version)
         }
 
@@ -158,6 +159,13 @@ public enum WatchlistSyncWireCodec {
             for plan in item.plans {
                 guard planIDs.insert(plan.id).inserted else {
                     throw CodecError.duplicateTradePlanID(plan.id)
+                }
+            }
+            var drawingIDs = Set<UUID>()
+            for drawing in item.drawings {
+                guard drawing.isValid else { throw CodecError.invalidChartDrawing(drawing.id) }
+                guard drawingIDs.insert(drawing.id).inserted else {
+                    throw CodecError.duplicateChartDrawingID(drawing.id)
                 }
             }
         }

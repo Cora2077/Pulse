@@ -10,6 +10,7 @@ private struct FolderSyncPeerRead: Sendable {
     var file: FolderSyncPeerFile?
     var error: String?
     var awaitingDownload: Bool
+    var requiresNewerVersion: Bool = false
 }
 
 private struct FolderSyncReadBatch: Sendable {
@@ -76,7 +77,8 @@ private enum FolderSyncFileIO {
                         deviceID: peerID,
                         file: nil,
                         error: isAwaitingDownload ? nil : error.localizedDescription,
-                        awaitingDownload: isAwaitingDownload
+                        awaitingDownload: isAwaitingDownload,
+                        requiresNewerVersion: (error as? FolderSyncError) == .newerVersion
                     ))
                 }
             }
@@ -183,6 +185,9 @@ private enum FolderSyncFileIO {
     private static func decodePeerFile(_ data: Data, expectedDeviceID: String) throws -> FolderSyncPeerFile {
         do {
             return try WatchlistSyncWireCodec.decode(data, expectedDeviceID: expectedDeviceID)
+        } catch WatchlistSyncWireCodec.CodecError.unsupportedVersion(let version)
+            where version > WatchlistSyncWireCodec.currentVersion {
+            throw FolderSyncError.newerVersion
         } catch {
             throw FolderSyncError.invalidPeerFile
         }
@@ -221,7 +226,15 @@ private enum FolderSyncFileIO {
         var coordinationError: NSError?
         var result: Result<Void, Error>?
         coordinator.coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) { coordinatedURL in
-            result = Result { try data.write(to: coordinatedURL, options: .atomic) }
+            result = Result {
+                // An application downgrade must not replace its restore file
+                // while silently discarding fields it cannot understand.
+                if FileManager.default.fileExists(atPath: coordinatedURL.path) {
+                    let existing = try Data(contentsOf: coordinatedURL)
+                    _ = try decodePeerFile(existing, expectedDeviceID: deviceID(from: coordinatedURL) ?? "")
+                }
+                try data.write(to: coordinatedURL, options: .atomic)
+            }
         }
         if let coordinationError { throw coordinationError }
         guard let result else { throw FolderSyncError.coordinationFailed }
@@ -440,6 +453,10 @@ final class FolderSyncController {
             // finish downloading it before any sync pass can replace it.
             if batch.ownFileAwaitingDownload {
                 lastError = FolderSyncError.ownFilePendingDownload.localizedDescription
+                return
+            }
+            if batch.peers.contains(where: \.requiresNewerVersion) {
+                lastError = FolderSyncError.newerVersion.localizedDescription
                 return
             }
 
@@ -721,13 +738,14 @@ final class FolderSyncController {
     }
 }
 
-private enum FolderSyncError: LocalizedError {
+private enum FolderSyncError: LocalizedError, Equatable {
     case accessDenied
     case folderUnavailable
     case invalidPeerFile
     case coordinationFailed
     case conflictBackupFailed
     case ownFilePendingDownload
+    case newerVersion
 
     var errorDescription: String? {
         switch self {
@@ -737,6 +755,7 @@ private enum FolderSyncError: LocalizedError {
         case .coordinationFailed: PulseLocalization.localizedString("sync.error.coordination")
         case .conflictBackupFailed: PulseLocalization.localizedString("sync.error.backupFailed")
         case .ownFilePendingDownload: PulseLocalization.localizedString("sync.error.ownFilePendingDownload")
+        case .newerVersion: PulseLocalization.localizedString("sync.error.newerVersion")
         }
     }
 }

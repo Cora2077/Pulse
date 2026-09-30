@@ -22,6 +22,9 @@ struct MainInstrumentView: View {
     @State private var isLoadingCandles = false
     @State private var chartRequestToken = UUID()
     @State private var candleViewport = CandleChartViewport()
+    @State private var annotationController = ChartAnnotationController()
+    @State private var drawingSession = MainChartDrawingSession()
+    @State private var editingDrawing: ChartDrawing?
     @State private var isEditingThesis = false
     @State private var thesisDraft = ""
     @State private var hostWindow: NSWindow?
@@ -80,7 +83,10 @@ struct MainInstrumentView: View {
                 updateWindowVisibility()
             }
         }
-        .onAppear(perform: updateWindowVisibility)
+        .onAppear {
+            updateWindowVisibility()
+            attachDrawingHistoryHandlers()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { note in
             guard let changed = note.object as? NSWindow, changed === hostWindow else { return }
             updateWindowVisibility()
@@ -135,6 +141,18 @@ struct MainInstrumentView: View {
             candleViewport = CandleChartViewport()
             isEditingThesis = false
             thesisDraft = ""
+            annotationController = ChartAnnotationController()
+            drawingSession.clear()
+            editingDrawing = nil
+            attachDrawingHistoryHandlers()
+        }
+        .onChange(of: chartMode) { _, _ in
+            annotationController.resetTransientState()
+            editingDrawing = nil
+        }
+        .onChange(of: activeIntradaySessionDay) { _, _ in
+            guard chartMode == .intraday else { return }
+            annotationController.resetTransientState()
         }
         .onChange(of: route) { _, newRoute in
             switch newRoute {
@@ -165,7 +183,7 @@ struct MainInstrumentView: View {
     private var dashboard: some View {
         GeometryReader { geometry in
             let tabHeight = min(245, max(200, geometry.size.height * 0.31))
-            let chartHeight = max(250, geometry.size.height - 184 - tabHeight)
+            let chartHeight = max(240, geometry.size.height - 216 - tabHeight)
 
             VStack(spacing: 0) {
                 quoteHeader
@@ -173,7 +191,10 @@ struct MainInstrumentView: View {
                 periodPicker
                     .frame(height: 32)
                     .padding(.horizontal, 16)
-                chart
+                annotationToolbar
+                    .frame(height: 32)
+                    .padding(.horizontal, 16)
+                chartSurface
                     .frame(height: chartHeight)
                     .padding(.horizontal, 12)
                 ohlcvStrip
@@ -318,43 +339,377 @@ struct MainInstrumentView: View {
         }
     }
 
-    @ViewBuilder
+    private var annotationToolbar: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 7) {
+                toolButtons
+                Toggle(PulseLocalization.localizedString("main.chart.plans"), isOn: planVisibility)
+                    .toggleStyle(.checkbox)
+                    .fixedSize()
+                Toggle(PulseLocalization.localizedString("main.chart.drawings"), isOn: drawingVisibility)
+                    .toggleStyle(.checkbox)
+                    .fixedSize()
+                Button {
+                    annotationController.fitsPlans.toggle()
+                } label: {
+                    Label(PulseLocalization.localizedString("main.chart.fitPlans"), systemImage: "arrow.up.left.and.arrow.down.right")
+                        .foregroundStyle(annotationController.fitsPlans ? Color.accentColor : Color.primary)
+                }
+                .buttonStyle(.borderless)
+                .help(PulseLocalization.localizedString("main.chart.fitPlans"))
+                annotationMoreMenu
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 7) {
+                toolButtons
+                annotationMoreMenu
+                Spacer(minLength: 0)
+            }
+        }
+        .font(.system(size: 10, weight: .medium))
+    }
+
+    private var toolButtons: some View {
+        HStack(spacing: 3) {
+            chartToolButton(.browse, symbolName: "cursorarrow")
+            chartToolButton(.horizontal, symbolName: "line.3.horizontal")
+            chartToolButton(.trend, symbolName: "chart.line.uptrend.xyaxis")
+            chartToolButton(.measure, symbolName: "ruler")
+        }
+    }
+
+    private func chartToolButton(_ tool: ChartAnnotationTool, symbolName: String) -> some View {
+        let key = chartToolTitleKey(tool)
+        return Button {
+            annotationController.tool = tool
+        } label: {
+            Image(systemName: symbolName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(annotationController.tool == tool ? Color.accentColor : Color.secondary)
+                .frame(width: 25, height: 24)
+                .background {
+                    if annotationController.tool == tool {
+                        RoundedRectangle(cornerRadius: 5).fill(Color.accentColor.opacity(0.13))
+                    }
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .help(PulseLocalization.localizedString(key))
+        .accessibilityLabel(PulseLocalization.localizedString(key))
+        .accessibilityAddTraits(annotationController.tool == tool ? .isSelected : [])
+    }
+
+    private var annotationMoreMenu: some View {
+        Menu {
+            Toggle(PulseLocalization.localizedString("main.chart.plans"), isOn: planVisibility)
+            Toggle(PulseLocalization.localizedString("main.chart.drawings"), isOn: drawingVisibility)
+            Divider()
+            Toggle(PulseLocalization.localizedString("main.chart.historicalPlans"), isOn: historicalPlanVisibility)
+            Button {
+                annotationController.fitsPlans.toggle()
+            } label: {
+                Label(PulseLocalization.localizedString("main.chart.fitPlans"), systemImage: "arrow.up.left.and.arrow.down.right")
+                    .foregroundStyle(annotationController.fitsPlans ? Color.accentColor : Color.primary)
+            }
+            Button {
+                annotationController.clearMeasurement()
+            } label: {
+                Label(PulseLocalization.localizedString("main.chart.clearMeasure"), systemImage: "eraser")
+            }
+            Divider()
+            Button(PulseLocalization.localizedString("main.chart.deleteDrawing"), role: .destructive) {
+                annotationController.deleteSelected()
+            }
+            .disabled(annotationController.selectedDrawingID == nil)
+        } label: {
+            Label(PulseLocalization.localizedString("main.chart.more"), systemImage: "ellipsis")
+        }
+        .menuStyle(.borderlessButton)
+        .help(PulseLocalization.localizedString("main.chart.more"))
+    }
+
+    private var planVisibility: Binding<Bool> {
+        Binding(get: { annotationController.showsPlans }, set: { annotationController.showsPlans = $0 })
+    }
+
+    private var drawingVisibility: Binding<Bool> {
+        Binding(get: { annotationController.showsDrawings }, set: { annotationController.showsDrawings = $0 })
+    }
+
+    private var historicalPlanVisibility: Binding<Bool> {
+        Binding(get: { annotationController.showsHistoricalPlans }, set: { annotationController.showsHistoricalPlans = $0 })
+    }
+
+    private func chartToolTitleKey(_ tool: ChartAnnotationTool) -> String {
+        switch tool {
+        case .browse: "main.chart.tool.browse"
+        case .horizontal: "main.chart.tool.horizontal"
+        case .trend: "main.chart.tool.trend"
+        case .measure: "main.chart.tool.measure"
+        }
+    }
+
+    private var chartSurface: some View {
+        Group {
+            if let drawing = editingDrawing {
+                MainChartDrawingEditor(
+                    drawing: drawing,
+                    symbol: symbol,
+                    currencyCode: currencyCode,
+                    onSave: { updated in
+                        let saved = commitDrawing(updated, for: symbol)
+                        if saved { editingDrawing = nil }
+                        return saved
+                    },
+                    onCancel: { editingDrawing = nil }
+                )
+            } else {
+                chart
+            }
+        }
+        .background {
+            MainChartKeyboardMonitor(
+                isEnabled: isDashboardVisible && isWindowActiveVisible,
+                allowsChartFocus: editingDrawing == nil,
+                onEscape: handleChartEscape,
+                onDelete: handleChartDelete,
+                onUndo: handleChartUndo,
+                onRedo: handleChartRedo
+            )
+            .allowsHitTesting(false)
+        }
+    }
+
     private var chart: some View {
         let shownCandles = chartCandles
-        if shownCandles.isEmpty {
-            if isLoadingCandles || candlesKey != chartRequest {
-                ChartLoadingView()
-            } else {
-                ContentUnavailableView {
-                    Label(
-                        PulseLocalization.localizedString("chart.noData"),
-                        systemImage: "chart.xyaxis.line"
-                    )
-                } description: {
-                    Text(PulseLocalization.localizedString("chart.noPeriodData", chartMode.period.displayName))
+        return Group {
+            if shownCandles.isEmpty {
+                if isLoadingCandles || candlesKey != chartRequest {
+                    ChartLoadingView()
+                } else {
+                    noDataWithPlans
                 }
+            } else if chartMode == .intraday {
+                IntradayChartView(
+                    candles: sourceCandles,
+                    previousClose: quote?.previousClose ?? sourceCandles.first?.open ?? 0,
+                    market: symbol.market,
+                    palette: appState.palette,
+                    showsExtendedHours: appState.showsExtendedHours(for: symbol),
+                    annotations: chartAnnotations
+                )
+            } else {
+                CandlestickChartView(
+                    candles: shownCandles,
+                    palette: appState.palette,
+                    period: chartMode.period,
+                    market: symbol.market,
+                    highlightsExtendedHours: chartMode.isIntradayKline
+                        && appState.showsExtendedHours(for: symbol),
+                    transactions: chartMode.period == .day ? item?.materializedTransactions() ?? [] : [],
+                    currencyCode: currencyCode,
+                    viewport: candleViewport,
+                    annotations: chartAnnotations
+                )
             }
-        } else if chartMode == .intraday {
-            IntradayChartView(
-                candles: sourceCandles,
-                previousClose: quote?.previousClose ?? sourceCandles.first?.open ?? 0,
-                market: symbol.market,
-                palette: appState.palette,
-                showsExtendedHours: appState.showsExtendedHours(for: symbol)
-            )
-        } else {
-            CandlestickChartView(
-                candles: shownCandles,
-                palette: appState.palette,
-                period: chartMode.period,
-                market: symbol.market,
-                highlightsExtendedHours: chartMode.isIntradayKline
-                    && appState.showsExtendedHours(for: symbol),
-                transactions: chartMode.period == .day ? item?.materializedTransactions() ?? [] : [],
-                currencyCode: currencyCode,
-                viewport: candleViewport
-            )
         }
+    }
+
+    @ViewBuilder
+    private var noDataWithPlans: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ContentUnavailableView {
+                Label(
+                    PulseLocalization.localizedString("chart.noData"),
+                    systemImage: "chart.xyaxis.line"
+                )
+            } description: {
+                Text(PulseLocalization.localizedString("chart.noPeriodData", chartMode.period.displayName))
+            }
+            let plans = noDataPlans
+            if plans.isEmpty {
+                Text(PulseLocalization.localizedString("main.chart.noDataPlans"))
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    .padding(.horizontal, 14)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(plans) { plan in
+                            Button {
+                                route = .plan(symbol, plan.id, .detail(symbol))
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Circle()
+                                        .fill(appState.palette.color(isUp: plan.kind == .buy))
+                                        .frame(width: 6, height: 6)
+                                    Text(PulseLocalization.localizedString(plan.kind == .buy ? "plan.kind.buy" : "plan.kind.sell"))
+                                        .foregroundStyle(appState.palette.color(isUp: plan.kind == .buy))
+                                    Text("\(currencyCode ?? symbol.currencyCode) \(PriceFormatter.price(plan.price, market: symbol.market))")
+                                        .foregroundStyle(.primary)
+                                    Text("× \(PriceFormatter.quantity(plan.quantity))")
+                                        .foregroundStyle(.secondary)
+                                    if let note = plan.note, !note.isEmpty {
+                                        Text(note).foregroundStyle(.tertiary).lineLimit(1)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .font(.system(size: 10).monospacedDigit())
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                }
+                .frame(maxHeight: 105)
+                .scrollIndicators(.visible)
+            }
+        }
+    }
+
+    private var noDataPlans: [TradePlan] {
+        (item?.plans ?? []).filter { $0.status == .active || annotationController.showsHistoricalPlans }
+    }
+
+    private var chartAnnotations: ChartAnnotationConfiguration {
+        ChartAnnotationConfiguration(
+            controller: annotationController,
+            drawings: (item?.drawings ?? []).filter { !$0.isDeleted },
+            plans: item?.plans ?? [],
+            currentPrice: quote?.price,
+            scope: chartDrawingScope,
+            currencyCode: currencyCode,
+            quantityUnit: symbol.cryptoPair?.baseAsset ?? PulseLocalization.localizedString("trade.unit.shares"),
+            onUpsert: { drawing in _ = commitDrawing(drawing, for: symbol) },
+            onDelete: { id in deleteDrawing(id, for: symbol) },
+            onEditDrawing: { id in editDrawing(id, for: symbol) },
+            onEditPlan: { id in route = .plan(symbol, id, .detail(symbol)) }
+        )
+    }
+
+    private var chartDrawingScope: ChartDrawingScope {
+        if chartMode == .intraday {
+            return .intraday(day: activeIntradaySessionDay ?? .distantPast)
+        }
+        return .candles(period: chartMode.period)
+    }
+
+    /// Intraday annotations are keyed to the loaded chart session, normalized
+    /// in the exchange timezone. This also keeps fixture history dates intact.
+    private var activeIntradaySessionDay: Date? {
+        guard chartMode == .intraday,
+              let timestamp = chartCandles.last?.time ?? sourceCandles.last?.time ?? quote?.timestamp else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = symbol.market.timeZone
+        let session = IntradayTradingSession(
+            market: symbol.market,
+            referenceDate: timestamp,
+            includesExtendedHours: appState.showsExtendedHours(for: symbol)
+        )
+        return calendar.startOfDay(for: session.open)
+    }
+
+    private func attachDrawingHistoryHandlers() {
+        annotationController.setHistoryHandlers(
+            undo: {
+                drawingSession.undo(
+                    for: symbol,
+                    upsert: { drawing, target in persistDrawing(drawing, for: target) },
+                    delete: { id, target in persistDrawingDeletion(id, for: target) }
+                )
+            },
+            redo: {
+                drawingSession.redo(
+                    for: symbol,
+                    upsert: { drawing, target in persistDrawing(drawing, for: target) },
+                    delete: { id, target in persistDrawingDeletion(id, for: target) }
+                )
+            }
+        )
+    }
+
+    @discardableResult
+    private func commitDrawing(_ drawing: ChartDrawing, for target: SymbolID) -> Bool {
+        let previous = savedItem(for: target)?.drawings.first { $0.id == drawing.id && !$0.isDeleted }
+        guard persistDrawing(drawing, for: target) else { return false }
+        drawingSession.record(symbol: target, before: previous, after: drawing)
+        return true
+    }
+
+    private func deleteDrawing(_ id: UUID, for target: SymbolID) {
+        guard let previous = savedItem(for: target)?.drawings.first(where: { $0.id == id && !$0.isDeleted }),
+              persistDrawingDeletion(id, for: target) else { return }
+        drawingSession.recordDelete(symbol: target, drawing: previous)
+    }
+
+    @discardableResult
+    private func persistDrawing(_ drawing: ChartDrawing, for target: SymbolID) -> Bool {
+        ensureDrawingItem(for: target)
+        let saved = appState.watchlist.setChartDrawing(drawing, for: target)
+        if saved, target == symbol {
+            annotationController.selectDrawing(drawing.id)
+        }
+        return saved
+    }
+
+    @discardableResult
+    private func persistDrawingDeletion(_ id: UUID, for target: SymbolID) -> Bool {
+        let deleted = appState.watchlist.deleteChartDrawing(id, for: target)
+        if deleted, target == symbol, annotationController.selectedDrawingID == id {
+            annotationController.selectDrawing(nil)
+        }
+        return deleted
+    }
+
+    private func ensureDrawingItem(for target: SymbolID) {
+        guard appState.watchlist.item(for: target) == nil,
+              appState.watchlist.retainedHistoryItem(for: target) == nil else { return }
+        let name = target == symbol ? (quote?.name ?? appState.displayName(for: target)) : target.displayCode
+        _ = appState.watchlist.materializeItem(SymbolInfo(symbol: target, name: name))
+    }
+
+    private func savedItem(for target: SymbolID) -> WatchItem? {
+        appState.watchlist.item(for: target) ?? appState.watchlist.retainedHistoryItem(for: target)
+    }
+
+    private func editDrawing(_ id: UUID, for target: SymbolID) {
+        guard target == symbol,
+              let drawing = savedItem(for: target)?.drawings.first(where: { $0.id == id && !$0.isDeleted }) else { return }
+        annotationController.selectDrawing(id)
+        annotationController.tool = .browse
+        editingDrawing = drawing
+    }
+
+    private func handleChartEscape() -> Bool {
+        if editingDrawing != nil {
+            editingDrawing = nil
+            return true
+        }
+        guard annotationController.tool != .browse
+                || annotationController.isInteracting
+                || annotationController.selectedDrawingID != nil else { return false }
+        annotationController.cancelInteraction()
+        return true
+    }
+
+    private func handleChartDelete() -> Bool {
+        guard annotationController.selectedDrawingID != nil else { return false }
+        annotationController.deleteSelected()
+        return true
+    }
+
+    private func handleChartUndo() -> Bool {
+        guard drawingSession.canUndo else { return false }
+        annotationController.undo()
+        return true
+    }
+
+    private func handleChartRedo() -> Bool {
+        guard drawingSession.canRedo else { return false }
+        annotationController.redo()
+        return true
     }
 
     private var sourceCandles: [Candle] {

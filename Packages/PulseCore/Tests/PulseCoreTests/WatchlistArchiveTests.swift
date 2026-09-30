@@ -541,3 +541,96 @@ struct WatchlistArchivePositionTests {
         #expect(item.averageCost == 90)
     }
 }
+
+@Suite("Chart drawing archives")
+struct ChartDrawingArchiveTests {
+    @MainActor
+    @Test("Subsecond anchors round-trip and stale archives cannot undo tombstones")
+    func preciseAnchorsAndTombstonesRoundTrip() throws {
+        func makeStore(_ label: String) throws -> (WatchlistStore, UserDefaults, String) {
+            let suite = "ChartDrawingArchiveTests.\(label).\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suite))
+            return (WatchlistStore(defaults: defaults, defaultGroupName: "Core"), defaults, suite)
+        }
+
+        let (source, sourceDefaults, sourceSuite) = try makeStore("source")
+        defer { sourceDefaults.removePersistentDomain(forName: sourceSuite) }
+        let symbol = SymbolID(market: .us, code: "AAPL")
+        source.add(SymbolInfo(symbol: symbol, name: "Apple"))
+        let start = ChartAnchor(time: Date(timeIntervalSince1970: 1_700_000_000.123_456_7), price: 180.25)
+        let end = ChartAnchor(time: Date(timeIntervalSince1970: 1_700_000_060.765_432_1), price: 181.5)
+        let drawing = ChartDrawing(
+            id: UUID(),
+            geometry: .trend(start: start, end: end),
+            scope: .intraday(day: Date(timeIntervalSince1970: 1_700_000_000.123_456)),
+            style: ChartDrawingStyle(color: .orange, lineWidth: 2.5),
+            note: "open range",
+            createdAt: Date(timeIntervalSince1970: 100.123_456_7)
+        )
+        #expect(source.setChartDrawing(drawing, for: symbol))
+        let staleArchive = try source.archive().encoded()
+        let roundTrippedArchive = try WatchlistArchive.decoded(from: staleArchive)
+        let archivedDrawing = try #require(roundTrippedArchive.lists.first?.entries.first?.drawings?.first)
+        let (restored, restoredDefaults, restoredSuite) = try makeStore("restored")
+        defer { restoredDefaults.removePersistentDomain(forName: restoredSuite) }
+        let initialPlan = restored.importPlan(for: roundTrippedArchive)
+        #expect(initialPlan.drawingCount == 1)
+        #expect(initialPlan.changesAnything)
+        restored.merge(roundTrippedArchive)
+
+        let sourceDrawing = try #require(source.item(for: symbol)?.drawings.first)
+        #expect(archivedDrawing.geometry == sourceDrawing.geometry)
+        #expect(archivedDrawing.createdAt == sourceDrawing.createdAt)
+        #expect(archivedDrawing.updatedAt == sourceDrawing.updatedAt)
+        #expect(archivedDrawing == sourceDrawing)
+        #expect(restored.item(for: symbol)?.drawings.first == archivedDrawing)
+        #expect(restored.archive().version == WatchlistArchive.currentVersion)
+        #expect(source.deleteChartDrawing(drawing.id, for: symbol))
+
+        let deletedArchive = try WatchlistArchive.decoded(from: source.archive().encoded())
+        let deletionPlan = restored.importPlan(for: deletedArchive)
+        #expect(deletionPlan.drawingCount == 1)
+        #expect(deletionPlan.changesAnything)
+        restored.merge(deletedArchive)
+        let stalePlan = restored.importPlan(for: try WatchlistArchive.decoded(from: staleArchive))
+        #expect(stalePlan.drawingCount == 0)
+        #expect(!stalePlan.changesAnything)
+        restored.merge(try WatchlistArchive.decoded(from: staleArchive))
+
+        #expect(restored.item(for: symbol)?.drawings.first?.isDeleted == true)
+    }
+
+    @Test("Invalid drawings are rejected while decoding an archive")
+    func invalidDrawingIsRejected() throws {
+        let drawing = ChartDrawing(
+            geometry: .horizontal(price: 10),
+            style: ChartDrawingStyle(lineWidth: 0)
+        )
+        let archive = WatchlistArchive(lists: [
+            .init(name: "Core", entries: [
+                .init(market: .us, code: "AAPL", drawings: [drawing])
+            ])
+        ])
+
+        #expect(throws: WatchlistArchive.DecodingFailure.invalidChartDrawing(drawing.id)) {
+            try WatchlistArchive.decoded(from: archive.encoded())
+        }
+    }
+
+    @MainActor
+    @Test("Archive previews exclude drawings from lists import skips")
+    func skippedListDoesNotCountDrawingChanges() throws {
+        let suite = "ChartDrawingArchiveTests.skipped.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = WatchlistStore(defaults: defaults, defaultGroupName: "Core")
+        let drawing = ChartDrawing(geometry: .horizontal(price: 10))
+        let archive = WatchlistArchive(lists: [
+            .init(name: "  \n", entries: [
+                .init(market: .us, code: "AAPL", drawings: [drawing])
+            ])
+        ])
+
+        #expect(store.importPlan(for: archive).drawingCount == 0)
+    }
+}

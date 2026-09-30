@@ -43,6 +43,9 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
     /// `TradePlan.ordered` defines. Intention only — a plan's price condition
     /// is derived from the live quote, never persisted.
     public var plans: [TradePlan]
+    /// User-authored chart annotations. Deletions remain here as tombstones so
+    /// offline sync peers cannot revive an older copy.
+    public var drawings: [ChartDrawing]
 
     public init(
         symbol: SymbolID,
@@ -53,7 +56,8 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         lots: [CostLot] = [],
         transactions: [PositionTransaction] = [],
         thesis: String? = nil,
-        plans: [TradePlan] = []
+        plans: [TradePlan] = [],
+        drawings: [ChartDrawing] = []
     ) {
         self.symbol = symbol
         self.displayName = displayName
@@ -64,11 +68,12 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         self.transactions = transactions
         self.thesis = thesis
         self.plans = plans
+        self.drawings = drawings
     }
 
     enum CodingKeys: String, CodingKey {
         case symbol, displayName, displayNameSource, instrumentType, addedAt, lots, transactions
-        case thesis
+        case thesis, drawings
         case plans
     }
 
@@ -83,6 +88,7 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         transactions = try container.decodeIfPresent([PositionTransaction].self, forKey: .transactions) ?? []
         thesis = try container.decodeIfPresent(String.self, forKey: .thesis)
         plans = try container.decodeIfPresent([TradePlan].self, forKey: .plans) ?? []
+        drawings = try container.decodeIfPresent([ChartDrawing].self, forKey: .drawings) ?? []
     }
 
     public var id: SymbolID { symbol }

@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import Observation
 import PulseCore
 
 /// Intraday chart: today's trend plus a dashed previous-close baseline; the overall tint follows the price change.
@@ -18,14 +19,18 @@ public struct IntradayChartView: View {
     let market: Market
     let palette: ChangePalette
     let showsExtendedHours: Bool
+    let annotations: ChartAnnotationConfiguration?
+    @State private var crosshairState = IntradayCrosshairState()
 
     public init(candles: [Candle], previousClose: Double, market: Market, palette: ChangePalette,
-                showsExtendedHours: Bool = false) {
+                showsExtendedHours: Bool = false,
+                annotations: ChartAnnotationConfiguration? = nil) {
         self.candles = candles
         self.previousClose = previousClose
         self.market = market
         self.palette = palette
         self.showsExtendedHours = showsExtendedHours
+        self.annotations = annotations
     }
 
     private static let wingTint = Color.secondary.opacity(0.75)
@@ -34,7 +39,7 @@ public struct IntradayChartView: View {
         let trend = IntradayTrendSnapshot(candles: candles, market: market,
                                           includesExtendedHours: showsExtendedHours)
         let session = trend.session
-        let domain = yDomain(for: trend.candles)
+        let domain = yDomain(for: trend.candles, additionalPrices: plansToFit)
         let tint = tint(for: trend)
         let segments = lineSegments(for: trend)
         let formatter = Self.axisFormatter(for: market)
@@ -75,18 +80,39 @@ public struct IntradayChartView: View {
         }
         .chartOverlay { proxy in
             GeometryReader { geo in
-                IntradayCrosshairOverlay(
-                    candles: trend.candles,
-                    session: session,
-                    market: market,
-                    tint: tint,
-                    wingTint: Self.wingTint,
-                    formatter: formatter,
-                    proxy: proxy,
-                    geo: geo
-                )
+                ZStack(alignment: .topLeading) {
+                    IntradayCrosshairOverlay(
+                        hoverState: crosshairState,
+                        candles: trend.candles,
+                        session: session,
+                        market: market,
+                        tint: tint,
+                        wingTint: Self.wingTint,
+                        formatter: formatter,
+                        proxy: proxy,
+                        geo: geo
+                    )
+                    if let annotations {
+                        let plot = proxy.plotFrame.map { geo[$0] } ?? .zero
+                        let scope = intradayAnnotationScope(annotations.scope, session: session)
+                        ChartAnnotationOverlay(
+                            configuration: annotations,
+                            coordinates: intradayCoordinates(
+                                plot: plot,
+                                proxy: proxy,
+                                session: session,
+                                domain: domain,
+                                candles: trend.candles,
+                                crosshairState: crosshairState,
+                                scope: scope
+                            )
+                        )
+                    }
+                }
             }
         }
+        .onChange(of: annotations?.scope) { _, _ in annotations?.controller.resetTransientState() }
+        .onChange(of: market) { _, _ in annotations?.controller.resetTransientState() }
     }
 
     @ChartContentBuilder
@@ -190,12 +216,121 @@ public struct IntradayChartView: View {
         return palette.color(for: reference.close - previousClose)
     }
 
-    private func yDomain(for candles: [Candle]) -> ClosedRange<Double> {
+    private func yDomain(for candles: [Candle], additionalPrices: [Double] = []) -> ClosedRange<Double> {
         let closes = candles.map(\.close)
-        let lo = min(closes.min() ?? previousClose, previousClose)
-        let hi = max(closes.max() ?? previousClose, previousClose)
+        let lo = min(closes.min() ?? previousClose, previousClose, additionalPrices.min() ?? .infinity)
+        let hi = max(closes.max() ?? previousClose, previousClose, additionalPrices.max() ?? -.infinity)
         let pad = max((hi - lo) * 0.1, hi * 0.001)
         return (lo - pad)...(hi + pad)
+    }
+
+    private var plansToFit: [Double] {
+        guard let annotations, annotations.controller.fitsPlans else { return [] }
+        return annotations.plans.compactMap { plan in
+            guard (annotations.controller.showsHistoricalPlans || plan.status == .active),
+                  plan.price.isFinite, plan.price > 0 else { return nil }
+            return plan.price
+        }
+    }
+
+    private func intradayAnnotationScope(
+        _ proposed: ChartDrawingScope,
+        session: IntradayTradingSession
+    ) -> ChartDrawingScope {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = market.timeZone
+        let date: Date
+        if case .intraday(let proposedDay) = proposed {
+            date = calendar.startOfDay(for: proposedDay)
+        } else {
+            date = calendar.startOfDay(for: session.open)
+        }
+        return .intraday(day: date)
+    }
+
+    private func intradayCoordinates(
+        plot: CGRect,
+        proxy: ChartProxy,
+        session: IntradayTradingSession,
+        domain: ClosedRange<Double>,
+        candles: [Candle],
+        crosshairState: IntradayCrosshairState,
+        scope: ChartDrawingScope
+    ) -> ChartAnnotationCoordinates {
+        let times = candles.map(\.time)
+        func xForMinute(_ minute: Double) -> CGFloat? {
+            if let position = proxy.position(forX: minute) { return plot.minX + position }
+            guard plot.width > 0, session.axisUpperBound != session.axisLowerBound else { return nil }
+            let fraction = (minute - session.axisLowerBound) / (session.axisUpperBound - session.axisLowerBound)
+            return plot.minX + CGFloat(fraction) * plot.width
+        }
+        func minuteForX(_ x: CGFloat) -> Double? {
+            if let minute: Double = proxy.value(atX: x - plot.minX), minute.isFinite { return minute }
+            guard plot.width > 0 else { return nil }
+            let fraction = Double((x - plot.minX) / plot.width)
+            return session.axisLowerBound + fraction * (session.axisUpperBound - session.axisLowerBound)
+        }
+        func priceForY(_ y: CGFloat) -> Double? {
+            if let price: Double = proxy.value(atY: y - plot.minY), price.isFinite, price > 0 { return price }
+            guard plot.height > 0 else { return nil }
+            let fraction = Double((y - plot.minY) / plot.height)
+            let price = domain.upperBound - fraction * (domain.upperBound - domain.lowerBound)
+            return price.isFinite && price > 0 ? price : nil
+        }
+        func yForPrice(_ price: Double) -> CGFloat? {
+            if let position = proxy.position(forY: price) { return plot.minY + position }
+            guard price.isFinite, plot.height > 0, domain.upperBound != domain.lowerBound else { return nil }
+            let fraction = (domain.upperBound - price) / (domain.upperBound - domain.lowerBound)
+            return plot.minY + CGFloat(fraction) * plot.height
+        }
+        func closestCandle(to minute: Double) -> Candle? {
+            candles.min {
+                abs(session.minuteOffset(for: $0.time) - minute)
+                    < abs(session.minuteOffset(for: $1.time) - minute)
+            }
+        }
+        func anchorAt(_ point: CGPoint) -> ChartAnchor? {
+            guard plot.contains(point), let minute = minuteForX(point.x),
+                  let candle = closestCandle(to: minute), let price = priceForY(point.y) else { return nil }
+            return ChartAnchor(time: candle.time, price: price)
+        }
+        func shift(_ anchor: ChartAnchor, _ dx: CGFloat, _ dy: CGFloat) -> ChartAnchor? {
+            guard ChartAnnotationMath.exactIndex(for: anchor.time, sampleTimes: times) != nil,
+                  let x = xForMinute(session.minuteOffset(for: anchor.time)),
+                  let minute = minuteForX(x + dx),
+                  let first = candles.first, let last = candles.last,
+                  minute >= session.minuteOffset(for: first.time),
+                  minute <= session.minuteOffset(for: last.time),
+                  let candle = closestCandle(to: minute),
+                  let y = yForPrice(anchor.price), let price = priceForY(y + dy) else { return nil }
+            return ChartAnchor(time: candle.time, price: price)
+        }
+        let pane = ChartAnnotationMath.pricePane(plot: plot, reservesVolume: false, volumeFraction: 0)
+        return ChartAnnotationCoordinates(
+            plot: plot,
+            pricePane: pane,
+            sampleTimes: times,
+            market: market,
+            palette: palette,
+            scopeForNewTrend: scope,
+            xForTime: { time in
+                guard ChartAnnotationMath.exactIndex(for: time, sampleTimes: times) != nil else { return nil }
+                return xForMinute(session.minuteOffset(for: time))
+            },
+            anchorAt: anchorAt,
+            onHover: { point in
+                guard let point, plot.insetBy(dx: -2, dy: -2).contains(point),
+                      let minute = minuteForX(point.x) else {
+                    crosshairState.hovered = nil
+                    return
+                }
+                crosshairState.hovered = closestCandle(to: minute)
+            },
+            yForPrice: yForPrice,
+            shiftAnchor: shift,
+            pan: { _ in },
+            resetView: {}
+        )
     }
 
     /// Gaps are measured in trading minutes: the collapsed lunch break spans ~0 trading
@@ -240,7 +375,13 @@ private struct CandleSegment: Identifiable {
 
 /// Hover crosshair as its own view so `hovered` state changes re-render only these few
 /// shapes and tags, never the chart marks behind them.
+@Observable @MainActor
+private final class IntradayCrosshairState {
+    var hovered: Candle?
+}
+
 private struct IntradayCrosshairOverlay: View {
+    let hoverState: IntradayCrosshairState
     let candles: [Candle]
     let session: IntradayTradingSession
     let market: Market
@@ -249,8 +390,6 @@ private struct IntradayCrosshairOverlay: View {
     let formatter: DateFormatter
     let proxy: ChartProxy
     let geo: GeometryProxy
-
-    @State private var hovered: Candle?
 
     var body: some View {
         let plot = proxy.plotFrame.map { geo[$0] } ?? .zero
@@ -261,12 +400,12 @@ private struct IntradayCrosshairOverlay: View {
                 .onContinuousHover { phase in
                     switch phase {
                     case .active(let point):
-                        hovered = candle(at: point, plot: plot)
+                        hoverState.hovered = candle(at: point, plot: plot)
                     case .ended:
-                        hovered = nil
+                        hoverState.hovered = nil
                     }
                 }
-            if let hovered,
+            if let hovered = hoverState.hovered,
                let xPos = proxy.position(forX: session.minuteOffset(for: hovered.time)),
                let yPos = proxy.position(forY: hovered.close) {
                 let px = plot.origin.x + xPos
@@ -280,7 +419,7 @@ private struct IntradayCrosshairOverlay: View {
                 priceTag(for: hovered, py: py)
             }
         }
-        .onChange(of: candles) { _, _ in hovered = nil }
+        .onChange(of: candles) { _, _ in hoverState.hovered = nil }
     }
 
     /// Snap to the candle closest to the cursor's trading-minute position.

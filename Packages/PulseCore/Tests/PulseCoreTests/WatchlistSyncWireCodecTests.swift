@@ -5,19 +5,75 @@ import XCTest
 final class WatchlistSyncWireCodecTests: XCTestCase {
     private let deviceID = "b7e29c37-3700-48dd-9f4a-475312a2ec41"
 
-    func testV2PreservesSubsecondDatesAcrossTheWholeSnapshot() throws {
+    func testV3PreservesSubsecondDatesAcrossTheWholeSnapshot() throws {
         let date = Date(timeIntervalSinceReferenceDate: 812_345_678.123_456_7)
-        let snapshot = makeSnapshot(date: date)
+        var snapshot = makeSnapshot(date: date)
+        let drawing = ChartDrawing(
+            id: UUID(uuidString: "cd2a1d29-0a0d-48a4-9a61-29b8b1e7ac93")!,
+            geometry: .trend(
+                start: ChartAnchor(time: date, price: 184.25),
+                end: ChartAnchor(time: date.addingTimeInterval(0.125), price: 185.5)
+            ),
+            scope: .candles(period: .day),
+            createdAt: date,
+            updatedAt: date.addingTimeInterval(0.25)
+        )
+        snapshot.items[0].drawings = [drawing]
 
         let data = try WatchlistSyncWireCodec.encode(deviceID: deviceID, updatedAt: date, snapshot: snapshot)
         let decoded = try WatchlistSyncWireCodec.decode(data, expectedDeviceID: deviceID)
 
-        XCTAssertEqual(decoded.version, 2)
+        XCTAssertEqual(decoded.version, 3)
         XCTAssertEqual(decoded.updatedAt, date)
         XCTAssertEqual(decoded.snapshot, snapshot)
 
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertTrue(object["updatedAt"] is NSNumber, "v2 dates should use Codable's numeric Date representation")
+        XCTAssertTrue(object["updatedAt"] is NSNumber, "wire dates should use Codable's numeric Date representation")
+    }
+
+    func testInvalidAndDuplicateDrawingsAreRejected() throws {
+        let symbol = SymbolID(market: .us, code: "AAPL")
+        var invalidSnapshot = WatchlistSyncSnapshot(items: [WatchItem(symbol: symbol, displayName: "Apple")], groups: [])
+        let invalid = ChartDrawing(geometry: .horizontal(price: 0))
+        invalidSnapshot.items[0].drawings = [invalid]
+        XCTAssertThrowsError(try WatchlistSyncWireCodec.encode(
+            deviceID: deviceID,
+            snapshot: invalidSnapshot
+        )) { error in
+            XCTAssertEqual(error as? WatchlistSyncWireCodec.CodecError, .invalidChartDrawing(invalid.id))
+        }
+
+        var duplicateSnapshot = invalidSnapshot
+        let valid = ChartDrawing(geometry: .horizontal(price: 10))
+        duplicateSnapshot.items[0].drawings = [valid, valid]
+        XCTAssertThrowsError(try WatchlistSyncWireCodec.encode(
+            deviceID: deviceID,
+            snapshot: duplicateSnapshot
+        )) { error in
+            XCTAssertEqual(error as? WatchlistSyncWireCodec.CodecError, .duplicateChartDrawingID(valid.id))
+        }
+    }
+
+    func testV2NumericPayloadRemainsReadableWithoutDrawingFields() throws {
+        let date = Date(timeIntervalSinceReferenceDate: 812_345_678.123_456_7)
+        let snapshot = makeSnapshot(date: date)
+        var payload = try v2JSON(encodePayload(
+            version: 2,
+            deviceID: deviceID,
+            updatedAt: date,
+            snapshot: snapshot,
+            dateStrategy: .deferredToDate
+        ))
+        var encodedSnapshot = try snapshotObject(in: payload)
+        var encodedItems = try XCTUnwrap(encodedSnapshot["items"] as? [[String: Any]])
+        encodedItems[0].removeValue(forKey: "drawings")
+        encodedSnapshot["items"] = encodedItems
+        payload["snapshot"] = encodedSnapshot
+
+        let decoded = try WatchlistSyncWireCodec.decode(jsonData(payload))
+
+        XCTAssertEqual(decoded.version, 2)
+        XCTAssertEqual(decoded.snapshot, snapshot)
     }
 
     func testV1ISO8601PayloadRemainsReadable() throws {
@@ -35,7 +91,7 @@ final class WatchlistSyncWireCodecTests: XCTestCase {
     func testUnsupportedVersionsIncludingZeroAreRejected() throws {
         let snapshot = WatchlistSyncSnapshot(items: [], groups: [])
 
-        for version in [0, 3] {
+        for version in [0, 4] {
             let data = try encodePayload(
                 version: version,
                 deviceID: deviceID,

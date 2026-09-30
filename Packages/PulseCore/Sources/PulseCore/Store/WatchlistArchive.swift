@@ -14,7 +14,8 @@ import Foundation
 /// written by older Pulse versions.
 public struct WatchlistArchive: Codable, Sendable, Equatable {
     public static let formatIdentifier = "pulse.watchlist"
-    public static let currentVersion = 1
+    public static let currentVersion = 2
+    private static let unixReferenceOffset: TimeInterval = 978_307_200
 
     public var format: String
     public var version: Int
@@ -49,6 +50,9 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         /// unless there is one, so a hand-written archive stays as short as the
         /// `{"market": "us", "code": "NVDA"}` example promises.
         public var plans: [TradePlan]?
+        /// Saved chart annotations. Optional so version 1 archives remain
+        /// readable and minimal hand-written entries stay concise.
+        public var drawings: [ChartDrawing]?
 
         public init(
             market: String,
@@ -58,7 +62,8 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
             pinned: Bool? = nil,
             transactions: [PositionTransaction]? = nil,
             thesis: String? = nil,
-            plans: [TradePlan]? = nil
+            plans: [TradePlan]? = nil,
+            drawings: [ChartDrawing]? = nil
         ) {
             self.market = market
             self.code = code
@@ -68,6 +73,7 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
             self.transactions = transactions
             self.thesis = thesis
             self.plans = plans
+            self.drawings = drawings
         }
 
         public init(
@@ -78,7 +84,8 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
             pinned: Bool? = nil,
             transactions: [PositionTransaction]? = nil,
             thesis: String? = nil,
-            plans: [TradePlan]? = nil
+            plans: [TradePlan]? = nil,
+            drawings: [ChartDrawing]? = nil
         ) {
             self.init(
                 market: market.rawValue,
@@ -88,7 +95,8 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
                 pinned: pinned,
                 transactions: transactions,
                 thesis: thesis,
-                plans: plans
+                plans: plans,
+                drawings: drawings
             )
         }
 
@@ -138,21 +146,94 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         case unsupportedVersion(Int)
         case noLists
         case invalidTransactionFee(UUID)
+        case duplicateChartDrawingID(UUID)
+        case invalidChartDrawing(UUID)
     }
 
     public static func encoder() -> JSONEncoder {
         let encoder = JSONEncoder()
-        // The archive is meant to be read and edited by a person, so dates stay
-        // ISO-8601 rather than the reference-date doubles UserDefaults storage uses.
-        encoder.dateEncodingStrategy = .iso8601
+        // Version 2 keeps human-readable UTC ISO-8601 dates while including
+        // enough fractional digits to round-trip Date's Double representation.
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            guard date.timeIntervalSince1970.isFinite else {
+                throw EncodingError.invalidValue(
+                    date,
+                    EncodingError.Context(
+                        codingPath: encoder.codingPath,
+                        debugDescription: "Archive dates must be finite."
+                    )
+                )
+            }
+            var container = encoder.singleValueContainer()
+            try container.encode(archiveDateString(date))
+        }
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return encoder
     }
 
     public static func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            guard let date = archiveDate(from: value) else {
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription: "Expected an ISO-8601 date with an optional fractional second."
+                )
+            }
+            return date
+        }
         return decoder
+    }
+
+    private static func archiveDateString(_ date: Date) -> String {
+        let unixSeconds = date.timeIntervalSince1970
+        var wholeSeconds = floor(unixSeconds)
+        var fraction = date.timeIntervalSinceReferenceDate - (wholeSeconds - unixReferenceOffset)
+        if fraction < 0 {
+            wholeSeconds -= 1
+            fraction += 1
+        } else if fraction >= 1 {
+            wholeSeconds += 1
+            fraction -= 1
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let whole = formatter.string(from: Date(timeIntervalSince1970: wholeSeconds))
+        let fractionalDigits = String(
+            format: "%.17f",
+            locale: Locale(identifier: "en_US_POSIX"),
+            fraction
+        )
+        let digits = String(fractionalDigits.dropFirst(2))
+        return whole.hasSuffix("Z")
+            ? String(whole.dropLast()) + "." + digits + "Z"
+            : whole
+    }
+
+    private static func archiveDate(from value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        // Whole-second legacy archives use the standard ISO-8601 parser.
+        guard let decimal = value.firstIndex(of: ".") else {
+            return formatter.date(from: value)
+        }
+
+        // Foundation formatters differ on whether they accept fractional
+        // seconds. Strip the fraction for the calendar portion and restore it
+        // arithmetically so both old whole-second and new precise archives work.
+        let suffixStart = value.index(after: decimal)
+        let fractionalAndZone = value[suffixStart...]
+        let digits = fractionalAndZone.prefix(while: \.isNumber)
+        guard !digits.isEmpty else { return nil }
+        let zoneStart = fractionalAndZone.index(suffixStart, offsetBy: digits.count)
+        let zone = String(fractionalAndZone[zoneStart...])
+        let wholeValue = String(value[..<decimal]) + zone
+        formatter.formatOptions = [.withInternetDateTime]
+        guard let whole = formatter.date(from: wholeValue) else { return nil }
+        guard let fraction = Double("0." + digits) else { return nil }
+        return Date(timeIntervalSinceReferenceDate: whole.timeIntervalSinceReferenceDate + fraction)
     }
 
     public func encoded() throws -> String {
@@ -179,13 +260,22 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         guard archive.format == formatIdentifier else {
             throw DecodingFailure.wrongFormat(archive.format)
         }
-        guard archive.version <= currentVersion else {
+        guard (1...currentVersion).contains(archive.version) else {
             throw DecodingFailure.unsupportedVersion(archive.version)
         }
         guard !archive.lists.isEmpty else { throw DecodingFailure.noLists }
         for transaction in archive.lists.flatMap(\.entries).flatMap({ $0.transactions ?? [] }) {
             guard transaction.hasValidFee else {
                 throw DecodingFailure.invalidTransactionFee(transaction.id)
+            }
+        }
+        for drawing in archive.lists.flatMap(\.entries).flatMap({ $0.drawings ?? [] }) {
+            guard drawing.isValid else { throw DecodingFailure.invalidChartDrawing(drawing.id) }
+        }
+        for entry in archive.lists.flatMap(\.entries) {
+            var ids = Set<UUID>()
+            for drawing in entry.drawings ?? [] where !ids.insert(drawing.id).inserted {
+                throw DecodingFailure.duplicateChartDrawingID(drawing.id)
             }
         }
         return archive
@@ -245,6 +335,14 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         }
 
         public var lists: [ListPlan]
+        /// Number of saved drawing identities or versions that importing would
+        /// add or change across existing and new instruments.
+        public var drawingCount: Int
+
+        public init(lists: [ListPlan], drawingCount: Int = 0) {
+            self.lists = lists
+            self.drawingCount = drawingCount
+        }
 
         public var allItems: [Item] { lists.flatMap(\.items) }
         public var newListCount: Int { lists.filter(\.isNew).count }
@@ -255,6 +353,8 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         public var restoreCount: Int {
             allItems.filter { if case .restorePosition = $0.outcome { true } else { false } }.count
         }
-        public var changesAnything: Bool { newListCount > 0 || addCount > 0 || restoreCount > 0 }
+        public var changesAnything: Bool {
+            newListCount > 0 || addCount > 0 || restoreCount > 0 || drawingCount > 0
+        }
     }
 }

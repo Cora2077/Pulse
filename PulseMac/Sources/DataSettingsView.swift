@@ -364,7 +364,10 @@ struct DataSettingsView: View {
             note(planSummary(for: plan), color: plan.skippedCount > 0 ? .orange : .secondary)
         case .imported(let plan):
             note(
-                PulseLocalization.localizedString("data.import.done", plan.addCount, plan.newListCount),
+                withDrawingSummary(
+                    PulseLocalization.localizedString("data.import.done", plan.addCount, plan.newListCount),
+                    plan: plan
+                ),
                 color: plan.changesAnything ? .green : .secondary
             )
         case .idle:
@@ -378,6 +381,11 @@ struct DataSettingsView: View {
             .foregroundStyle(color)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func withDrawingSummary(_ text: String, plan: WatchlistArchive.ImportPlan) -> String {
+        guard plan.drawingCount > 0 else { return text }
+        return text + " " + PulseLocalization.localizedString("data.import.drawings", plan.drawingCount)
     }
 
     // MARK: - Actions
@@ -468,13 +476,15 @@ struct DataSettingsView: View {
 
     private func planSummary(for plan: WatchlistArchive.ImportPlan) -> String {
         guard plan.skippedCount == 0 else {
-            return PulseLocalization.localizedString("data.import.someUnreadable", plan.skippedCount)
+            return withDrawingSummary(
+                PulseLocalization.localizedString("data.import.someUnreadable", plan.skippedCount), plan: plan
+            )
         }
         guard plan.changesAnything else {
             return PulseLocalization.localizedString("data.import.unchanged")
         }
-        return PulseLocalization.localizedString(
-            "data.import.willAdd", plan.addCount, plan.newListCount
+        return withDrawingSummary(
+            PulseLocalization.localizedString("data.import.willAdd", plan.addCount, plan.newListCount), plan: plan
         )
     }
 
@@ -488,6 +498,8 @@ struct DataSettingsView: View {
             PulseLocalization.localizedString("data.error.noLists")
         case .invalidTransactionFee:
             PulseLocalization.localizedString("data.error.invalidTransactionFee")
+        case .invalidChartDrawing, .duplicateChartDrawingID:
+            PulseLocalization.localizedString("data.error.invalidChartDrawing")
         }
     }
 }

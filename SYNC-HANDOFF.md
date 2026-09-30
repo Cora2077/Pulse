@@ -1,6 +1,24 @@
 # Pulse 交接文档
 
-最后更新：2026-09-30（主窗口第二版）
+最后更新：2026-09-30（图表工具首版）
+
+## 当前进展：图表工具首版（2026-09-30）
+
+本节为最新状态，详细设计和使用说明见 `CHART-TOOLS-DESIGN.md`。下方保留此前开发记录。
+
+- 已实现主窗口水平线、趋势线、临时区间测量；点击创建、拖动调整、双击标签精确编辑、右键锁定/删除、Esc 取消、会话级撤销/重做。
+- 买卖计划直接投影到分时及各周期 K 线；默认显示进行中计划，可显示历史。支持同价分组、相邻标签错位、越界提示、适配计划、标签打开现有计划编辑页并返回行情；不会自动记录成交。
+- 水平线跨周期，趋势线绑定原周期，分时绑定实际交易日；保存真实 UTC 时间与价格。所需历史尚未加载时提示，不扭曲锚点。
+- 绘图预览只更新叠加层，完成后保存一次；价格对象限制在价格区域，保留成交量与实际 B/S 成交标记。原有缩放、平移、重置、十字光标保留。
+- `WatchItem.drawings` 已接通 Store、移出自选历史、同步合并和归档。删除标记对同 UUID 的编辑优先；撤销删除用新 UUID 恢复，会话历史重映射到新 ID。
+- 同步文件 v3 读取 v1/v2/v3；归档 v2 读取 v1/v2。新版遇到未来文件版本停止同步并提示更新，两台 Mac 必须同时更新，不能继续混用已有旧客户端。
+- 便携归档保留原有边界：只导出分组中的标的，不包含移出自选后仅保留的历史。保留历史仍能本地保存、同步并在重新加入自选时恢复。
+- 构建 `BUILD SUCCEEDED`（`build/pulse-chart-tools-build.log`）；Core 404 项 Swift Testing + 7 项 XCTest（`build/chart-tools-core-tests.log`）、UI 5 项测试（`build/chart-tools-ui-tests.log`）全通过；真实会话对象的独立验证通过（`build/chart-session-validation.log`）。
+- 本机隔离演示验证画线/趋势/测量/锁定/编辑/隐藏、计划编辑/适配、跨周期、缩放/平移/重置/光标、文字撤销及重做后删除。四语言资源检查与 diff 检查通过，未修改真实金融数据。
+- 本轮未执行真实第二台 Mac 的画线同步；自动测试覆盖双方独立新增、并发删除与编辑、保留历史、幂等合并和归档恢复。更新两台后应补人工 iCloud 验收。
+- 未发布、未修改应用版本号；代码与交接文档一起提交推送至 `origin/main`。
+
+代码入口：`ChartDrawing.swift`、`ChartAnnotationOverlay.swift`、`MainChartDrawingSession.swift`、`MainChartDrawingEditor.swift`、`MainChartKeyboardMonitor.swift`、`MainInstrumentView.swift`。新增文件已纳入生成工程，工程及构建目录不入库。
 
 ## 当前进展：主窗口第二版（2026-09-30）
 

@@ -484,4 +484,91 @@ struct WatchlistSyncMergeTests {
         let decoded = try JSONDecoder().decode(WatchlistSyncSnapshot.self, from: data)
         #expect(decoded == snapshot)
     }
+
+    @Test("Independent drawing additions merge and remain stable on repeat")
+    func independentDrawingAdditionsMerge() throws {
+        let base = WatchlistSyncSnapshot(
+            items: [item(symbolA)],
+            groups: [WatchlistGroup(name: "Core", symbols: [symbolA])]
+        )
+        let first = ChartDrawing(
+            id: UUID(uuidString: "10000000-0000-4000-8000-000000000001")!,
+            geometry: .horizontal(price: 100),
+            createdAt: Date(timeIntervalSince1970: 10)
+        )
+        let second = ChartDrawing(
+            id: UUID(uuidString: "20000000-0000-4000-8000-000000000002")!,
+            geometry: .horizontal(price: 110),
+            createdAt: Date(timeIntervalSince1970: 20)
+        )
+        var localItem = item(symbolA)
+        localItem.drawings = [first]
+        var remoteItem = item(symbolA)
+        remoteItem.drawings = [second]
+        let local = WatchlistSyncSnapshot(items: [localItem], groups: base.groups)
+        let remote = WatchlistSyncSnapshot(items: [remoteItem], groups: base.groups)
+
+        let merged = WatchlistSyncMerge.merge(base: base, local: local, remote: remote).snapshot
+        let repeated = WatchlistSyncMerge.merge(base: base, local: merged, remote: remote).snapshot
+        let drawings = try #require(merged.items.first).drawings
+
+        #expect(Set(drawings.map(\.id)) == [first.id, second.id])
+        #expect(drawings == ChartDrawing.ordered([first, second]))
+        #expect(repeated == merged)
+    }
+
+    @Test("A drawing tombstone beats a concurrent edit and cannot be resurrected")
+    func drawingDeletionBeatsConcurrentEdit() throws {
+        let groupID = UUID()
+        let original = ChartDrawing(
+            id: UUID(),
+            geometry: .horizontal(price: 100),
+            createdAt: Date(timeIntervalSince1970: 10),
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        var tombstone = original
+        tombstone.deletedAt = Date(timeIntervalSince1970: 30)
+        tombstone.updatedAt = Date(timeIntervalSince1970: 30)
+        var edit = original
+        edit.geometry = .horizontal(price: 120)
+        edit.updatedAt = Date(timeIntervalSince1970: 200)
+
+        var baseItem = item(symbolA)
+        baseItem.drawings = [original]
+        var localItem = item(symbolA)
+        localItem.drawings = [tombstone]
+        var remoteItem = item(symbolA)
+        remoteItem.drawings = [edit]
+        let base = WatchlistSyncSnapshot(
+            items: [baseItem],
+            groups: [WatchlistGroup(id: groupID, name: "Core", symbols: [symbolA])]
+        )
+        let local = WatchlistSyncSnapshot(items: [localItem], groups: base.groups)
+        let remote = WatchlistSyncSnapshot(items: [remoteItem], groups: base.groups)
+
+        let merged = WatchlistSyncMerge.merge(base: base, local: local, remote: remote).snapshot
+        let swapped = WatchlistSyncMerge.merge(base: base, local: remote, remote: local).snapshot
+        let result = try #require(merged.items.first?.drawings.first)
+
+        #expect(result.isDeleted)
+        #expect(result.deletedAt == tombstone.deletedAt)
+        #expect(swapped == merged)
+        #expect(WatchlistSyncMerge.merge(base: base, local: merged, remote: remote).snapshot == merged)
+    }
+
+    @Test("A legacy peer's missing drawing field carries no deletion information")
+    func missingDrawingFieldIsNotDeletion() throws {
+        let drawing = ChartDrawing(geometry: .horizontal(price: 100))
+        var fullItem = item(symbolA)
+        fullItem.drawings = [drawing]
+        var legacyItem = fullItem
+        legacyItem.drawings = []
+        let group = WatchlistGroup(name: "Core", symbols: [symbolA])
+        let base = WatchlistSyncSnapshot(items: [fullItem], groups: [group])
+        let local = WatchlistSyncSnapshot(items: [legacyItem], groups: [group])
+
+        let merged = WatchlistSyncMerge.merge(base: base, local: local, remote: base).snapshot
+
+        #expect(merged.items.first?.drawings == [drawing])
+    }
 }
