@@ -272,7 +272,8 @@ struct MainPlanListView: View {
             textCell(PriceFormatter.price(entry.plan.price, market: entry.symbol.market), width: 108, alignment: .trailing, monospaced: true)
             textCell(current.map { PriceFormatter.price($0, market: entry.symbol.market) } ?? "—", width: 108, alignment: .trailing, monospaced: true)
             textCell(distance.map(PriceFormatter.percentMagnitude) ?? "—", width: 100, alignment: .trailing, monospaced: true)
-            textCell(costText(entry, current: current), width: 130, alignment: .trailing, secondary: true)
+            textCell(costText(entry, current: current), width: 130, alignment: .trailing,
+                     secondary: true, shrink: true)
             textCell(PriceFormatter.quantity(entry.plan.quantity), width: 88, alignment: .trailing, monospaced: true)
             statusCell(entry, reached: isReached(entry), hasQuote: current != nil)
             textCell(entry.plan.note?.isEmpty == false ? entry.plan.note! : "—", width: 175, alignment: .leading, secondary: true)
@@ -315,13 +316,18 @@ struct MainPlanListView: View {
         width: CGFloat,
         alignment: Alignment,
         monospaced: Bool = false,
-        secondary: Bool = false
+        secondary: Bool = false,
+        shrink: Bool = false
     ) -> some View {
         Text(text)
             .font(.system(size: 10.5, weight: .regular, design: monospaced ? .monospaced : .default))
             .foregroundStyle(secondary ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
             .lineLimit(1)
             .truncationMode(.tail)
+            // Only the cost cell asks for this: naming the action at the live
+            // quote makes it the one cell that can outgrow its column, and the
+            // amount matters more than the point size it is set in.
+            .minimumScaleFactor(shrink ? 0.8 : 1)
             .frame(width: width, alignment: alignment)
     }
 

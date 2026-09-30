@@ -125,6 +125,25 @@ public extension TradePlan {
             }
         }
 
+        /// The action the reader would take at the live quote, set in front of
+        /// the sentence for the two directions that warn.
+        ///
+        /// A warning that only says "多花 ¥2,696" leaves the reader to work out
+        /// which side of the trade it applies to; naming the action turns it
+        /// into the decision itself. Only the adverse directions carry one,
+        /// which is why this is optional rather than a fifth key on every tone:
+        /// the good news reads fine without being told what to do. Kept beside
+        /// the cases for the same reason as `localizationKey` — a new tone has
+        /// to decide here whether it warns, rather than leaving it to a call
+        /// site to remember.
+        public var actionKey: String? {
+            switch self {
+            case .paysMore: "plan.cost.buyNow"
+            case .earnsLess: "plan.cost.sellNow"
+            case .paysLess, .earnsMore: nil
+            }
+        }
+
         /// Whether the quote has moved against the plan: the buy that now costs
         /// more, or the sell that now raises less. These are the two a reader
         /// wants to be told about, so they are also the two worth colouring.

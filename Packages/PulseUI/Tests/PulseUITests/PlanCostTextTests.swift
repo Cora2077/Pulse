@@ -67,6 +67,35 @@ struct PlanCostTextTests {
         for key in keys { #expect(key.hasPrefix("plan.cost.")) }
     }
 
+    @Test("Only the two adverse tones name the action at the live quote")
+    func onlyAdverseTonesNameAnAction() {
+        // The prefix is the warning: "现价买入 多花 …" says what the reader
+        // would be doing, which is the point of flagging it. The two pieces of
+        // good news read fine without being told what to do, so they carry no
+        // action — and a tone added later has to choose here rather than
+        // inherit a label that may not describe it.
+        #expect(TradePlan.CostTone.paysMore.actionKey == "plan.cost.buyNow")
+        #expect(TradePlan.CostTone.earnsLess.actionKey == "plan.cost.sellNow")
+        #expect(TradePlan.CostTone.paysLess.actionKey == nil)
+        #expect(TradePlan.CostTone.earnsMore.actionKey == nil)
+
+        // Naming the action must line up with colouring the line, or a tag
+        // would be shouting about good news, or whispering about bad.
+        for tone in TradePlan.CostTone.allCases {
+            #expect((tone.actionKey != nil) == tone.isAdverse)
+        }
+    }
+
+    @Test("The buy and sell actions are distinct sentences")
+    func actionsDoNotCollide() {
+        // A buy told to sell would be worse than no prefix at all, so the two
+        // directions must not resolve to one label.
+        let actions = TradePlan.CostTone.allCases.compactMap(\.actionKey)
+        #expect(actions.count == 2)
+        #expect(Set(actions).count == actions.count)
+        for key in actions { #expect(key.hasPrefix("plan.cost.")) }
+    }
+
     @Test("A settled plan contributes no money to its group")
     func settledPlansAreExcluded() throws {
         // A done buy must not be added to a live one at the same price: the tag

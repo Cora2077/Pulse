@@ -111,6 +111,22 @@ struct LocalizationTableTests {
         }
     }
 
+    /// The action prefix rides in front of the sentence for the two warnings, so
+    /// a language that ships the warning but not the action would print a bare
+    /// key above the money. Checked against the enum for the same reason as the
+    /// tones themselves: the pairing is what keeps them in step.
+    @Test("Every action prefix a tone can name is translated too")
+    func everyCostActionIsTranslated() throws {
+        for language in Self.languages {
+            guard let table = Self.table(language) else { continue }
+            for tone in TradePlan.CostTone.allCases {
+                guard let key = tone.actionKey else { continue }
+                let value = try #require(table[key], "\(language) is missing \(key)")
+                #expect(value.contains("%@"), "\(language) \(key) has no sentence slot")
+            }
+        }
+    }
+
     @Test("No translation was left empty or untranslated as its own key")
     func valuesAreRealText() throws {
         for language in Self.languages {

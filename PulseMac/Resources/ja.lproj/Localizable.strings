@@ -453,6 +453,9 @@
 "plan.cost.paysLess" = "%@ 少なく支払う";
 "plan.cost.earnsLess" = "%@ 少なく受け取る";
 "plan.cost.earnsMore" = "%@ 多く受け取る";
+/* The action at the live quote, set in front of the two warnings */
+"plan.cost.buyNow" = "成行買い %@";
+"plan.cost.sellNow" = "成行売り %@";
 "plan.reached" = "到達";
 "plan.rowHelp" = "このプランを編集";
 "plan.title.add" = "取引プランを作成";

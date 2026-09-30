@@ -616,6 +616,10 @@ struct ChartAnnotationOverlay: View {
             if let cost {
                 Text(cost.text)
                     .lineLimit(1)
+                    // Naming the action makes the line longer than the figure
+                    // alone; at seven figures it would otherwise truncate to
+                    // "…¥126,9…", which loses the amount the line exists for.
+                    .minimumScaleFactor(0.8)
                     .foregroundStyle(cost.tone.isAdverse ? Self.planCostAdverse : Color.secondary)
             }
         }

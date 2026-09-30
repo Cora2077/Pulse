@@ -507,6 +507,9 @@
 "plan.cost.paysLess" = "Pay %@ less";
 "plan.cost.earnsLess" = "Receive %@ less";
 "plan.cost.earnsMore" = "Receive %@ more";
+/* The action at the live quote, set in front of the two warnings */
+"plan.cost.buyNow" = "Buying now: %@";
+"plan.cost.sellNow" = "Selling now: %@";
 "plan.reached" = "In Range";
 "plan.rowHelp" = "Edit this plan";
 "plan.title.add" = "New Trade Plan";

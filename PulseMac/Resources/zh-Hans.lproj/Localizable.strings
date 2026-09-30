@@ -453,6 +453,9 @@
 "plan.cost.paysLess" = "少花 %@";
 "plan.cost.earnsLess" = "少赚 %@";
 "plan.cost.earnsMore" = "多赚 %@";
+/* The action at the live quote, set in front of the two warnings */
+"plan.cost.buyNow" = "现价买入 %@";
+"plan.cost.sellNow" = "现价卖出 %@";
 "plan.reached" = "已到价";
 "plan.rowHelp" = "编辑这条计划";
 "plan.title.add" = "新建交易计划";

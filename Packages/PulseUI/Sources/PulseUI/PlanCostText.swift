@@ -25,9 +25,18 @@ public enum PlanCostText {
         }
 
         /// The sentence shown to the reader, in the reader's language.
+        ///
+        /// The warning directions name the action at the live quote in front of
+        /// the figure — "现价买入 多花 ¥2,696.00" — so the reader is told what
+        /// the number means for the trade they would place, not just that it
+        /// moved. The action is a sentence of its own and is composed here
+        /// rather than baked into each table value, so the direction rule stays
+        /// in `CostTone` where the other three surfaces can see it.
         public func text(currencyCode: String?) -> String {
-            PulseLocalization.localizedString(tone.localizationKey,
-                                              PriceFormatter.money(amount, currencyCode: currencyCode))
+            let figure = PriceFormatter.money(amount, currencyCode: currencyCode)
+            let sentence = PulseLocalization.localizedString(tone.localizationKey, figure)
+            guard let actionKey = tone.actionKey else { return sentence }
+            return PulseLocalization.localizedString(actionKey, sentence)
         }
     }
 

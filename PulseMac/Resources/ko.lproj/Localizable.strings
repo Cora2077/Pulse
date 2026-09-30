@@ -453,6 +453,9 @@
 "plan.cost.paysLess" = "%@ 덜 지불";
 "plan.cost.earnsLess" = "%@ 덜 수령";
 "plan.cost.earnsMore" = "%@ 더 수령";
+/* The action at the live quote, set in front of the two warnings */
+"plan.cost.buyNow" = "현재가 매수 %@";
+"plan.cost.sellNow" = "현재가 매도 %@";
 "plan.reached" = "도달";
 "plan.rowHelp" = "이 계획 편집";
 "plan.title.add" = "새 거래 계획";
