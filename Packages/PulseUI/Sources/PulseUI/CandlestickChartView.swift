@@ -326,6 +326,37 @@ public struct CandlestickChartView: View {
                   let movedIndex = indexForX(x + dx), let price = priceForY(y + dy) else { return nil }
             return ChartAnchor(time: candles[movedIndex].time, price: price)
         }
+        // The plan tag column sits over the newest bars, so a tag has to know their price
+        // envelope to step clear of it. Average lines count too: a tag on top of MA20 is just
+        // as unreadable as one on top of a candle.
+        func obstacleSpans() -> [ClosedRange<CGFloat>] {
+            let labelWidth = min(max(plot.width * 0.36, 74), 128)
+            guard visibleRange.upperBound > visibleRange.lowerBound,
+                  visibleRange.lowerBound >= 0,
+                  let firstIndex = ChartAnnotationMath.nearestIndex(
+                      atX: plot.maxX - labelWidth, domain: xDomain, plot: plot, count: candles.count
+                  ) else { return [] }
+            let start = min(max(firstIndex, visibleRange.lowerBound), visibleRange.upperBound - 1)
+            let end = min(visibleRange.upperBound, candles.count)
+            guard start < end else { return [] }
+
+            var low = Double.greatestFiniteMagnitude
+            var high = -Double.greatestFiniteMagnitude
+            for index in start..<end {
+                low = min(low, candles[index].low)
+                high = max(high, candles[index].high)
+                for series in movingAverages {
+                    if let value = series.values[safe: index] ?? nil {
+                        low = min(low, value)
+                        high = max(high, value)
+                    }
+                }
+            }
+            guard low.isFinite, high.isFinite, low <= high,
+                  let top = yForPrice(high), let bottom = yForPrice(low) else { return [] }
+            return [min(top, bottom)...max(top, bottom)]
+        }
+
         return ChartAnnotationCoordinates(
             plot: plot,
             pricePane: pricePane,
@@ -355,7 +386,8 @@ public struct CandlestickChartView: View {
             yForPrice: yForPrice,
             shiftAnchor: shift,
             pan: { viewport.pan(byPoints: $0) },
-            resetView: { viewport.reset() }
+            resetView: { viewport.reset() },
+            planLabelObstacles: obstacleSpans()
         )
     }
 

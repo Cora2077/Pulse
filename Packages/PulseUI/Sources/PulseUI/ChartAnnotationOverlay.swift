@@ -19,6 +19,9 @@ struct ChartAnnotationCoordinates {
     var shiftAnchor: (ChartAnchor, CGFloat, CGFloat) -> ChartAnchor?
     var pan: (CGFloat) -> Void
     var resetView: () -> Void
+    /// Y spans the plan tags must stay out of: the price envelope of the bars — and of the
+    /// average lines — sitting under the tag column. Empty means the tags are placed freely.
+    var planLabelObstacles: [ClosedRange<CGFloat>] = []
 }
 
 /// Shared interaction and rendering layer for the candle and intraday chart adapters.
@@ -458,10 +461,25 @@ struct ChartAnnotationOverlay: View {
         }
     }
 
+    /// Tag geometry, shared by the layout pass and the hit test. The tag stays inside the plot:
+    /// the axis gutter is only as wide as the price readout, so moving it there would cost the
+    /// size and the amount. Staying readable means the placement pass has to step the tag clear
+    /// of the candles underneath it instead.
+    private var planLabelSize: CGSize {
+        CGSize(width: min(max(coordinates.plot.width * 0.36, 74), 128), height: 19)
+    }
+
+    private var planLabelCenterX: CGFloat {
+        coordinates.plot.maxX - min(max(coordinates.plot.width * 0.18, 42), 65)
+    }
+
+    private var planLayerClip: CGRect { coordinates.pricePane }
+
     private var planLayer: some View {
         guard controller.showsPlans, !coordinates.sampleTimes.isEmpty else { return AnyView(EmptyView()) }
         let groups = visiblePlanGroups
         let placements = planLabelPlacements
+        let size = planLabelSize
         return AnyView(ZStack(alignment: .topLeading) {
             ForEach(groups) { group in
                 if let y = coordinates.yForPrice(group.key.price) {
@@ -481,11 +499,10 @@ struct ChartAnnotationOverlay: View {
                 .stroke(planColor(placement.group.key.kind).opacity(0.65), lineWidth: 0.8)
                 .allowsHitTesting(false)
                 planLabel(placement.group, beyondEdge: placement.isBeyondEdge)
-                    .frame(width: min(max(coordinates.plot.width * 0.36, 74), 128), height: 19)
-                    .position(x: coordinates.plot.maxX - min(max(coordinates.plot.width * 0.18, 42), 65),
-                              y: placement.labelY)
+                    .frame(width: size.width, height: size.height)
+                    .position(x: planLabelCenterX, y: placement.labelY)
             }
-        }.clippedTo(coordinates.pricePane))
+        }.clippedTo(planLayerClip))
     }
 
     @ViewBuilder
@@ -574,8 +591,18 @@ struct ChartAnnotationOverlay: View {
         .overlay(RoundedRectangle(cornerRadius: 4).stroke(color.opacity(0.8), lineWidth: 0.8))
     }
 
+    /// The tag itself is only wide enough for the price now, so the tooltip leads with the
+    /// full line — side, price, size — before the amount and the note.
     private func planTooltip(_ group: PlanGroup, reached: Bool) -> String {
-        ([PriceFormatter.money(group.plans.reduce(0) { $0 + $1.estimatedAmount }, currencyCode: configuration.currencyCode)]
+        let first = group.plans[0]
+        let kind = PulseLocalization.localizedString(first.kind == .buy ? "plan.kind.buy" : "plan.kind.sell")
+        let unit = configuration.quantityUnit ?? planQuantityUnit
+        let quantity = group.plans.reduce(0) { $0 + $1.quantity }
+        let headline = "\(kind) \(PriceFormatter.price(first.price, market: coordinates.market))"
+            + " · \(PriceFormatter.quantity(quantity))\(unit.map { " \($0)" } ?? "")"
+            + (group.plans.count > 1 ? " ×\(group.plans.count)" : "")
+        return ([headline,
+                 PriceFormatter.money(group.plans.reduce(0) { $0 + $1.estimatedAmount }, currencyCode: configuration.currencyCode)]
             + group.plans.compactMap(\.note).filter { !$0.isEmpty }
             + (reached ? [PulseLocalization.localizedString("plan.reached")] : [])).joined(separator: "\n")
     }
@@ -599,9 +626,12 @@ struct ChartAnnotationOverlay: View {
             let clippedY = min(max(y, coordinates.pricePane.minY + 10), coordinates.pricePane.maxY - 10)
             return PlanLabelCandidate(group: group, anchorY: clippedY, desiredY: y)
         }
+        let size = planLabelSize
         return ChartAnnotationMath.placePlanLabels(candidates,
                                                    bounds: coordinates.pricePane.minY...coordinates.pricePane.maxY,
-                                                   gap: 21)
+                                                   gap: size.height + 5,
+                                                   inset: size.height / 2 + 1,
+                                                   obstacles: coordinates.planLabelObstacles)
     }
 
     private func planEdgeHint(for price: Double) -> (percent: String, detail: String)? {
@@ -846,9 +876,10 @@ struct ChartAnnotationOverlay: View {
 
     private func isPlanLabelHit(_ point: CGPoint) -> Bool {
         guard controller.showsPlans, !coordinates.sampleTimes.isEmpty else { return false }
-        let minX = coordinates.plot.maxX - min(max(coordinates.plot.width * 0.36, 74), 128)
-        guard point.x >= minX, point.x <= coordinates.plot.maxX else { return false }
-        return planLabelPlacements.contains { abs(point.y - $0.labelY) <= 12 }
+        let size = planLabelSize
+        guard point.x >= planLabelCenterX - size.width / 2,
+              point.x <= planLabelCenterX + size.width / 2 else { return false }
+        return planLabelPlacements.contains { abs(point.y - $0.labelY) <= size.height / 2 + 2 }
     }
 
     private func distance(_ point: CGPoint, _ other: CGPoint) -> CGFloat {
@@ -957,16 +988,62 @@ enum ChartAnnotationMath {
         return CGRect(x: plot.minX, y: plot.minY, width: plot.width, height: plot.height * (1 - fraction))
     }
 
-    static func placePlanLabels(_ candidates: [PlanLabelCandidate], bounds: ClosedRange<CGFloat>, gap: CGFloat) -> [PlanLabelPlacement] {
+    /// The price pane when the bottom of the plot is shared with indicator bands. `fraction`
+    /// is the share of the plot height reserved below the candles (volume plus any MACD pane).
+    static func pricePane(plot: CGRect, reservingBottomFraction fraction: CGFloat) -> CGRect {
+        let clamped = min(max(fraction, 0), 0.8)
+        return CGRect(x: plot.minX, y: plot.minY, width: plot.width, height: plot.height * (1 - clamped))
+    }
+
+    /// Nudges `y` to the nearest spot that clears every obstacle, so a plan tag never lands on
+    /// top of the bars or average lines it is annotating. Keeps `y` when nothing is free.
+    static func avoidingObstacles(_ y: CGFloat, obstacles: [ClosedRange<CGFloat>], half: CGFloat,
+                                  low: CGFloat, high: CGFloat) -> CGFloat {
+        guard !obstacles.isEmpty else { return y }
+        // A hair of daylight, and a strict overlap test: a tag resting exactly on the envelope
+        // edge still reads as covering it.
+        let padding: CGFloat = 2
+        func isClear(_ value: CGFloat) -> Bool {
+            let top = value - half - padding
+            let bottom = value + half + padding
+            return !obstacles.contains { $0.lowerBound < bottom && $0.upperBound > top }
+        }
+        var best = y
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+        var candidates: [CGFloat] = [y]
+        for obstacle in obstacles {
+            candidates.append(obstacle.lowerBound - half - padding)
+            candidates.append(obstacle.upperBound + half + padding)
+        }
+        for candidate in candidates {
+            let clamped = min(max(candidate, low), high)
+            guard isClear(clamped) else { continue }
+            let distance = abs(clamped - y)
+            if distance < bestDistance {
+                bestDistance = distance
+                best = clamped
+            }
+        }
+        return best
+    }
+
+    static func placePlanLabels(_ candidates: [PlanLabelCandidate], bounds: ClosedRange<CGFloat>, gap: CGFloat,
+                               inset requestedInset: CGFloat? = nil,
+                               obstacles: [ClosedRange<CGFloat>] = []) -> [PlanLabelPlacement] {
         let sorted = candidates.sorted {
             if $0.anchorY != $1.anchorY { return $0.anchorY < $1.anchorY }
             return $0.group.id < $1.group.id
         }
         guard !sorted.isEmpty else { return [] }
-        let inset = min(8, max(bounds.upperBound - bounds.lowerBound, 0) / 2)
+        let inset = min(requestedInset ?? 8, max(bounds.upperBound - bounds.lowerBound, 0) / 2)
         let low = bounds.lowerBound + inset
         let high = bounds.upperBound - inset
-        var positions = sorted.map { min(max($0.anchorY, low), high) }
+        // Step every tag off the bars and average lines first; the pass below then keeps the
+        // tags from stacking on one another.
+        var positions = sorted.map {
+            avoidingObstacles(min(max($0.anchorY, low), high), obstacles: obstacles,
+                              half: inset, low: low, high: high)
+        }
         if positions.count > 1 {
             for index in 1..<positions.count {
                 positions[index] = max(positions[index], positions[index - 1] + gap)
