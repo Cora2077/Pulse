@@ -72,6 +72,44 @@ struct TradePlanTests {
         #expect(sell.gapPercent(from: 300) == 0)
     }
 
+    @Test("The money side of the gap folds its sign into a tone")
+    func costDelta() {
+        let buy = plan(kind: .buy, price: 200)
+
+        // Above the plan price a buy pays more; below it, less. The amount is
+        // the same either way round, and only the tone says which is which.
+        let aboveBuy = buy.costDelta(from: 212.6)
+        #expect(aboveBuy?.tone == .paysMore)
+        #expect(abs((aboveBuy?.amount ?? 0) - 1_260) < 0.01)   // (212.6 − 200) × 100
+
+        let belowBuy = buy.costDelta(from: 180)
+        #expect(belowBuy?.tone == .paysLess)
+        #expect(abs((belowBuy?.amount ?? 0) - 2_000) < 0.01)
+
+        // A sell reads the other way: a lower quote raises less, a higher one
+        // raises more.
+        let sell = plan(kind: .sell, price: 260)
+        let belowSell = sell.costDelta(from: 212.6)
+        #expect(belowSell?.tone == .earnsLess)
+        #expect(abs((belowSell?.amount ?? 0) - 4_740) < 0.01)  // (260 − 212.6) × 100
+
+        let aboveSell = sell.costDelta(from: 300)
+        #expect(aboveSell?.tone == .earnsMore)
+        #expect(abs((aboveSell?.amount ?? 0) - 4_000) < 0.01)
+
+        // Sitting exactly on the plan price is not a cost, so there is nothing
+        // to print and the caller keeps the percentage alone.
+        #expect(buy.costDelta(from: 200) == nil)
+
+        // No quote, no size, or a plan that was never priced: nothing to show
+        // rather than a phantom zero.
+        #expect(buy.costDelta(from: 0) == nil)
+        #expect(buy.costDelta(from: .nan) == nil)
+        #expect(plan(kind: .buy, price: 200, quantity: 0).costDelta(from: 210) == nil)
+        #expect(plan(kind: .buy, price: 200, quantity: -100).costDelta(from: 210) == nil)
+        #expect(plan(kind: .buy, price: 0).costDelta(from: 210) == nil)
+    }
+
     @Test("The stored order is deterministic and buys lead from the nearest price down")
     func orderedIsDeterministic() {
         let low = plan(kind: .buy, price: 185)

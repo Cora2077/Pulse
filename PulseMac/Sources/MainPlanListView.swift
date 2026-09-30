@@ -23,7 +23,7 @@ struct MainPlanListView: View {
     }
 
     private enum SortOrder: String, CaseIterable, Identifiable {
-        case reached, symbol, target, distance
+        case reached, symbol, target, distance, cost
 
         var id: String { rawValue }
         var titleKey: String { "main.planList.sort.\(rawValue)" }
@@ -96,6 +96,14 @@ struct MainPlanListView: View {
                 let leftGap = leftPrice.map { lhs.plan.gapPercent(from: $0) } ?? .infinity
                 let rightGap = rightPrice.map { rhs.plan.gapPercent(from: $0) } ?? .infinity
                 if leftGap != rightGap { return leftGap < rightGap }
+            case .cost:
+                // Biggest money first: the whole reason to look at this column
+                // is to find the plan whose price difference costs the most.
+                // Rows with no size or no quote have no amount to rank on and
+                // sink to the bottom.
+                let leftCost = leftPrice.flatMap { lhs.plan.costDelta(from: $0)?.amount } ?? -Double.infinity
+                let rightCost = rightPrice.flatMap { rhs.plan.costDelta(from: $0)?.amount } ?? -Double.infinity
+                if leftCost != rightCost { return leftCost > rightCost }
             }
             return lhs.id.uuidString < rhs.id.uuidString
         }
@@ -210,7 +218,7 @@ struct MainPlanListView: View {
                 }
                 .scrollIndicators(.visible)
             }
-            .frame(minWidth: 985, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(minWidth: 1_115, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(.horizontal, 18)
             .padding(.bottom, 12)
         }
@@ -224,6 +232,7 @@ struct MainPlanListView: View {
             columnHeader("main.planList.column.target", width: 108, alignment: .trailing)
             columnHeader("main.planList.column.current", width: 108, alignment: .trailing)
             columnHeader("main.planList.column.distance", width: 100, alignment: .trailing)
+            columnHeader("main.planList.column.cost", width: 130, alignment: .trailing)
             columnHeader("main.planList.column.quantity", width: 88, alignment: .trailing)
             columnHeader("main.planList.column.status", width: 115, alignment: .leading)
             columnHeader("main.planList.column.note", width: 175, alignment: .leading)
@@ -263,12 +272,20 @@ struct MainPlanListView: View {
             textCell(PriceFormatter.price(entry.plan.price, market: entry.symbol.market), width: 108, alignment: .trailing, monospaced: true)
             textCell(current.map { PriceFormatter.price($0, market: entry.symbol.market) } ?? "—", width: 108, alignment: .trailing, monospaced: true)
             textCell(distance.map(PriceFormatter.percentMagnitude) ?? "—", width: 100, alignment: .trailing, monospaced: true)
+            textCell(costText(entry, current: current), width: 130, alignment: .trailing, secondary: true)
             textCell(PriceFormatter.quantity(entry.plan.quantity), width: 88, alignment: .trailing, monospaced: true)
             statusCell(entry, reached: isReached(entry), hasQuote: current != nil)
             textCell(entry.plan.note?.isEmpty == false ? entry.plan.note! : "—", width: 175, alignment: .leading, secondary: true)
         }
         .font(.system(size: 10.5))
         .padding(.vertical, 6)
+    }
+
+    /// The money the quote is worth against the plan's own price. The label
+    /// already says which way it cuts, so the cell carries no sign of its own;
+    /// the em dash stands in wherever there is nothing to compare.
+    private func costText(_ entry: TradePlanEntry, current: Double?) -> String {
+        PlanCostText.string(for: entry.plan, current: current, symbol: entry.symbol) ?? "—"
     }
 
     private func columnHeader(_ key: String, width: CGFloat, alignment: Alignment) -> some View {

@@ -96,6 +96,70 @@ public extension TradePlan {
     /// What the plan would cost (buy) or raise (sell) at its own price.
     var estimatedAmount: Double { price * quantity }
 
+    /// Which way the live quote cuts against the plan's own price.
+    ///
+    /// Four cases rather than a sign, because "more money" is the wrong thing
+    /// for a sell and the right thing for a buy. Spelling all four out here
+    /// keeps the three surfaces that render this from each inventing their own
+    /// rule — the whole point of a money figure is that it is comparable
+    /// wherever you read it.
+    enum CostTone: Sendable, Equatable, CaseIterable {
+        /// A buy whose quote sits above the plan price.
+        case paysMore
+        /// A buy whose quote sits below the plan price.
+        case paysLess
+        /// A sell whose quote sits below the plan price.
+        case earnsLess
+        /// A sell whose quote sits above the plan price.
+        case earnsMore
+    }
+
+    /// The money between the live quote and the plan price, sized by the plan's
+    /// own quantity. `gapPercent` answers the same question in percent; this
+    /// answers it in the unit the decision is actually made in.
+    struct CostDelta: Sendable, Equatable {
+        /// How much money the difference is worth. Never negative — `tone`
+        /// carries the direction so a caller can format the number and pick a
+        /// label without re-deriving which way is which.
+        public let amount: Double
+        public let tone: CostTone
+
+        public init(amount: Double, tone: CostTone) {
+            self.amount = amount
+            self.tone = tone
+        }
+    }
+
+    /// How much more (or less) acting at the current quote costs versus acting
+    /// at the plan price. Negative amounts are folded into `tone`, so the
+    /// caller never has to know that a buy below its price is good news and a
+    /// sell below its price is not.
+    ///
+    /// Returns nil when there is nothing to compare: no usable quote, a plan
+    /// with no size attached, or a quote sitting exactly on the plan price —
+    /// a zero difference has no tone and no money in it, so the caller falls
+    /// back to the percentage alone rather than printing "0".
+    func costDelta(from current: Double) -> CostDelta? {
+        guard current.isFinite, current > 0,
+              price.isFinite, price > 0,
+              quantity.isFinite, quantity > 0 else { return nil }
+
+        let difference = switch kind {
+        case .buy: current - price
+        case .sell: price - current
+        }
+        let signed = difference * quantity
+        guard signed.isFinite, signed != 0 else { return nil }
+
+        let tone: CostTone = switch (kind, signed > 0) {
+        case (.buy, true): .paysMore
+        case (.buy, false): .paysLess
+        case (.sell, true): .earnsLess
+        case (.sell, false): .earnsMore
+        }
+        return CostDelta(amount: abs(signed), tone: tone)
+    }
+
     /// The one ordering the array is stored, rendered, and merged in.
     ///
     /// All three have to agree. Storing entry order while merging by id makes

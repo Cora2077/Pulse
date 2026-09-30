@@ -449,6 +449,10 @@
 "plan.empty" = "어느 가격에 무엇을 할지 적어 두세요.";
 "plan.more" = "%d개 더";
 "plan.gap" = "%@ 남음";
+"plan.cost.paysMore" = "%@ 더 지불";
+"plan.cost.paysLess" = "%@ 덜 지불";
+"plan.cost.earnsLess" = "%@ 덜 수령";
+"plan.cost.earnsMore" = "%@ 더 수령";
 "plan.reached" = "도달";
 "plan.rowHelp" = "이 계획 편집";
 "plan.title.add" = "새 거래 계획";
@@ -620,6 +624,7 @@
 "main.planList.action.markDropped" = "취소로 표시";
 "main.planList.action.markWaiting" = "대기로 표시";
 "main.planList.column.actions" = "작업";
+"main.planList.column.cost" = "금액 차이";
 "main.planList.column.current" = "현재가";
 "main.planList.column.distance" = "차이";
 "main.planList.column.kind" = "구분";
@@ -637,6 +642,7 @@
 "main.planList.filter.waiting" = "대기 중";
 "main.planList.noMatches" = "일치하는 계획이 없습니다";
 "main.planList.search" = "코드, 이름 또는 메모 검색";
+"main.planList.sort.cost" = "금액 차이";
 "main.planList.sort.distance" = "차이";
 "main.planList.sort.label" = "정렬";
 "main.planList.sort.reached" = "도달 우선";

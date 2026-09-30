@@ -449,6 +449,10 @@
 "plan.empty" = "写下你打算在什么价位做什么。";
 "plan.more" = "还有 %d 条";
 "plan.gap" = "还差 %@";
+"plan.cost.paysMore" = "多花 %@";
+"plan.cost.paysLess" = "少花 %@";
+"plan.cost.earnsLess" = "少赚 %@";
+"plan.cost.earnsMore" = "多赚 %@";
 "plan.reached" = "已到价";
 "plan.rowHelp" = "编辑这条计划";
 "plan.title.add" = "新建交易计划";
@@ -620,6 +624,7 @@
 "main.planList.action.markDropped" = "标记为已放弃";
 "main.planList.action.markWaiting" = "标记为等待";
 "main.planList.column.actions" = "操作";
+"main.planList.column.cost" = "金额差";
 "main.planList.column.current" = "现价";
 "main.planList.column.distance" = "距离";
 "main.planList.column.kind" = "方向";
@@ -637,6 +642,7 @@
 "main.planList.filter.waiting" = "待触发";
 "main.planList.noMatches" = "没有匹配的计划";
 "main.planList.search" = "搜索代码、名称或备注";
+"main.planList.sort.cost" = "金额差";
 "main.planList.sort.distance" = "差距";
 "main.planList.sort.label" = "排序";
 "main.planList.sort.reached" = "到价优先";

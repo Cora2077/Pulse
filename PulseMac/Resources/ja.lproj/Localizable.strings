@@ -449,6 +449,10 @@
 "plan.empty" = "どの価格で何をするつもりかを書き留めてください。";
 "plan.more" = "他 %d 件";
 "plan.gap" = "あと %@";
+"plan.cost.paysMore" = "%@ 多く支払う";
+"plan.cost.paysLess" = "%@ 少なく支払う";
+"plan.cost.earnsLess" = "%@ 少なく受け取る";
+"plan.cost.earnsMore" = "%@ 多く受け取る";
 "plan.reached" = "到達";
 "plan.rowHelp" = "このプランを編集";
 "plan.title.add" = "取引プランを作成";
@@ -620,6 +624,7 @@
 "main.planList.action.markDropped" = "見送りにする";
 "main.planList.action.markWaiting" = "待機にする";
 "main.planList.column.actions" = "操作";
+"main.planList.column.cost" = "計画との差額";
 "main.planList.column.current" = "現在値";
 "main.planList.column.distance" = "距離";
 "main.planList.column.kind" = "売買";
@@ -637,6 +642,7 @@
 "main.planList.filter.waiting" = "待機中";
 "main.planList.noMatches" = "一致する計画はありません";
 "main.planList.search" = "コード、名称、メモを検索";
+"main.planList.sort.cost" = "計画との差額";
 "main.planList.sort.distance" = "乖離";
 "main.planList.sort.label" = "並べ替え";
 "main.planList.sort.reached" = "到達優先";

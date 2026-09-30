@@ -1121,17 +1121,27 @@ struct DetailView: View {
         case .cancelled:
             planStatusLabel("plan.status.cancelled")
         case .active:
-            if reached {
-                Text(PulseLocalization.localizedString("plan.reached"))
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(appState.palette.color(isUp: plan.kind == .buy))
-            } else if let quote {
-                Text(PulseLocalization.localizedString(
-                    "plan.gap",
-                    PriceFormatter.percentMagnitude(plan.gapPercent(from: quote.price))
-                ))
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+            HStack(spacing: 5) {
+                if reached {
+                    Text(PulseLocalization.localizedString("plan.reached"))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(appState.palette.color(isUp: plan.kind == .buy))
+                } else if let quote {
+                    Text(PulseLocalization.localizedString(
+                        "plan.gap",
+                        PriceFormatter.percentMagnitude(plan.gapPercent(from: quote.price))
+                    ))
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                }
+                // The percentage says how far the price still has to travel;
+                // the money says what it is worth when it gets there. Both sit
+                // on the same line because the row has no height to spare.
+                if let cost = PlanCostText.string(for: plan, current: quote?.price, symbol: symbol) {
+                    Text(cost)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
     }

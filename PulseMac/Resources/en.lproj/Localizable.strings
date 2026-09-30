@@ -503,6 +503,10 @@
 "plan.empty" = "Write down what you plan to do at which price.";
 "plan.more" = "%d more";
 "plan.gap" = "%@ to go";
+"plan.cost.paysMore" = "Pay %@ more";
+"plan.cost.paysLess" = "Pay %@ less";
+"plan.cost.earnsLess" = "Receive %@ less";
+"plan.cost.earnsMore" = "Receive %@ more";
 "plan.reached" = "In Range";
 "plan.rowHelp" = "Edit this plan";
 "plan.title.add" = "New Trade Plan";
@@ -620,6 +624,7 @@
 "main.planList.action.markDropped" = "Mark abandoned";
 "main.planList.action.markWaiting" = "Mark waiting";
 "main.planList.column.actions" = "Actions";
+"main.planList.column.cost" = "Money Gap";
 "main.planList.column.current" = "Current";
 "main.planList.column.distance" = "Distance";
 "main.planList.column.kind" = "Side";
@@ -637,6 +642,7 @@
 "main.planList.filter.waiting" = "Waiting";
 "main.planList.noMatches" = "No matching plans";
 "main.planList.search" = "Search symbol, name, or note";
+"main.planList.sort.cost" = "Money gap";
 "main.planList.sort.distance" = "Distance";
 "main.planList.sort.label" = "Sort";
 "main.planList.sort.reached" = "Reached first";

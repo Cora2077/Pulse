@@ -165,19 +165,34 @@ struct PlanListView: View {
         case .cancelled:
             statusLabel("plan.status.cancelled")
         case .active:
-            if reached {
-                Text(PulseLocalization.localizedString("plan.reached"))
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(appState.palette.color(isUp: entry.plan.kind == .buy))
+            HStack(spacing: 5) {
+                if reached {
+                    Text(PulseLocalization.localizedString("plan.reached"))
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(appState.palette.color(isUp: entry.plan.kind == .buy))
+                        .fixedSize()
+                } else if let price = currentPrice(entry.symbol) {
+                    Text(PulseLocalization.localizedString(
+                        "plan.gap",
+                        PriceFormatter.percentMagnitude(entry.plan.gapPercent(from: price))
+                    ))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
                     .fixedSize()
-            } else if let price = currentPrice(entry.symbol) {
-                Text(PulseLocalization.localizedString(
-                    "plan.gap",
-                    PriceFormatter.percentMagnitude(entry.plan.gapPercent(from: price))
-                ))
-                .font(.system(size: 9.5))
-                .foregroundStyle(.tertiary)
-                .fixedSize()
+                }
+                // The money beside the percentage: same line, same weight, so
+                // the row still reads as one status rather than two columns
+                // fighting for a 340pt panel.
+                if let cost = PlanCostText.string(
+                    for: entry.plan,
+                    current: currentPrice(entry.symbol),
+                    symbol: entry.symbol
+                ) {
+                    Text(cost)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize()
+                }
             }
         }
     }
