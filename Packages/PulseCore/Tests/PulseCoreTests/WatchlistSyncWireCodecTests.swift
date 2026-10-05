@@ -31,6 +31,20 @@ final class WatchlistSyncWireCodecTests: XCTestCase {
         XCTAssertTrue(object["updatedAt"] is NSNumber, "wire dates should use Codable's numeric Date representation")
     }
 
+    func testV4PreservesTradeReview() throws {
+        var snapshot = makeSnapshot(date: Date(timeIntervalSinceReferenceDate: 812_345_678.125))
+        snapshot.items[0].transactions[0].review = PositionTransactionReview(
+            followedPlan: false,
+            retrospective: "Wait for confirmation next time"
+        )
+
+        let data = try WatchlistSyncWireCodec.encode(deviceID: deviceID, snapshot: snapshot)
+        let decoded = try WatchlistSyncWireCodec.decode(data)
+
+        XCTAssertEqual(decoded.version, 4)
+        XCTAssertEqual(decoded.snapshot, snapshot)
+    }
+
     func testInvalidAndDuplicateDrawingsAreRejected() throws {
         let symbol = SymbolID(market: .us, code: "AAPL")
         var invalidSnapshot = WatchlistSyncSnapshot(items: [WatchItem(symbol: symbol, displayName: "Apple")], groups: [])
@@ -91,7 +105,7 @@ final class WatchlistSyncWireCodecTests: XCTestCase {
     func testUnsupportedVersionsIncludingZeroAreRejected() throws {
         let snapshot = WatchlistSyncSnapshot(items: [], groups: [])
 
-        for version in [0, 4] {
+        for version in [0, WatchlistSyncWireCodec.currentVersion + 1] {
             let data = try encodePayload(
                 version: version,
                 deviceID: deviceID,

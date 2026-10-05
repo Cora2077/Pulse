@@ -251,9 +251,19 @@ final class FolderSyncController {
         let examples: [String]
     }
 
+    struct PositionAllocationConflictSummary: Identifiable {
+        let peerID: String
+        let symbol: SymbolID
+        let local: PositionAllocation?
+        let remote: PositionAllocation?
+        var id: String { "\(peerID):\(symbol.description)" }
+    }
+
     private struct PendingConflict {
         var remote: WatchlistSyncSnapshot
         var conflicts: [WatchlistSyncMerge.TransactionConflict]
+        var positionAllocationConflicts: [WatchlistSyncMerge.PositionAllocationConflict]
+        var brokerageConflict: WatchlistSyncMerge.BrokerageConflict?
     }
 
     private static let folderBookmarkKey = "pulse.folderSync.bookmark.v1"
@@ -276,6 +286,7 @@ final class FolderSyncController {
     private(set) var lastWriteAt: Date?
     private(set) var lastError: String?
     private(set) var conflictSummaries: [ConflictSummary] = []
+    private(set) var positionAllocationConflicts: [PositionAllocationConflictSummary] = []
 
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
@@ -356,6 +367,7 @@ final class FolderSyncController {
             lastWriteAt = nil
             pendingConflicts.removeAll()
             conflictSummaries = []
+            positionAllocationConflicts = []
             localWritePending = true
             if pollTask == nil { startPolling() }
             syncNow()
@@ -375,6 +387,7 @@ final class FolderSyncController {
         selectedFolderScopeID = nil
         pendingConflicts.removeAll()
         conflictSummaries = []
+        positionAllocationConflicts = []
         lastError = nil
         lastReadAt = nil
         lastWriteAt = nil
@@ -478,10 +491,12 @@ final class FolderSyncController {
                 }
                 let local = store.syncSnapshot()
                 let result = WatchlistSyncMerge.merge(base: baseline, local: local, remote: peerFile.snapshot)
-                guard result.conflicts.isEmpty else {
+                guard result.isConflictFree else {
                     pendingConflicts[peer.deviceID] = PendingConflict(
                         remote: peerFile.snapshot,
-                        conflicts: result.conflicts
+                        conflicts: result.conflicts,
+                        positionAllocationConflicts: result.positionAllocationConflicts,
+                        brokerageConflict: result.brokerageConflict
                     )
                     continue
                 }
@@ -569,7 +584,7 @@ final class FolderSyncController {
             let local = store.syncSnapshot()
             let baseline = loadPeerBase(folderScopeID: folderScopeID, peerID: peerID) ?? Self.emptySnapshot
             let latest = WatchlistSyncMerge.merge(base: baseline, local: local, remote: freshPeerFile.snapshot)
-            if latest.conflicts.isEmpty {
+            if latest.isConflictFree {
                 applyingRemote = true
                 _ = store.applySyncSnapshot(latest.snapshot)
                 applyingRemote = false
@@ -582,8 +597,14 @@ final class FolderSyncController {
                 rerunRequested = true
                 return
             }
-            guard latest.conflicts == expected.conflicts else {
-                pendingConflicts[peerID] = PendingConflict(remote: freshPeerFile.snapshot, conflicts: latest.conflicts)
+            guard latest.conflicts == expected.conflicts,
+                  latest.positionAllocationConflicts == expected.positionAllocationConflicts,
+                  latest.brokerageConflict == expected.brokerageConflict else {
+                pendingConflicts[peerID] = PendingConflict(
+                    remote: freshPeerFile.snapshot, conflicts: latest.conflicts,
+                    positionAllocationConflicts: latest.positionAllocationConflicts,
+                    brokerageConflict: latest.brokerageConflict
+                )
                 refreshConflictSummaries()
                 lastError = PulseLocalization.localizedString("sync.conflict.changed")
                 return
@@ -620,12 +641,21 @@ final class FolderSyncController {
     }
 
     private func refreshConflictSummaries() {
+        positionAllocationConflicts = pendingConflicts.keys.sorted().flatMap { peerID in
+            (pendingConflicts[peerID]?.positionAllocationConflicts ?? []).map {
+                PositionAllocationConflictSummary(peerID: peerID, symbol: $0.symbol, local: $0.local, remote: $0.remote)
+            }
+        }
         conflictSummaries = pendingConflicts.keys.sorted().compactMap { peerID in
             guard let conflict = pendingConflicts[peerID] else { return nil }
-            let examples = conflict.conflicts.prefix(3).map {
+            let accountExamples = conflict.brokerageConflict == nil ? [] : ["证券账号账本或资金设置冲突 · 选择将保留所选设备的全部账号数据（含现金、预算、板块上限）"]
+            let examples = accountExamples + conflict.conflicts.prefix(3).map {
                 "\($0.symbol.displayCode) · \($0.transactionID.uuidString.prefix(8))"
-            }
-            return ConflictSummary(id: peerID, count: conflict.conflicts.count, examples: examples)
+            } + conflict.positionAllocationConflicts.prefix(3).map { "\($0.symbol.displayCode) · 仓位分账" }
+            return ConflictSummary(
+                id: peerID, count: conflict.conflicts.count + conflict.positionAllocationConflicts.count + (conflict.brokerageConflict == nil ? 0 : 1),
+                examples: Array(examples.prefix(3))
+            )
         }
     }
 

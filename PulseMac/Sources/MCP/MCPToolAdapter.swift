@@ -34,6 +34,20 @@ final class MCPToolAdapter {
         }
         do {
             let arguments = try ToolArguments(params.arguments, allowed: spec.argumentNames)
+            if spec.requiresAccount {
+                let rawAccount = try arguments.optionalString("account_id")
+                if commands.brokerageAccountsEnabled && rawAccount == nil {
+                    throw ToolFailure(code: "account_required", message: "Specify account_id: unassigned, financing, or mengmeng. Call list_brokerage_accounts first.")
+                }
+                if let rawAccount {
+                    guard let account = BrokerageAccountID(rawValue: rawAccount),
+                          commands.brokerageAccountsEnabled || account == .unassigned else {
+                        throw ToolFailure(code: "invalid_account", message: "Unknown or unavailable brokerage account.")
+                    }
+                    let scoped = MCPToolAdapter(commands: commands.scoped(to: account), poke: poke)
+                    return try await spec.run(scoped, arguments)
+                }
+            }
             return try await spec.run(self, arguments)
         } catch let failure as ToolFailure {
             return Self.failureResult(failure)
@@ -47,6 +61,7 @@ final class MCPToolAdapter {
     private struct ToolSpec {
         let tool: Tool
         let argumentNames: Set<String>
+        let requiresAccount: Bool
         let run: @MainActor (MCPToolAdapter, ToolArguments) async throws -> CallTool.Result
 
         init(
@@ -57,6 +72,14 @@ final class MCPToolAdapter {
             readOnly: Bool = false,
             run: @escaping @MainActor (MCPToolAdapter, ToolArguments) async throws -> CallTool.Result
         ) {
+            requiresAccount = !["search_symbols", "get_quotes", "list_brokerage_accounts"].contains(name)
+            var properties = properties
+            if requiresAccount {
+                properties["account_id"] = .object([
+                    "type": "string", "enum": .array(["unassigned", "financing", "mengmeng"].map { .string($0) }),
+                    "description": "Required when brokerage accounts are enabled. Identifies the account whose independent records this operation reads or changes."
+                ])
+            }
             self.tool = Tool(
                 name: name,
                 description: description,
@@ -74,6 +97,9 @@ final class MCPToolAdapter {
     }
 
     private static let specs: [ToolSpec] = [
+        ToolSpec(name: "list_brokerage_accounts", description: "List brokerage account IDs, the UI's current account, and account-local record counts. Account names: financing = 融资账号, mengmeng = 萌萌账号, unassigned = 未归属.", readOnly: true) { adapter, _ in
+            try MCPToolAdapter.success(adapter.commands.listBrokerageAccounts())
+        },
         ToolSpec(
             name: "list_watchlists",
             description: "List every watchlist group with its id, name, and symbols.",

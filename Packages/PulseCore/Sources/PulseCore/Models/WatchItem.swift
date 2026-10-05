@@ -46,6 +46,12 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
     /// User-authored chart annotations. Deletions remain here as tombstones so
     /// offline sync peers cannot revive an older copy.
     public var drawings: [ChartDrawing]
+    /// Optional risk and sector context entered by the user.
+    public var tradingProfile: TradingProfile?
+    /// User-entered earnings, dividend, unlock, and other instrument events.
+    public var events: [InstrumentEvent]
+    /// User-owned holding buckets. The ledger remains the sole source of actual quantity and P&L.
+    public var positionAllocation: PositionAllocation?
 
     public init(
         symbol: SymbolID,
@@ -57,7 +63,10 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         transactions: [PositionTransaction] = [],
         thesis: String? = nil,
         plans: [TradePlan] = [],
-        drawings: [ChartDrawing] = []
+        drawings: [ChartDrawing] = [],
+        tradingProfile: TradingProfile? = nil,
+        events: [InstrumentEvent] = [],
+        positionAllocation: PositionAllocation? = nil
     ) {
         self.symbol = symbol
         self.displayName = displayName
@@ -69,11 +78,14 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         self.thesis = thesis
         self.plans = plans
         self.drawings = drawings
+        self.tradingProfile = tradingProfile
+        self.events = events
+        self.positionAllocation = positionAllocation
     }
 
     enum CodingKeys: String, CodingKey {
         case symbol, displayName, displayNameSource, instrumentType, addedAt, lots, transactions
-        case thesis, drawings
+        case thesis, drawings, tradingProfile, events, positionAllocation
         case plans
     }
 
@@ -89,6 +101,9 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         thesis = try container.decodeIfPresent(String.self, forKey: .thesis)
         plans = try container.decodeIfPresent([TradePlan].self, forKey: .plans) ?? []
         drawings = try container.decodeIfPresent([ChartDrawing].self, forKey: .drawings) ?? []
+        tradingProfile = try container.decodeIfPresent(TradingProfile.self, forKey: .tradingProfile)
+        events = try container.decodeIfPresent([InstrumentEvent].self, forKey: .events) ?? []
+        positionAllocation = try container.decodeIfPresent(PositionAllocation.self, forKey: .positionAllocation)
     }
 
     public var id: SymbolID { symbol }

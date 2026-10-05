@@ -17,8 +17,17 @@ final class AppState {
     let settings: AppSettings
     let onboarding: OnboardingState
     let watchlist: WatchlistStore
+    let sharedWatchlist: SharedWatchlist
     let folderSync: FolderSyncController
     let market: MarketStore
+    let planAlerts: PlanAlertController
+    let localBackups: LocalBackupController
+    let sectorLimits: SectorLimitSettings
+    let poolBudgets: PoolBudgetSettings
+    let tradingEvents: TradingEventsController
+    var pendingPlanAlertTarget: BrokerageAlertTarget?
+    var pendingPoolPlanID: UUID?
+    var pendingJournalTransactionID: UUID?
     let engine: RefreshEngine
     let isMainWindowDemo: Bool
     @ObservationIgnored private let isOfflinePreview: Bool
@@ -110,6 +119,7 @@ final class AppState {
         let watchlist = WatchlistStore(defaults: storeDefaults)
         let folderSync = FolderSyncController(store: watchlist, defaults: storeDefaults)
         let market = MarketStore()
+        let sectorLimits = SectorLimitSettings(defaults: storeDefaults)
         // Image-rendering self-tests do not need live credentials. Skipping Keychain access
         // also keeps the headless test from waiting on an authorization prompt.
         let authContext: (LongbridgeAuth?, LongbridgeAuthState) = isOfflinePreview
@@ -134,9 +144,37 @@ final class AppState {
         self.settings = settings
         self.onboarding = onboarding
         self.watchlist = watchlist
+        self.sharedWatchlist = SharedWatchlist(store: watchlist, defaults: storeDefaults)
         self.folderSync = folderSync
         self.market = market
+        self.planAlerts = PlanAlertController(
+            store: watchlist, market: market, defaults: storeDefaults,
+            isOffline: isOfflinePreview || CommandLine.arguments.contains { $0.contains("selftest") },
+            sectorLimits: sectorLimits
+        )
+        self.localBackups = LocalBackupController(
+            store: watchlist,
+            backupStore: isMainWindowDemo
+                ? LocalBackupStore(
+                    bundleIdentifier: "pulse-demo-\(UUID())",
+                    applicationSupportURL: FileManager.default.temporaryDirectory
+                )
+                : LocalBackupStore(bundleIdentifier: Bundle.main.bundleIdentifier ?? "app.pulse.mac"),
+            defaults: storeDefaults,
+            isAvailable: (!isOfflinePreview || isMainWindowDemo)
+                && !CommandLine.arguments.contains { $0.contains("selftest") }
+        ) { snapshot in
+            guard !folderSync.isSyncing, folderSync.conflictSummaries.isEmpty else {
+                throw NSError(domain: "PulseBackup", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "请等待同步完成并处理同步冲突后再恢复备份。"
+                ])
+            }
+            try watchlist.restoreBackup(snapshot)
+        }
         self.provider = provider
+        self.sectorLimits = sectorLimits
+        self.poolBudgets = PoolBudgetSettings(defaults: storeDefaults, accountID: watchlist.activeBrokerageAccountID)
+        self.tradingEvents = TradingEventsController(defaults: storeDefaults)
         self.binance = binance
         self.longbridge = longbridge
         self.fuyao = fuyao
@@ -157,10 +195,34 @@ final class AppState {
                                     pollOverrides: settings.providerPollIntervals)
         self.liveStreaming = false
         #if DEBUG
-        if isMainWindowDemo { MainWindowDemo.seed(state: self) }
+        if isMainWindowDemo {
+            MainWindowDemo.seed(state: self)
+            localBackups.createManualBackup()
+        }
         #endif
+        if !CommandLine.arguments.contains(where: { $0.contains("selftest") }) {
+            // Preserve a verified pre-migration backup before enabling account data.
+            if !watchlist.brokerageAccountsEnabled,
+               isOfflinePreview || localBackups.createManualBackup() {
+                watchlist.enableBrokerageAccounts()
+            }
+            _ = preparePositionAllocations()
+        }
+        if watchlist.brokerageAccountsEnabled {
+            let migrationAccounts = Set(BrokerageAccountID.allCases.filter { watchlist.brokerageSettings(for: $0) == nil })
+            poolBudgets.attach(to: watchlist, migrating: migrationAccounts)
+            sectorLimits.attach(to: watchlist, migrating: migrationAccounts)
+            poolBudgets.selectBrokerageAccount(watchlist.activeBrokerageAccountID)
+            sectorLimits.selectBrokerageAccount(watchlist.activeBrokerageAccountID)
+            for id in migrationAccounts where watchlist.brokerageSettings(for: id) == nil {
+                _ = watchlist.setBrokerageSettings(.init(), for: id)
+            }
+            if !migrationAccounts.isEmpty { localBackups.createManualBackup() }
+        }
         if !isOfflinePreview { engine.start() }
         let isSelfTestMode = CommandLine.arguments.contains { $0.contains("selftest") }
+        planAlerts.onOpen = { [weak self] target in self?.pendingPlanAlertTarget = target }
+        if !isSelfTestMode && !isOfflinePreview { planAlerts.start() }
         if !isSelfTestMode && !isOfflinePreview { folderSync.start() }
         if !isOfflinePreview { startRotation() }
         observeMenuTracking()
@@ -203,6 +265,22 @@ final class AppState {
             return (.apiKey(credentials), .apiKey)
         }
         return (nil, .none)
+    }
+
+    /// Save and read back an independent snapshot before classifying legacy holdings.
+    @discardableResult
+    func preparePositionAllocations() -> Bool {
+        let snapshot = watchlist.syncSnapshot()
+        let needsInitialization = snapshot.allAccountItems.contains {
+            $0.supportsPosition && $0.positionQuantity > 0 && $0.positionAllocation == nil
+        }
+        guard needsInitialization else { return true }
+        guard isMainWindowDemo || localBackups.createManualBackup() else { return false }
+        let accounts = watchlist.brokerageAccountsEnabled ? BrokerageAccountID.allCases : [watchlist.activeBrokerageAccountID]
+        for account in accounts {
+            watchlist.withBrokerageAccount(account) { watchlist.initializePositionAllocations() }
+        }
+        return true
     }
 
     /// Refresh tokens rotate on every refresh; the session persists each rotation to the
@@ -474,7 +552,7 @@ final class AppState {
         case .compact:
             return nil
         case .single:
-            let items = watchlist.allItems
+            let items = sharedWatchlist.allItems
             guard !items.isEmpty else { return nil }
             if let primary = settings.primarySymbol,
                let item = items.first(where: { $0.symbol == primary }) {
@@ -482,22 +560,37 @@ final class AppState {
             }
             return items.first
         case .rotate:
-            let items = watchlist.items(in: menuBarRotationGroupID)
+            let items = sharedWatchlist.items(in: menuBarRotationGroupID)
             guard !items.isEmpty else { return nil }
             return items[rotationIndex % items.count]
         }
     }
 
     var menuBarRotationGroupID: UUID? {
-        if let id = settings.rotateGroupID, watchlist.group(for: id) != nil { return id }
-        return watchlist.groups.first?.id
+        if let id = settings.rotateGroupID, sharedWatchlist.group(for: id) != nil { return id }
+        return sharedWatchlist.groups.first?.id
     }
 
     func setMenuBarRotationGroup(_ id: UUID) {
-        guard watchlist.group(for: id) != nil else { return }
+        guard sharedWatchlist.group(for: id) != nil else { return }
         settings.rotateGroupID = id
         rotationIndex = 0
     }
+
+    @discardableResult
+    func selectBrokerageAccount(_ id: BrokerageAccountID) -> Bool {
+        guard watchlist.selectBrokerageAccount(id) else { return false }
+        poolBudgets.selectBrokerageAccount(id)
+        sectorLimits.selectBrokerageAccount(id)
+        pendingPlanAlertTarget = nil
+        pendingPoolPlanID = nil
+        pendingJournalTransactionID = nil
+        _ = preparePositionAllocations()
+        watchlistSymbolsChanged()
+        engine.poke()
+        return true
+    }
+
 
     func watchlistGroupsChanged() {
         if settings.rotateGroupID != menuBarRotationGroupID {
@@ -519,7 +612,7 @@ final class AppState {
     /// One presentation name per instrument, independent of whichever provider
     /// currently supplies its price. Quote names remain source metadata only.
     func displayName(for symbol: SymbolID) -> String {
-        if let item = watchlist.item(for: symbol) {
+        if let item = sharedWatchlist.item(for: symbol) {
             return item.resolvedDisplayName
         }
         if let index = symbol.indexID {
@@ -531,7 +624,7 @@ final class AppState {
     /// Calculated benchmarks, not traded securities: catalog indices carry an
     /// `indexID`; search-classified ones rely on the stored instrument type.
     func isIndex(_ symbol: SymbolID) -> Bool {
-        symbol.indexID != nil || watchlist.item(for: symbol)?.resolvedInstrumentType == .index
+        symbol.indexID != nil || sharedWatchlist.item(for: symbol)?.resolvedInstrumentType == .index
     }
 
     /// The US pre/post setting only applies to instruments that trade those
@@ -555,7 +648,7 @@ final class AppState {
                 let interval = self?.settings.rotateInterval ?? 6
                 try? await Task.sleep(for: .seconds(interval))
                 guard let self, self.settings.menuBarMode == .rotate else { continue }
-                let count = self.watchlist.items(in: self.menuBarRotationGroupID).count
+                let count = self.sharedWatchlist.items(in: self.menuBarRotationGroupID).count
                 guard count > 0 else { continue }
                 self.rotationIndex = (self.rotationIndex + 1) % count
             }
@@ -634,7 +727,7 @@ final class AppState {
         watchlistStreamTask?.cancel()
         watchlistStreamTask = nil
         watchlistStreamSessionID = nil
-        let symbols = Set(isAnyHostVisible ? watchlist.symbols : [])
+        let symbols = Set(isAnyHostVisible ? watchlist.quoteSymbols : [])
             .union(detailInterestedSymbols)
             .sorted { $0.displayCode < $1.displayCode }
         guard !symbols.isEmpty else {

@@ -27,18 +27,28 @@ struct TradeEntryView: View {
     @State private var feeText: String
     @State private var date: Date
     @State private var showsCalendar = false
+    /// Which money bought these shares. `nil` in record mode is the honest
+    /// default — the user has not said — and an edited trade is seeded from
+    /// what it already carries so re-saving cannot silently erase it.
+    @State private var fundingSource: PositionFundingSource?
     /// Daily candles backing the market-closed hint — whatever the detail
     /// chart already cached, or one fetch on first open.
     @State private var dailyCandles: [Candle] = []
     /// Return can reach `save()` twice in one keypress (field submit + default
     /// action); the first write wins so a trade is never recorded twice.
     @State private var didSave = false
+    /// The account this draft belongs to, frozen when the form is built: a
+    /// trade is recorded against the ledger the user was filling in, and the
+    /// store object survives an account switch with a different ledger inside.
+    @State private var draftAccount: BrokerageAccountID
+    @State private var accountChangedMessage: String?
 
     init(
         symbol: SymbolID,
         side: TradeSide,
         returnRoute: PositionReturnRoute,
-        route: Binding<PopoverRoute>
+        route: Binding<PopoverRoute>,
+        account: BrokerageAccountID
     ) {
         self.symbol = symbol
         self.recordSide = side
@@ -49,13 +59,18 @@ struct TradeEntryView: View {
         _quantityText = State(initialValue: "")
         _feeText = State(initialValue: "")
         _date = State(initialValue: Self.marketToday(for: symbol.market))
+        // A fresh buy keeps "not annotated": the app must never guess that a
+        // trade was funded on margin, and the user can say so in one click.
+        _fundingSource = State(initialValue: nil)
+        _draftAccount = State(initialValue: account)
     }
 
     init(
         symbol: SymbolID,
         editing transaction: PositionTransaction,
         returnRoute: PositionReturnRoute,
-        route: Binding<PopoverRoute>
+        route: Binding<PopoverRoute>,
+        account: BrokerageAccountID
     ) {
         self.symbol = symbol
         self.recordSide = transaction.kind == .sell ? .sell : .buy
@@ -66,6 +81,17 @@ struct TradeEntryView: View {
         _quantityText = State(initialValue: Self.fieldText(transaction.quantity))
         _feeText = State(initialValue: transaction.fee.map(Self.fieldText) ?? "")
         _date = State(initialValue: Calendar.current.startOfDay(for: transaction.date))
+        _fundingSource = State(initialValue: transaction.fundingSource)
+        _draftAccount = State(initialValue: account)
+    }
+
+    /// Whether the store is still pointed at the ledger this draft was built
+    /// against. The symbol and the transaction id travel with the form, but
+    /// neither authorizes a write: an account switch replaces the ledger behind
+    /// the same store object, and an id that still exists in the new ledger
+    /// would otherwise be edited by a form filled in for the old one.
+    private var accountMatchesDraft: Bool {
+        appState.watchlist.activeBrokerageAccountID == draftAccount
     }
 
     /// "Today" for this form is the market's own calendar date, not the
@@ -133,13 +159,24 @@ struct TradeEntryView: View {
             : .position(symbol, returnRoute)
     }
 
+    /// Whether the draft's own account no longer matches the store. The form
+    /// stops writing and says so; the caller resets the page from its own
+    /// account watcher.
+    private var showsAccountNotice: Bool { accountChangedMessage != nil }
+
     var body: some View {
         VStack(spacing: 0) {
             PositionPageHeader(
                 symbol: symbol,
                 title: (title, sideColor),
+                // The frozen account, never the live one: a caption that
+                // followed a switch would name the wrong ledger for the draft.
+                accountCaption: AccountIdentity.title(draftAccount),
                 onBack: { route = dismissRoute }
             )
+            if let accountChangedMessage {
+                accountChangedRow(accountChangedMessage)
+            }
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     PositionInputCell(
@@ -169,6 +206,7 @@ struct TradeEntryView: View {
                         .foregroundStyle(.red)
                 }
                 dateRow
+                fundingRow
                 if let closedDayHint {
                     Text(closedDayHint)
                         .font(.caption2)
@@ -193,6 +231,7 @@ struct TradeEntryView: View {
                         Text(PulseLocalization.localizedString("action.delete"))
                             .foregroundStyle(.red)
                     }
+                    .disabled(showsAccountNotice)
                 }
                 Spacer()
                 Button(PulseLocalization.localizedString("action.cancel")) {
@@ -208,6 +247,35 @@ struct TradeEntryView: View {
         // (the button's default action covers Return when no field has focus).
         .onSubmit { save() }
         .task(id: symbol) { await loadDailyCandles() }
+        .onChange(of: appState.watchlist.activeBrokerageAccountID) { _, _ in
+            noteAccountChange()
+        }
+    }
+
+    /// One line, at the top of the form, when the ledger underneath it changed.
+    /// The draft is not silently re-pointed at the new account: it is refused
+    /// and the user is told to reopen it.
+    private func accountChangedRow(_ message: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+    }
+
+    private func noteAccountChange() {
+        guard !accountMatchesDraft else { return }
+        accountChangedMessage = poolCopy(
+            "当前账号已切换，本页草稿不会写入其他账号。请重新打开表单。",
+            "The account changed. This draft will not be written into another account; reopen the form."
+        )
     }
 
     /// Reuses the detail chart's 250-bar daily cache when it's already warm;
@@ -248,6 +316,58 @@ struct TradeEntryView: View {
             label: PulseLocalization.localizedString("trade.availableToSell", quantity),
             help: PulseLocalization.localizedString("trade.fillAvailableHelp"),
             fill: { quantityText = quantity }
+        )
+    }
+
+    /// A buy asks which money bought the shares; a sell does not, because a
+    /// sale does not choose its own funding — it consumes existing portions,
+    /// and that deduction is reconciled where the shares live rather than here.
+    ///
+    /// The sell side instead states what it will *not* do: this record is a
+    /// fact and never an automatic source deduction. When the position really
+    /// does mix own and borrowed shares, saying so here is what stops the user
+    /// from assuming the app paid off the margin for them.
+    @ViewBuilder
+    private var fundingRow: some View {
+        if kind == .buy {
+            FundingSourcePickerRow(
+                label: poolCopy("资金来源", "Funding source"),
+                selection: $fundingSource,
+                help: poolCopy("记录这笔买入实际动用的资金；不填表示尚未标注。",
+                               "Which money this buy actually used. Leaving it blank means nobody has said.")
+            )
+            if let editing, editing.fundingSource != fundingSource {
+                Text(poolCopy("修改买入资金来源后，请在仓位池核对现有份额标记。",
+                              "After correcting buy funding, review the existing portion labels in Position pools."))
+                    .font(.caption2).foregroundStyle(.orange)
+            }
+        } else if let mixedSourceNote {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "info.circle").font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                Text(mixedSourceNote)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Says that this sale's share composition has to be checked by hand.
+    ///
+    /// It fires when the position's own portions disagree about their funding,
+    /// because a sale spanning several sources cannot be attributed to one of
+    /// them automatically — and attributing it would be the app quietly
+    /// claiming a repayment nobody made. A single-source or unannotated
+    /// position needs no warning.
+    private var mixedSourceNote: String? {
+        guard kind == .sell, let item, let allocation = item.positionAllocation,
+              !item.positionAllocationNeedsReconciliation else { return nil }
+        let sources = Set(allocation.portions.map { $0.fundingSource ?? .unmarked })
+        guard sources.count > 1 else { return nil }
+        return poolCopy(
+            "该持仓含多种资金来源。本记录只登记成交事实，不自动扣减某一种来源；请在仓位池中核对剩余份额构成。",
+            "This position mixes funding sources. This record books the fill only; it deducts no single source. Review the remaining composition in Position pools."
         )
     }
 
@@ -459,8 +579,8 @@ struct TradeEntryView: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(sideColor.opacity(0.92))
         )
-        .disabled(!isValid)
-        .opacity(isValid ? 1 : 0.45)
+        .disabled(!isValid || showsAccountNotice)
+        .opacity(isValid && !showsAccountNotice ? 1 : 0.45)
     }
 
     // MARK: - Parsing & simulation
@@ -550,13 +670,21 @@ struct TradeEntryView: View {
     }
 
     private func save() {
-        guard !didSave, let item, let price = parsedPrice, let quantity = parsedQuantity, isValid else { return }
+        guard !didSave, accountMatchesDraft, let item, let price = parsedPrice,
+              let quantity = parsedQuantity, isValid else {
+            noteAccountChange()
+            return
+        }
         didSave = true
         if var updated = editing {
             updated.price = price
             updated.quantity = quantity
             updated.fee = parsedFee
             updated.date = date
+            // An edit carries the annotation through; a sell never claims one
+            // here, since its shares' funding belongs to the portions the
+            // allocation already describes.
+            if kind == .buy { updated.fundingSource = fundingSource }
             appState.watchlist.updateTransaction(item.symbol, updated)
         } else {
             appState.watchlist.addTransaction(item.symbol, PositionTransaction(
@@ -564,7 +692,8 @@ struct TradeEntryView: View {
                 price: price,
                 quantity: quantity,
                 date: date,
-                fee: parsedFee
+                fee: parsedFee,
+                fundingSource: kind == .buy ? fundingSource : nil
             ))
         }
         route = dismissRoute
@@ -574,7 +703,10 @@ struct TradeEntryView: View {
     /// or straight to the hub when this was the last entry, since an empty
     /// log has nothing to show.
     private func deleteEditedTransaction() {
-        guard !didSave, let editing else { return }
+        guard !didSave, accountMatchesDraft, let editing else {
+            noteAccountChange()
+            return
+        }
         didSave = true
         appState.watchlist.deleteTransaction(symbol, id: editing.id)
         let remaining = appState.watchlist.item(for: symbol)?.transactions ?? []
@@ -630,7 +762,7 @@ private struct CalendarDatePicker: NSViewRepresentable {
         Coordinator(self)
     }
 
-    final class Coordinator: NSObject {
+    @MainActor final class Coordinator: NSObject {
         var parent: CalendarDatePicker
 
         init(_ parent: CalendarDatePicker) {

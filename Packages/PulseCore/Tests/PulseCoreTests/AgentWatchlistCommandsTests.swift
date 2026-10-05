@@ -99,6 +99,40 @@ struct AgentWatchlistCommandsTests {
     }
 
     @Test
+    func editingPlanPriceAndQuantityPreservesItsPositionPool() throws {
+        let (store, defaults, suiteName) = try makeStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let groupID = try #require(store.selectedGroupID)
+        let ref = AgentSymbolRef(market: "us", code: "NVDA")
+        _ = try AgentWatchlistCommands(store: store).addSymbol(ref, name: "NVIDIA", to: groupID).get()
+
+        let planID = UUID()
+        #expect(store.setTradePlan(
+            TradePlan(
+                id: planID,
+                kind: .buy,
+                price: 120,
+                quantity: 3,
+                positionPool: .strategic
+            ),
+            for: SymbolID(market: .us, code: "NVDA")
+        ))
+
+        _ = try AgentWatchlistCommands(store: store).setTradePlan(
+            symbol: ref,
+            id: planID,
+            kind: .buy,
+            price: 115,
+            quantity: 5
+        ).get()
+
+        let saved = try #require(store.item(for: SymbolID(market: .us, code: "NVDA"))?.plans.first)
+        #expect(saved.price == 115)
+        #expect(saved.quantity == 5)
+        #expect(saved.positionPool == .strategic)
+    }
+
+    @Test
     func recordTradeBridgesSplitWithZeroPriceBuyAndCarriesFee() throws {
         let (store, defaults, suiteName) = try makeStore()
         defer { defaults.removePersistentDomain(forName: suiteName) }

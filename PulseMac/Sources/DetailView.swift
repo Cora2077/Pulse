@@ -27,6 +27,15 @@ struct DetailView: View {
     /// stored text exactly as it was.
     @State private var isEditingThesis = false
     @State private var thesisDraft = ""
+    /// The account this page's thesis draft was composed against. The draft is
+    /// page state, and an account switch can replace the store's ledger while it
+    /// is open.
+    @State private var frozenAccount: BrokerageAccountID?
+
+    /// Non-nil only when the store still holds the ledger this draft came from.
+    private var accountMatchesDraft: Bool {
+        frozenAccount.map { appState.watchlist.activeBrokerageAccountID == $0 } ?? false
+    }
 
     private static let minutePeriods: [CandlePeriod] = [
         .minute5, .minute15, .minute30, .hour1,
@@ -62,7 +71,18 @@ struct DetailView: View {
                 }
             }
         }
-        .onAppear { maybeOfferKlineTourStep() }
+        .onAppear {
+            frozenAccount = appState.watchlist.activeBrokerageAccountID
+            maybeOfferKlineTourStep()
+        }
+        // The thesis draft belongs to the ledger this page was opened against.
+        // Abandoning it is honest: the text on screen describes an instrument
+        // the newly selected account may not even hold.
+        .onChange(of: appState.watchlist.activeBrokerageAccountID) { _, _ in
+            frozenAccount = nil
+            isEditingThesis = false
+            thesisDraft = ""
+        }
         .onDisappear {
             // Leaving with the candle bubble up counts as the step seen; the pin
             // stop then presents back on the list. An offer that never fired
@@ -330,7 +350,7 @@ struct DetailView: View {
             systemName: "star",
             help: PulseLocalization.localizedString(
                 "search.addToGroup",
-                appState.watchlist.selectedGroup?.name ?? ""
+                appState.sharedWatchlist.selectedGroup?.name ?? ""
             )
         ) {
             addToWatchlist()
@@ -340,12 +360,12 @@ struct DetailView: View {
     /// Stable membership entry: the star mirrors the iOS detail page — outline
     /// adds to the selected group, filled removes from it.
     @ViewBuilder private var watchToggleButton: some View {
-        if appState.watchlist.contains(symbol) {
+        if appState.sharedWatchlist.contains(symbol) {
             ClusterIcon(
                 systemName: "star.fill",
                 help: PulseLocalization.localizedString(
                     "watchlist.group.removeCurrent",
-                    appState.watchlist.selectedGroup?.name ?? ""
+                    appState.sharedWatchlist.selectedGroup?.name ?? ""
                 )
             ) {
                 removeFromWatchlist()
@@ -417,21 +437,21 @@ struct DetailView: View {
         .help(PulseLocalization.localizedString("action.share"))
         .disabled(quote == nil)
 
-        if appState.watchlist.contains(symbol) {
+        if appState.sharedWatchlist.contains(symbol) {
             Button {
                 removeFromWatchlist()
             } label: {
                 Label(
                     PulseLocalization.localizedString(
                         "watchlist.group.removeCurrent",
-                        appState.watchlist.selectedGroup?.name ?? ""
+                        appState.sharedWatchlist.selectedGroup?.name ?? ""
                     ),
                     systemImage: "star.fill"
                 )
             }
             .help(PulseLocalization.localizedString(
                 "watchlist.group.removeCurrent",
-                appState.watchlist.selectedGroup?.name ?? ""
+                appState.sharedWatchlist.selectedGroup?.name ?? ""
             ))
         } else {
             Button {
@@ -440,14 +460,14 @@ struct DetailView: View {
                 Label(
                     PulseLocalization.localizedString(
                         "search.addToGroup",
-                        appState.watchlist.selectedGroup?.name ?? ""
+                        appState.sharedWatchlist.selectedGroup?.name ?? ""
                     ),
                     systemImage: "star"
                 )
             }
             .help(PulseLocalization.localizedString(
                 "search.addToGroup",
-                appState.watchlist.selectedGroup?.name ?? ""
+                appState.sharedWatchlist.selectedGroup?.name ?? ""
             ))
         }
 
@@ -474,13 +494,13 @@ struct DetailView: View {
             symbol: symbol,
             name: appState.market.quote(for: symbol)?.name ?? appState.displayName(for: symbol)
         )
-        appState.watchlist.add(info)
+        appState.sharedWatchlist.add(info)
         appState.engine.poke()
     }
 
     @MainActor
     private func removeFromWatchlist() {
-        appState.watchlist.remove(symbol)
+        appState.sharedWatchlist.remove(symbol)
     }
 
     /// Materializes a missing item (restoring dormant trade history) before the
@@ -1039,7 +1059,7 @@ struct DetailView: View {
                 // so the header says it before any row does.
                 Text(PulseLocalization.localizedString("plan.reached"))
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(appState.palette.color(isUp: reached.kind == .buy))
+                    .foregroundStyle(PlanSideStyle.color(for: reached.kind))
             }
             Button {
                 openPlanEditor(nil)
@@ -1090,7 +1110,7 @@ struct DetailView: View {
                 // reads as a gain. The bar borrows the direction the plan
                 // trades in without turning the line red or green.
                 Capsule()
-                    .fill(reached && isWaiting ? appState.palette.color(isUp: plan.kind == .buy) : Color.clear)
+                    .fill(reached && isWaiting ? PlanSideStyle.color(for: plan.kind) : Color.clear)
                     .frame(width: 2, height: 12)
                 TradeKindBadge(
                     kind: plan.kind == .buy ? .buy : .sell,
@@ -1125,7 +1145,7 @@ struct DetailView: View {
                 if reached {
                     Text(PulseLocalization.localizedString("plan.reached"))
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(appState.palette.color(isUp: plan.kind == .buy))
+                        .foregroundStyle(PlanSideStyle.color(for: plan.kind))
                 } else if let quote {
                     Text(PulseLocalization.localizedString(
                         "plan.gap",
@@ -1224,7 +1244,14 @@ struct DetailView: View {
                             isEditingThesis = false
                         }
                         Button(PulseLocalization.localizedString("action.save")) {
-                            appState.watchlist.setThesis(thesisDraft, for: symbol)
+                            // A thesis belongs to this account's instrument. The
+                            // symbol is the same in the new ledger, so it cannot
+                            // authorize the write on its own.
+                            if accountMatchesDraft {
+                                appState.watchlist.setThesis(thesisDraft, for: symbol)
+                            } else {
+                                thesisDraft = ""
+                            }
                             isEditingThesis = false
                         }
                         .keyboardShortcut(.defaultAction)
@@ -1248,6 +1275,8 @@ struct DetailView: View {
                     .contentShape(Rectangle())
                     .onTapGesture {
                         thesisDraft = item.thesis ?? ""
+                        // A fresh edit is composed against the ledger open now.
+                        frozenAccount = appState.watchlist.activeBrokerageAccountID
                         isEditingThesis = true
                     }
                 }

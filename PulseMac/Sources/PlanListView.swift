@@ -110,7 +110,7 @@ struct PlanListView: View {
                 // direction to borrow, so it uses the accent instead.
                 Capsule()
                     .fill(reached && isWaiting
-                        ? appState.palette.color(isUp: entry.plan.kind == .buy)
+                        ? PlanSideStyle.color(for: entry.plan.kind)
                         : Color.clear)
                     .frame(width: 2, height: 26)
 
@@ -131,7 +131,7 @@ struct PlanListView: View {
                             kind: entry.plan.kind == .buy ? .buy : .sell,
                             palette: appState.palette
                         )
-                        Text("\(PriceFormatter.price(entry.plan.price, market: entry.symbol.market)) × \(PriceFormatter.quantity(entry.plan.quantity))")
+                        Text("\(PriceFormatter.price(entry.plan.price, market: entry.symbol.market)) × \(PriceFormatter.quantity(isWaiting ? entry.remainingQuantity : entry.plan.quantity))")
                             .font(.system(size: 10.5, weight: .medium).monospacedDigit())
                             .foregroundStyle(isWaiting ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
                             .strikethrough(entry.plan.status == .cancelled, color: .secondary)
@@ -169,7 +169,7 @@ struct PlanListView: View {
                 if reached {
                     Text(PulseLocalization.localizedString("plan.reached"))
                         .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(appState.palette.color(isUp: entry.plan.kind == .buy))
+                        .foregroundStyle(PlanSideStyle.color(for: entry.plan.kind))
                         .fixedSize()
                 } else if let price = currentPrice(entry.symbol) {
                     Text(PulseLocalization.localizedString(
@@ -184,7 +184,7 @@ struct PlanListView: View {
                 // the row still reads as one status rather than two columns
                 // fighting for a 340pt panel.
                 if let cost = PlanCostText.string(
-                    for: entry.plan,
+                    for: entry.remainingPlan,
                     current: currentPrice(entry.symbol),
                     symbol: entry.symbol
                 ) {

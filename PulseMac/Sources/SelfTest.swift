@@ -48,6 +48,32 @@ enum SelfTest {
     @MainActor
     static func runIfRequested() {
         #if DEBUG
+        if CommandLine.arguments.contains("--brokerage-account-selftest") {
+            Task { @MainActor in
+                let passed = await BrokerageAccountSelfTest.run()
+                fflush(stdout)
+                exit(passed ? 0 : 1)
+            }
+            return
+        }
+        if CommandLine.arguments.contains("--workflow-selftest") {
+            let passed = WorkflowSelfTest.run()
+            fflush(stdout)
+            exit(passed ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--tactical-board-selftest") {
+            // The harness renders the live board, so it must run under the same
+            // isolated offline defaults path as the demo window. Refusing without
+            // the flag keeps it from ever touching the developer's real data.
+            guard CommandLine.arguments.contains("--main-window-demo") else {
+                print("PULSE_TACTICAL_BOARD_SELFTEST failed error=requires---main-window-demo")
+                fflush(stdout)
+                exit(1)
+            }
+            let passed = TacticalBoardSelfTest.run()
+            fflush(stdout)
+            exit(passed ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--detail-market-selftest") {
             Task { @MainActor in
                 let passed = await DetailMarketDataSelfTest.run()

@@ -121,7 +121,7 @@ final class OnboardingState {
     private static let storageKey = "pulse.onboarding.v1"
     /// The watchlist store persists on its very first load, so this must be read
     /// before `WatchlistStore` is constructed for fresh-install detection to work.
-    private static let watchlistKeys = ["pulse.watchlists.v2", "pulse.watchlist.v1"]
+    private static let watchlistKeys = ["pulse.watchlists.v3", "pulse.watchlists.v2", "pulse.watchlist.v1"]
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults

@@ -1,9 +1,58 @@
 import AppKit
+import Charts
 import SwiftUI
 import PulseCore
 import PulseUI
 
+private struct HoldingsScrollOffsetReader: NSViewRepresentable {
+    let onChange: (CGPoint) -> Void
+
+    func makeNSView(context: Context) -> Reader { Reader() }
+    func updateNSView(_ view: Reader, context: Context) {
+        view.onChange = onChange
+        DispatchQueue.main.async { view.attach() }
+    }
+    static func dismantleNSView(_ view: Reader, coordinator: ()) { view.detach() }
+
+    final class Reader: NSView {
+        var onChange: ((CGPoint) -> Void)?
+        private weak var clipView: NSClipView?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            attach()
+        }
+
+        func attach() {
+            guard let clip = enclosingScrollView?.contentView, clip !== clipView else { return }
+            detach()
+            clipView = clip
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(boundsChanged(_:)), name: NSView.boundsDidChangeNotification, object: clip
+            )
+            boundsChanged()
+        }
+
+        func detach() {
+            NotificationCenter.default.removeObserver(self)
+            clipView = nil
+        }
+
+        @objc private func boundsChanged(_ notification: Notification? = nil) {
+            guard let clipView else { return }
+            let offset = CGPoint(x: -clipView.bounds.origin.x, y: -clipView.bounds.origin.y)
+            DispatchQueue.main.async { [weak self] in self?.onChange?(offset) }
+        }
+    }
+}
+
 struct MainHoldingsView: View {
+    private struct ActiveColumnResize {
+        let field: SortField
+        let initialWidth: CGFloat
+    }
+
     private enum PositionFilter: String, CaseIterable {
         case current
         case closed
@@ -62,6 +111,11 @@ struct MainHoldingsView: View {
         }
     }
 
+    private enum AllocationScenario: String, CaseIterable {
+        case current
+        case afterBuy
+    }
+
     private struct Values {
         let quantity: Double
         let cost: Double?
@@ -80,6 +134,12 @@ struct MainHoldingsView: View {
         var id: SymbolID { item.symbol }
     }
 
+    private struct AllocationPlanChoice: Identifiable {
+        let item: WatchItem
+        let plan: TradePlan
+        var id: UUID { plan.id }
+    }
+
     @Environment(AppState.self) private var appState
     let onSelect: (SymbolID) -> Void
     @State private var query = ""
@@ -87,24 +147,38 @@ struct MainHoldingsView: View {
     @State private var sortField: SortField = .name
     @State private var sortAscending = true
     @State private var expandedSymbol: SymbolID?
+    @State private var allocationExpanded = true
+    @State private var selectedAllocationPlanID: UUID?
+    @State private var selectedAllocationCurrencyCode: String?
+    @State private var allocationScenario: AllocationScenario = .current
+    @State private var hoveredChartSymbol: SymbolID?
+    @State private var hoveredRankingSymbol: SymbolID?
+    @State private var hoveredTableSymbol: SymbolID?
+    @State private var selectedAllocationAngle: Double?
+    @State private var tableScrollOffset = CGPoint.zero
+    @State private var columnWidths = Self.loadColumnWidths()
+    @State private var activeColumnResize: ActiveColumnResize?
+    @AppStorage("holdings.hiddenColumns") private var hiddenColumnRawValues = ""
 
     private struct Column: Identifiable {
         let field: SortField
-        let width: CGFloat
+        let defaultWidth: CGFloat
+        let minWidth: CGFloat
+        let maxWidth: CGFloat
         var id: SortField { field }
     }
 
     private static let columns: [Column] = [
-        Column(field: .name, width: 155),
-        Column(field: .quantity, width: 74),
-        Column(field: .cost, width: 103),
-        Column(field: .holdingPnL, width: 113),
-        Column(field: .totalPnL, width: 113),
-        Column(field: .price, width: 95),
-        Column(field: .todayPnL, width: 100),
-        Column(field: .realizedPnL, width: 100),
-        Column(field: .marketValue, width: 100),
-        Column(field: .fees, width: 85)
+        Column(field: .name, defaultWidth: 160, minWidth: 140, maxWidth: 320),
+        Column(field: .quantity, defaultWidth: 84, minWidth: 84, maxWidth: 180),
+        Column(field: .cost, defaultWidth: 84, minWidth: 66, maxWidth: 220),
+        Column(field: .holdingPnL, defaultWidth: 100, minWidth: 72, maxWidth: 220),
+        Column(field: .totalPnL, defaultWidth: 100, minWidth: 72, maxWidth: 220),
+        Column(field: .price, defaultWidth: 80, minWidth: 72, maxWidth: 240),
+        Column(field: .todayPnL, defaultWidth: 90, minWidth: 72, maxWidth: 220),
+        Column(field: .realizedPnL, defaultWidth: 95, minWidth: 72, maxWidth: 220),
+        Column(field: .marketValue, defaultWidth: 105, minWidth: 72, maxWidth: 220),
+        Column(field: .fees, defaultWidth: 70, minWidth: 60, maxWidth: 190)
     ]
 
     private var filteredItems: [WatchItem] {
@@ -129,109 +203,223 @@ struct MainHoldingsView: View {
         let rows = displayRows
         VStack(alignment: .leading, spacing: 0) {
             header(itemCount: rows.count)
+            allocationCard
             if rows.isEmpty {
                 emptyState
             } else {
-                ScrollView([.horizontal, .vertical]) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        columnHeader
-                        LazyVStack(spacing: 0) {
-                            ForEach(rows) { row in
-                                holdingRow(row)
-                                if expandedSymbol == row.item.symbol {
-                                    costHistory(row.item)
-                                }
-                                Divider().padding(.leading, 14)
-                            }
-                        }
-                    }
-                    .frame(minWidth: tableWidth, alignment: .leading)
-                }
-                .scrollIndicators(.automatic)
+                holdingsTable(rows)
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var tableWidth: CGFloat { Self.columns.reduce(0) { $0 + $1.width } }
+    private func holdingsTable(_ rows: [DisplayRow]) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Text("持仓明细")
+                    .font(.system(size: 12, weight: .semibold))
+                    .fixedSize()
+                Spacer(minLength: 12)
+                if visibleColumns.contains(where: { $0.field == .price }),
+                   let summary = Self.quoteSummaryText(quotes: rows.compactMap { row in
+                       guard let price = row.values.price, price.isFinite,
+                             let quote = appState.market.quote(for: row.item.symbol),
+                             quote.timestamp.timeIntervalSince1970.isFinite else { return nil }
+                       return quote
+                   }) {
+                    Text(summary)
+                        .font(.system(size: 9).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help("\(summary) · 本机时区：\(TimeZone.current.identifier)")
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 11)
+            Divider().opacity(0.5)
+            ScrollView([.horizontal, .vertical]) {
+                VStack(alignment: .leading, spacing: 0) {
+                    columnHeader
+                    LazyVStack(spacing: 0) {
+                        ForEach(rows) { row in
+                            holdingRow(row)
+                            if expandedSymbol == row.item.symbol {
+                                costHistory(row.item)
+                            }
+                            Divider().opacity(0.35).padding(.horizontal, 16)
+                        }
+                    }
+                }
+                .frame(minWidth: tableWidth, alignment: .leading)
+                .padding(.bottom, 8)
+                .background {
+                    HoldingsScrollOffsetReader { offset in
+                        if tableScrollOffset != offset { tableScrollOffset = offset }
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
+            .scrollIndicators(.automatic)
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.07)))
+        .padding(.horizontal, 20)
+        .padding(.bottom, 16)
+    }
+
+    private var visibleColumns: [Column] {
+        Self.columns.filter { $0.field == .name || !hiddenColumns.contains($0.field) }
+    }
+
+    private var tableWidth: CGFloat { visibleColumns.reduce(32) { $0 + columnWidth($1.field) } }
+
+    private var hiddenColumns: Set<SortField> {
+        Set(hiddenColumnRawValues.split(separator: ",").compactMap { SortField(rawValue: String($0)) })
+    }
+
+    private func columnWidth(_ field: SortField) -> CGFloat {
+        guard let column = Self.columns.first(where: { $0.field == field }) else { return 0 }
+        let value = columnWidths[field] ?? column.defaultWidth
+        return min(max(value.isFinite ? value : column.defaultWidth, column.minWidth), column.maxWidth)
+    }
+
+    private static func loadColumnWidths() -> [SortField: CGFloat] {
+        let stored = MainWindow.preferenceDefaults.dictionary(forKey: "holdings.columnWidths") as? [String: Double] ?? [:]
+        return Dictionary(uniqueKeysWithValues: columns.map { column in
+            let value = stored[column.field.rawValue].map { CGFloat($0) } ?? column.defaultWidth
+            return (column.field, min(max(value.isFinite ? value : column.defaultWidth, column.minWidth), column.maxWidth))
+        })
+    }
+
+    static func quoteSummaryText(quotes: [Quote], timeZone: TimeZone = .current) -> String? {
+        guard !quotes.isEmpty, quotes.allSatisfy({ $0.timestamp.timeIntervalSince1970.isFinite }) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let dates = quotes.map(\.timestamp).sorted()
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        let first = dates[0]
+        let last = dates[dates.count - 1]
+        let timeText: String
+        if formatter.string(from: first) == formatter.string(from: last) {
+            timeText = formatter.string(from: first)
+        } else if calendar.isDate(first, inSameDayAs: last) {
+            timeText = "\(formatter.string(from: first))–\(formatter.string(from: last).suffix(5))"
+        } else {
+            timeText = "\(formatter.string(from: first))–\(formatter.string(from: last))"
+        }
+        let sources = Set(quotes.map { $0.sourceName ?? $0.sourceID ?? "来源未知" }).sorted()
+        return "行情时刻 \(timeText)（本机时间） · \(sources.joined(separator: "、"))"
+    }
+
+    private func setColumnWidth(_ field: SortField, to proposedWidth: CGFloat, persist: Bool) {
+        guard let column = Self.columns.first(where: { $0.field == field }) else { return }
+        let width = min(max(proposedWidth.isFinite ? proposedWidth : column.defaultWidth, column.minWidth), column.maxWidth)
+        columnWidths[field] = width
+        if persist {
+            MainWindow.preferenceDefaults.set(
+                Dictionary(uniqueKeysWithValues: Self.columns.map { ($0.field.rawValue, Double(columnWidth($0.field))) }),
+                forKey: "holdings.columnWidths"
+            )
+        }
+    }
+
+    private func toggleColumn(_ field: SortField, visible: Bool) {
+        var hidden = hiddenColumns
+        if visible { hidden.remove(field) } else { hidden.insert(field) }
+        hidden.remove(.name)
+        hiddenColumnRawValues = hidden.map(\.rawValue).sorted().joined(separator: ",")
+    }
+
+    private func columnVisibilityBinding(_ field: SortField) -> Binding<Bool> {
+        Binding(get: { !hiddenColumns.contains(field) }, set: { toggleColumn(field, visible: $0) })
+    }
+
+    private func resetTableLayout() {
+        columnWidths = Dictionary(uniqueKeysWithValues: Self.columns.map { ($0.field, $0.defaultWidth) })
+        hiddenColumnRawValues = ""
+        MainWindow.preferenceDefaults.removeObject(forKey: "holdings.columnWidths")
+    }
 
     private func header(itemCount: Int) -> some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(PulseLocalization.localizedString("main.holdings.title"))
-                        .font(.system(size: 20, weight: .semibold))
-                    Text(PulseLocalization.localizedString("main.holdings.subtitle", itemCount))
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 10)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Text(PulseLocalization.localizedString("main.holdings.title"))
+                    .font(.system(size: 23, weight: .semibold))
+                Text(PulseLocalization.localizedString("main.holdings.subtitle", itemCount))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(.quaternary.opacity(0.5), in: Capsule())
+                Spacer(minLength: 12)
                 searchField
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    Picker("", selection: $filter) {
-                        ForEach(PositionFilter.allCases, id: \.self) { option in
-                            Text(PulseLocalization.localizedString(option.titleKey)).tag(option)
-                        }
+            HStack(spacing: 12) {
+                Picker("", selection: $filter) {
+                    ForEach(PositionFilter.allCases, id: \.self) { option in
+                        Text(PulseLocalization.localizedString(option.titleKey)).tag(option)
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-
-                    Picker(PulseLocalization.localizedString("main.holdings.costBasis.title"), selection: costBasisSelection) {
-                        ForEach(PositionCostBasis.allCases, id: \.self) { basis in
-                            Text(PulseLocalization.localizedString(basis.labelKey)).tag(basis)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                    .accessibilityLabel(PulseLocalization.localizedString("main.holdings.costBasis.title"))
-                    .help(PulseLocalization.localizedString("position.costBasisHelp"))
-                    Spacer(minLength: 0)
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
 
-                HStack(spacing: 8) {
+                Picker(PulseLocalization.localizedString("main.holdings.costBasis.title"), selection: costBasisSelection) {
+                    ForEach(PositionCostBasis.allCases, id: \.self) { basis in
+                        Text(PulseLocalization.localizedString(basis.labelKey)).tag(basis)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+                .accessibilityLabel(PulseLocalization.localizedString("main.holdings.costBasis.title"))
+                .help(PulseLocalization.localizedString("position.costBasisHelp"))
+
+                Spacer(minLength: 8)
+
+                Menu {
                     Picker(PulseLocalization.localizedString("main.holdings.sort.title"), selection: sortFieldSelection) {
                         ForEach(SortField.allCases, id: \.self) { field in
                             Text(PulseLocalization.localizedString(field.titleKey)).tag(field)
                         }
                     }
-                    .pickerStyle(.menu)
-                    .fixedSize()
-                    .accessibilityLabel(PulseLocalization.localizedString("main.holdings.sort.title"))
-
-                    Button {
+                    Button(PulseLocalization.localizedString(sortAscending
+                        ? "main.holdings.sort.descending" : "main.holdings.sort.ascending")) {
                         sortAscending.toggle()
-                    } label: {
-                        Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
-                            .font(.system(size: 11, weight: .semibold))
-                            .frame(width: 22, height: 22)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help(PulseLocalization.localizedString(sortAscending
-                                                            ? "main.holdings.sort.ascending"
-                                                            : "main.holdings.sort.descending"))
-                    .accessibilityLabel(PulseLocalization.localizedString(sortAscending
-                                                                           ? "main.holdings.sort.ascending"
-                                                                           : "main.holdings.sort.descending"))
-
+                    Divider()
                     Button(PulseLocalization.localizedString("main.holdings.sort.reset")) {
                         sortField = .name
                         sortAscending = true
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                     .disabled(sortField == .name && sortAscending)
-                    Spacer(minLength: 0)
+                } label: {
+                    Label(PulseLocalization.localizedString(sortField.titleKey),
+                          systemImage: sortAscending ? "arrow.up" : "arrow.down")
                 }
+                .help(PulseLocalization.localizedString("main.holdings.sort.title"))
+
+                Menu {
+                    ForEach(Self.columns.filter { $0.field != .name }) { column in
+                        Toggle(PulseLocalization.localizedString(column.field.titleKey), isOn: columnVisibilityBinding(column.field))
+                    }
+                    Divider()
+                    Button("重置列布局", action: resetTableLayout)
+                } label: {
+                    Label("列", systemImage: "tablecells")
+                }
+                .help("显示或隐藏列，并重置列宽")
             }
+            .font(.system(size: 11))
+            .controlSize(.small)
+            .menuStyle(.borderlessButton)
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 16)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(.horizontal, 20)
+        .padding(.top, 12).padding(.bottom, 10)
     }
 
     private var searchField: some View {
@@ -247,6 +435,456 @@ struct MainHoldingsView: View {
         }
         .padding(.horizontal, 9).padding(.vertical, 7)
         .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var allocationPlans: [AllocationPlanChoice] {
+        allocationItems.flatMap { item in
+            item.plans.filter { $0.status == .active && $0.kind == .buy }
+                .compactMap { plan in
+                    let entry = TradePlanEntry(symbol: item.symbol, plan: plan, transactions: item.transactions)
+                    return entry.remainingQuantity > 0 ? AllocationPlanChoice(item: item, plan: entry.remainingPlan) : nil
+                }
+        }
+    }
+
+    private var allocationItems: [WatchItem] {
+        let snapshot = appState.watchlist.syncSnapshot()
+        return snapshot.items + snapshot.retainedHistoryItems
+    }
+
+    private var selectedAllocationPlan: AllocationPlanChoice? {
+        allocationPlans.first { $0.id == selectedAllocationPlanID }
+    }
+
+    private var hoveredAllocationSymbol: SymbolID? {
+        hoveredTableSymbol ?? hoveredRankingSymbol ?? hoveredChartSymbol
+    }
+
+    private var allocationPositions: [PortfolioAllocation.Position] {
+        allocationItems.map { item in
+            let quote = appState.market.quote(for: item.symbol)
+            return PortfolioAllocation.Position(
+                symbol: item.symbol,
+                name: item.resolvedDisplayName,
+                quantity: item.positionQuantity,
+                price: quote?.price,
+                currencyCode: quote?.currencyCode ?? item.symbol.currencyCode,
+                supportsPosition: item.supportsPosition
+            )
+        }
+    }
+
+    private var allocationPlannedBuy: PortfolioAllocation.PlannedBuy? {
+        selectedAllocationPlan.map {
+            PortfolioAllocation.PlannedBuy(symbol: $0.item.symbol, quantity: $0.plan.quantity)
+        }
+    }
+
+    private var allocationCurrentResult: PortfolioAllocation.Result {
+        PortfolioAllocation.calculate(positions: allocationPositions, plannedBuy: allocationPlannedBuy)
+    }
+
+    private var allocationPreviewResult: PortfolioAllocation.Result? {
+        guard let allocationPlannedBuy else { return nil }
+        return PortfolioAllocation.previewAfterBuy(positions: allocationPositions, plannedBuy: allocationPlannedBuy)
+    }
+
+    private var allocationDisplayedResult: PortfolioAllocation.Result? {
+        allocationScenario == .current ? allocationCurrentResult : allocationPreviewResult
+    }
+
+    private var allocationCurrencyCodes: [String] {
+        var codes = Set(allocationCurrentResult.currencies.map(\.code))
+        codes.formUnion(allocationPreviewResult?.currencies.map(\.code) ?? [])
+        if let selectedAllocationCurrencyCode, !selectedAllocationCurrencyCode.isEmpty {
+            codes.insert(selectedAllocationCurrencyCode)
+        }
+        if let plan = selectedAllocationPlan {
+            let code = (appState.market.quote(for: plan.item.symbol)?.currencyCode ?? plan.item.symbol.currencyCode)
+                .trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if !code.isEmpty { codes.insert(code) }
+        }
+        return codes.sorted()
+    }
+
+    private var selectedAllocationCurrencyCodeResolved: String? {
+        if let selectedAllocationCurrencyCode, allocationCurrencyCodes.contains(selectedAllocationCurrencyCode) {
+            return selectedAllocationCurrencyCode
+        }
+        return allocationCurrencyCodes.first
+    }
+
+    private var allocationCard: some View {
+        let current = allocationCurrentResult
+        let result = allocationDisplayedResult
+        let displayed = result ?? current
+        let currencyCode = selectedAllocationCurrencyCodeResolved
+        return DisclosureGroup(isExpanded: $allocationExpanded) {
+            let content = VStack(alignment: .leading, spacing: 9) {
+                if selectedAllocationPlan != nil || allocationCurrencyCodes.count > 1 {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) { allocationScenarioPicker; allocationCurrencyPicker }
+                        VStack(alignment: .leading, spacing: 6) { allocationScenarioPicker; allocationCurrencyPicker }
+                    }
+                }
+
+                if !allocationCurrencyCodes.isEmpty, let currencyCode {
+                    if let currency = result?.currencies.first(where: { $0.code == currencyCode }) {
+                        allocationDistribution(currency)
+                    } else if allocationScenario == .afterBuy, result != nil,
+                              result?.excludedUnrepresentableCurrencyCodes.contains(currencyCode) == true {
+                        Text("计划后 \(currencyCode) 总敞口超出可表示范围")
+                            .font(.system(size: 11)).foregroundStyle(.orange)
+                    } else if allocationScenario == .afterBuy, result != nil,
+                              allocationCurrentResult.currencies.contains(where: { $0.code == currencyCode }) {
+                        Text("计划后 \(currencyCode) 无剩余持仓，总敞口为 0")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    } else if allocationScenario == .afterBuy, result == nil {
+                        Text("所选计划缺少有效现价或币种，无法预览")
+                            .font(.system(size: 11)).foregroundStyle(.orange)
+                    } else {
+                        Text("此币种当前没有可计入的持仓")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    if allocationScenario == .afterBuy {
+                        Text("计划情景按当前行情现价估算。")
+                            .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    }
+                } else {
+                    Text("没有可用的持仓报价")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+
+                if displayed.excludedMissingQuoteCount > 0 {
+                    Text("\(displayed.excludedMissingQuoteCount) 个持仓因缺少有效报价或币种未计入；各币种分别统计，不跨币种相加")
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
+                }
+                if !displayed.excludedUnrepresentableCurrencyCodes.isEmpty {
+                    Text("币种总敞口超出可表示范围，已跳过：\(displayed.excludedUnrepresentableCurrencyCodes.joined(separator: ", "))")
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
+                }
+                if !allocationPlans.isEmpty {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) {
+                            Text("计划买入").font(.system(size: 11, weight: .medium))
+                            allocationPlanPicker.frame(width: 220)
+                            allocationPlanSummary(current, preview: allocationPreviewResult)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text("计划买入").font(.system(size: 11, weight: .medium))
+                                allocationPlanPicker.frame(width: 220)
+                            }
+                            allocationPlanSummary(current, preview: allocationPreviewResult)
+                        }
+                    }
+                }
+                Text("不含现金 · 各币种分别统计")
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    .help("按币种分别统计持仓绝对市值，不含现金；计划仅作现价估算。")
+            }
+
+            ViewThatFits(in: .vertical) {
+                content.fixedSize(horizontal: false, vertical: true)
+                ScrollView(.vertical) { content }
+                    .scrollIndicators(.never)
+            }
+            .frame(maxHeight: 310, alignment: .topLeading)
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "chart.pie.fill")
+                    .font(.system(size: 11, weight: .medium))
+                Text("持仓配置")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                if displayed.excludedMissingQuoteCount > 0 {
+                    Text("报价缺失 \(displayed.excludedMissingQuoteCount)")
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
+                }
+            }
+        }
+        .onChange(of: allocationCurrencyCodes) { _, codes in
+            if !(selectedAllocationCurrencyCode.map { codes.contains($0) } ?? false) {
+                selectedAllocationCurrencyCode = codes.first
+            }
+        }
+        .onChange(of: selectedAllocationPlanID) { _, _ in
+            clearAllocationHover()
+            if let plan = selectedAllocationPlan {
+                selectedAllocationCurrencyCode = (appState.market.quote(for: plan.item.symbol)?.currencyCode
+                    ?? plan.item.symbol.currencyCode).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            } else {
+                allocationScenario = .current
+            }
+        }
+        .onChange(of: allocationScenario) { _, _ in clearAllocationHover() }
+        .onChange(of: selectedAllocationCurrencyCode) { _, _ in clearAllocationHover() }
+        .padding(16)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+    }
+
+    private func allocationDistribution(_ currency: PortfolioAllocation.Currency) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 16) {
+                HStack(spacing: 12) {
+                    allocationDonut(currency)
+                    allocationMetrics(currency)
+                }
+                .frame(width: 286, alignment: .leading)
+                allocationHoldings(currency)
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    allocationDonut(currency)
+                    allocationMetrics(currency)
+                }
+                allocationHoldings(currency)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func allocationMetrics(_ currency: PortfolioAllocation.Currency) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("总敞口").font(.system(size: 10)).foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text(PriceFormatter.money(currency.totalExposure, currencyCode: currency.code))
+                        .font(.system(size: 22, weight: .semibold).monospacedDigit())
+                        .lineLimit(1).minimumScaleFactor(0.75)
+                        .help(PriceFormatter.money(currency.totalExposure, currencyCode: currency.code))
+                    Text(currency.code).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                }
+            }
+            HStack(alignment: .top, spacing: 12) {
+                allocationMetric("最大", percentText(currency.holdings.first?.percent ?? 0))
+                allocationMetric("前三", percentText(currency.topThreeConcentration))
+            }
+        }
+        .frame(width: 150, alignment: .leading)
+    }
+
+    private func allocationMetric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.system(size: 10)).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 14, weight: .semibold).monospacedDigit())
+        }
+    }
+
+    private func clearAllocationHover() {
+        hoveredChartSymbol = nil
+        hoveredRankingSymbol = nil
+        hoveredTableSymbol = nil
+        selectedAllocationAngle = nil
+    }
+
+    private func percentText(_ value: Double) -> String {
+        String(format: "%.1f%%", value)
+    }
+
+    private func signedPercentText(_ value: Double) -> String {
+        String(format: "%+.1f 个百分点", value)
+    }
+
+    private var allocationCurrencySelection: Binding<String> {
+        Binding(
+            get: { selectedAllocationCurrencyCodeResolved ?? "" },
+            set: { selectedAllocationCurrencyCode = $0 }
+        )
+    }
+
+    private var allocationScenarioPicker: some View {
+        Group {
+            if selectedAllocationPlan != nil {
+                Picker("配置情景", selection: $allocationScenario) {
+                    Text("当前").tag(AllocationScenario.current)
+                    Text("计划后").tag(AllocationScenario.afterBuy)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("持仓配置情景")
+            }
+        }
+    }
+
+    private var allocationCurrencyPicker: some View {
+        Group {
+            if allocationCurrencyCodes.count > 1 {
+                Picker("币种", selection: allocationCurrencySelection) {
+                    ForEach(allocationCurrencyCodes, id: \.self) { code in
+                        Text(code).tag(code)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("持仓配置币种")
+            }
+        }
+    }
+
+    private var allocationPlanPicker: some View {
+        Picker("计划买入情景", selection: $selectedAllocationPlanID) {
+            Text("不应用计划").tag(UUID?.none)
+            ForEach(allocationPlans) { choice in
+                Text("\(choice.item.resolvedDisplayName) · 买入 \(PriceFormatter.quantity(choice.plan.quantity))")
+                    .tag(Optional(choice.id))
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .controlSize(.small)
+        .lineLimit(1)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func allocationPlanSummary(_ result: PortfolioAllocation.Result, preview: PortfolioAllocation.Result?) -> some View {
+        Group {
+            if let plan = selectedAllocationPlan, let planned = result.plannedBuy, let preview,
+               !preview.excludedUnrepresentableCurrencyCodes.contains(planned.currencyCode) {
+                let before = result.currencies.first(where: { $0.code == planned.currencyCode })?.holdings.first(where: { $0.symbol == plan.item.symbol })?.percent ?? 0
+                let after = preview.currencies.first(where: { $0.code == planned.currencyCode })?.holdings.first(where: { $0.symbol == plan.item.symbol })?.percent ?? 0
+                Text("\(planned.currencyCode) · \(percentText(before)) → \(percentText(after))（\(signedPercentText(after - before))）")
+                    .font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
+            } else if selectedAllocationPlan != nil {
+                Text("计划预览不可用，请检查报价、币种与数量")
+                    .font(.system(size: 10)).foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func allocationDonut(_ currency: PortfolioAllocation.Currency) -> some View {
+        let colors = allocationColorMap
+        return Chart(currency.holdings) { holding in
+            let isHighlighted = hoveredAllocationSymbol == nil || hoveredAllocationSymbol == holding.symbol
+            SectorMark(
+                angle: .value("敞口", holding.exposure),
+                innerRadius: .ratio(0.76),
+                angularInset: 1.5
+            )
+            .foregroundStyle(by: .value("标的", allocationColorKey(holding.symbol)))
+            .opacity(isHighlighted ? 1 : 0.3)
+        }
+        .chartForegroundStyleScale(
+            domain: currency.holdings.map { allocationColorKey($0.symbol) },
+            range: currency.holdings.map { colors[$0.symbol] ?? .blue }
+        )
+        .chartLegend(.hidden)
+        .chartAngleSelection(value: $selectedAllocationAngle)
+        .onChange(of: selectedAllocationAngle) { _, angle in
+            hoveredChartSymbol = allocationSymbol(at: angle, in: currency)
+        }
+        .chartBackground { _ in
+            VStack(spacing: 2) {
+                Text(currency.code).font(.system(size: 12, weight: .semibold))
+                Text("\(currency.holdings.count) 项").font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 124, height: 124)
+        .accessibilityLabel("\(currency.code) 持仓敞口分布，共 \(currency.holdings.count) 个持仓")
+    }
+
+    private func allocationSymbol(at angle: Double?, in currency: PortfolioAllocation.Currency) -> SymbolID? {
+        guard let angle, angle.isFinite else { return nil }
+        var cumulative = 0.0
+        for holding in currency.holdings {
+            cumulative += holding.exposure
+            if angle >= 0, angle < cumulative { return holding.symbol }
+        }
+        return nil
+    }
+
+    private func allocationHoldings(_ currency: PortfolioAllocation.Currency) -> some View {
+        let colors = allocationColorMap
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("持仓分布").font(.system(size: 11, weight: .semibold))
+                Spacer()
+                if currency.holdings.count > 3 {
+                    Text("\(currency.holdings.count) 项 · 滚动查看")
+                        .font(.system(size: 9)).foregroundStyle(.secondary)
+                }
+            }
+            ScrollView(.vertical) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 200, maximum: 360), spacing: 10)], spacing: 8) {
+                ForEach(currency.holdings) { holding in
+                    Button { onSelect(holding.symbol) } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 5) {
+                                Circle().fill(colors[holding.symbol] ?? .blue).frame(width: 6, height: 6)
+                                Text(holding.name).lineLimit(1)
+                                    .layoutPriority(1)
+                                if holding.isShort {
+                                    Text("空头").font(.system(size: 9, weight: .medium)).foregroundStyle(.orange)
+                                }
+                                Spacer(minLength: 3)
+                                Text(percentText(holding.percent))
+                                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                                    .fixedSize()
+                            }
+                            HStack(spacing: 8) {
+                                Text(holding.symbol.displayCode)
+                                    .font(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)
+                                    .fixedSize(horizontal: true, vertical: false)
+                                Spacer(minLength: 4)
+                                Text(PriceFormatter.money(holding.exposure, currencyCode: currency.code))
+                                    .font(.system(size: 9).monospacedDigit()).foregroundStyle(.secondary)
+                                    .fixedSize()
+                            }
+                        }
+                        .font(.system(size: 10, weight: .medium))
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .contentShape(Rectangle())
+                        .frame(maxWidth: .infinity, minHeight: 52, maxHeight: 52, alignment: .leading)
+                        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(alignment: .bottomLeading) {
+                            Capsule().fill(colors[holding.symbol] ?? .blue)
+                                .frame(width: 80 * min(max(holding.percent, 0), 100) / 100, height: 2)
+                                .padding(.leading, 8).padding(.bottom, 4)
+                                .accessibilityHidden(true)
+                        }
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(hoveredAllocationSymbol == holding.symbol ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.06), lineWidth: 1)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { isHovering in
+                        if isHovering {
+                            hoveredRankingSymbol = holding.symbol
+                        } else if hoveredRankingSymbol == holding.symbol {
+                            hoveredRankingSymbol = nil
+                        }
+                    }
+                    .accessibilityLabel("\(holding.name)，\(holding.symbol.displayCode)，\(PriceFormatter.money(holding.exposure, currencyCode: currency.code))，占比 \(percentText(holding.percent))\(holding.isShort ? "，空头" : "")。打开标的")
+                }
+            }
+                .padding(.bottom, 8)
+            }
+            .frame(height: 120, alignment: .topLeading)
+            .scrollIndicators(.hidden)
+        }
+        .frame(minWidth: 210, maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func allocationColorKey(_ symbol: SymbolID) -> String {
+        stableSymbolKey(symbol)
+    }
+
+    private var allocationColorMap: [SymbolID: Color] {
+        let symbols = Set(
+            allocationItems.filter { $0.supportsPosition && $0.positionQuantity != 0 }.map(\.symbol)
+                + allocationPlans.map { $0.item.symbol }
+        ).sorted { stableSymbolKey($0) < stableSymbolKey($1) }
+        let colors: [Color] = [.blue, .orange, .teal, .purple, .pink, .cyan, .green, .brown, .indigo, .mint]
+        // ponytail: ten categorical colors repeat for larger portfolios; extend the palette if needed.
+        return Dictionary(uniqueKeysWithValues: symbols.enumerated().map { ($0.element, colors[$0.offset % colors.count]) })
     }
 
     private var costBasisSelection: Binding<PositionCostBasis> {
@@ -307,7 +945,7 @@ struct MainHoldingsView: View {
 
     private var columnHeader: some View {
         HStack(spacing: 0) {
-            ForEach(Self.columns) { column in
+            ForEach(visibleColumns) { column in
                 Button {
                     selectSortField(column.field, toggleIfSelected: true)
                 } label: {
@@ -321,65 +959,210 @@ struct MainHoldingsView: View {
                     }
                     .font(.system(size: 10, weight: column.field == sortField ? .semibold : .medium))
                     .foregroundStyle(column.field == sortField ? Color.accentColor : Color.secondary)
-                    .frame(width: column.width, alignment: column.field == .name ? .leading : .trailing)
+                    .frame(width: columnWidth(column.field) - (column.field == .name ? 0 : 8),
+                           alignment: column.field == .name ? .leading : .trailing)
+                    .padding(.trailing, column.field == .name ? 0 : 8)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .overlay(alignment: .trailing) { columnResizeHandle(column) }
+                .background(alignment: .leading) {
+                    if column.field == .name {
+                        Color(nsColor: .controlBackgroundColor)
+                            .frame(width: columnWidth(.name) + 16)
+                            .overlay(alignment: .trailing) { Color.primary.opacity(0.08).frame(width: 1) }
+                            .offset(x: -16)
+                    }
+                }
+                .offset(x: column.field == .name ? max(0, -tableScrollOffset.x) : 0)
+                .zIndex(column.field == .name ? 1 : 0)
                 .help(PulseLocalization.localizedString(column.field.titleKey))
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 9)
         .background(Color(nsColor: .controlBackgroundColor))
+        .offset(y: max(0, -tableScrollOffset.y))
+        .zIndex(20)
+    }
+
+    private func columnResizeHandle(_ column: Column) -> some View {
+        let startWidth = columnWidth(column.field)
+        return Rectangle()
+            .fill(Color.secondary.opacity(0.18))
+            .frame(width: 1)
+            .frame(width: 8)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if activeColumnResize?.field != column.field {
+                            activeColumnResize = ActiveColumnResize(field: column.field, initialWidth: startWidth)
+                        }
+                        setColumnWidth(
+                            column.field,
+                            to: (activeColumnResize?.initialWidth ?? startWidth) + value.translation.width,
+                            persist: false
+                        )
+                    }
+                    .onEnded { value in
+                        let initialWidth = activeColumnResize?.field == column.field
+                            ? (activeColumnResize?.initialWidth ?? startWidth) : startWidth
+                        setColumnWidth(column.field, to: initialWidth + value.translation.width, persist: true)
+                        activeColumnResize = nil
+                    }
+            )
+            .help("拖动调整列宽")
+            .accessibilityElement()
+            .accessibilityLabel("调整\(PulseLocalization.localizedString(column.field.titleKey))列宽")
+            .accessibilityValue("\(Int(startWidth)) 点")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAdjustableAction { direction in
+                let delta: CGFloat
+                switch direction {
+                case .increment: delta = 10
+                case .decrement: delta = -10
+                @unknown default: return
+                }
+                setColumnWidth(column.field, to: columnWidth(column.field) + delta, persist: true)
+            }
     }
 
     private func holdingRow(_ row: DisplayRow) -> some View {
         let item = row.item
-        let values = row.values
         let quote = appState.market.quote(for: item.symbol)
         let currency = quote?.currencyCode ?? item.symbol.currencyCode
         return HStack(spacing: 0) {
+            ForEach(visibleColumns) { column in
+                columnContent(column.field, row: row, quote: quote, currency: currency)
+                    .frame(width: columnWidth(column.field), height: 42,
+                           alignment: column.field == .name ? .leading : .trailing)
+                    .background(alignment: .leading) {
+                        if column.field == .name {
+                            symbolCellBackground(item.symbol)
+                                .frame(width: columnWidth(column.field) + 16, height: 42)
+                                .overlay(alignment: .trailing) { Color.primary.opacity(0.06).frame(width: 1) }
+                                .offset(x: -16)
+                        }
+                        else { Color.clear }
+                    }
+                    .offset(x: column.field == .name ? max(0, -tableScrollOffset.x) : 0)
+                    .zIndex(column.field == .name ? 2 : 0)
+            }
+        }
+        .font(.system(size: 12).monospacedDigit())
+        .padding(.horizontal, 16)
+        .contentShape(Rectangle())
+        .background(hoveredAllocationSymbol == item.symbol ? Color.accentColor.opacity(0.07) : Color.clear)
+        .onHover { isHovering in
+            if isHovering {
+                hoveredTableSymbol = item.symbol
+            } else if hoveredTableSymbol == item.symbol {
+                hoveredTableSymbol = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func columnContent(_ field: SortField, row: DisplayRow, quote: Quote?, currency: String) -> some View {
+        switch field {
+        case .name:
             HStack(spacing: 7) {
-                Button { expandedSymbol = expandedSymbol == item.symbol ? nil : item.symbol } label: {
-                    Image(systemName: expandedSymbol == item.symbol ? "chevron.down" : "chevron.right")
+                Button { expandedSymbol = expandedSymbol == row.item.symbol ? nil : row.item.symbol } label: {
+                    Image(systemName: expandedSymbol == row.item.symbol ? "chevron.down" : "chevron.right")
                         .font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
                         .frame(width: 12)
                 }
                 .buttonStyle(.plain)
-                Button { onSelect(item.symbol) } label: {
+                .accessibilityLabel("\(expandedSymbol == row.item.symbol ? "收起" : "展开")\(row.item.resolvedDisplayName)成本记录")
+                .accessibilityHint("显示逐笔交易和成本变化")
+                Button { onSelect(row.item.symbol) } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(item.resolvedDisplayName).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                        Text(item.symbol.displayCode).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                        Text(row.item.resolvedDisplayName).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                        Text(row.item.symbol.displayCode).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
-            .frame(width: Self.columns[0].width, alignment: .leading)
-            cell(quantity(values.quantity, symbol: item.symbol), width: Self.columns[1].width)
-            cell(values.cost.map { costText($0, currency: currency, symbol: item.symbol) } ?? "—", width: Self.columns[2].width)
-            pnlCell(values.holdingPnL, currency: currency, width: Self.columns[3].width)
-            pnlCell(values.totalPnL, currency: currency, width: Self.columns[4].width)
-            cell(values.price.map { PriceFormatter.price($0, market: item.symbol.market) } ?? "—", width: Self.columns[5].width)
-            pnlCell(values.todayPnL, currency: currency, width: Self.columns[6].width)
-            pnlCell(values.realizedPnL, currency: currency, width: Self.columns[7].width)
-            cell(values.marketValue.map { PriceFormatter.signedMoney($0, currencyCode: currency) } ?? "—", width: Self.columns[8].width)
-            cell(values.fees.map { PriceFormatter.money($0, currencyCode: currency) } ?? "—", width: Self.columns[9].width)
+        case .quantity:
+            cell(quantity(row.values.quantity, symbol: row.item.symbol), width: columnWidth(field))
+        case .cost:
+            cell(row.values.cost.map { costText($0, currency: currency, symbol: row.item.symbol) } ?? "—", width: columnWidth(field))
+        case .holdingPnL:
+            pnlCell(row.values.holdingPnL, currency: currency, width: columnWidth(field))
+        case .totalPnL:
+            pnlCell(row.values.totalPnL, currency: currency, width: columnWidth(field))
+        case .price:
+            quoteCell(row.values.price, quote: quote, symbol: row.item.symbol, width: columnWidth(field))
+        case .todayPnL:
+            pnlCell(row.values.todayPnL, currency: currency, width: columnWidth(field))
+        case .realizedPnL:
+            pnlCell(row.values.realizedPnL, currency: currency, width: columnWidth(field))
+        case .marketValue:
+            cell(row.values.marketValue.map { PriceFormatter.signedMoney($0, currencyCode: currency) } ?? "—", width: columnWidth(field))
+        case .fees:
+            cell(row.values.fees.map { PriceFormatter.money($0, currencyCode: currency) } ?? "—", width: columnWidth(field))
         }
-        .font(.system(size: 11).monospacedDigit())
-        .padding(.horizontal, 16).padding(.vertical, 9)
-        .contentShape(Rectangle())
+    }
+
+    private func symbolCellBackground(_ symbol: SymbolID) -> some View {
+        Color(nsColor: .controlBackgroundColor)
+            .overlay(hoveredAllocationSymbol == symbol ? Color.accentColor.opacity(0.07) : Color.clear)
+    }
+
+    private func quoteCell(_ price: Double?, quote: Quote?, symbol: SymbolID, width: CGFloat) -> some View {
+        let priceText = price.map { PriceFormatter.price($0, market: symbol.market) } ?? "—"
+        let metadata = (price?.isFinite == true ? quote : nil).map {
+            "\(quoteTimestampText($0)) \($0.symbol.market.timeZoneDisplayName) · \(quoteProvenanceText($0))"
+        }
+        return Text(priceText)
+            .font(.system(size: 12, weight: .regular).monospacedDigit())
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .frame(width: max(0, width - 16), alignment: .trailing)
+            .padding(.horizontal, 8)
+            .help(metadata ?? "")
+            .accessibilityLabel(PulseLocalization.localizedString(SortField.price.titleKey))
+            .accessibilityValue(([priceText] + (metadata.map { [$0] } ?? [])).joined(separator: " · "))
+    }
+
+    private func quoteTimestampText(_ quote: Quote) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        formatter.timeZone = quote.symbol.market.timeZone
+        return formatter.string(from: quote.timestamp)
+    }
+
+    private func quoteProvenanceText(_ quote: Quote) -> String {
+        let source = quote.sourceName ?? quote.sourceID ?? "来源未知"
+        let state: String? = switch quote.marketState {
+        case .preMarket: PulseLocalization.localizedString("quote.price.preMarket")
+        case .postMarket: PulseLocalization.localizedString("quote.price.postMarket")
+        case .overnight: PulseLocalization.localizedString("quote.price.overnight")
+        case .closed: PulseLocalization.localizedString("quote.price.close")
+        case .regular, .none: nil
+        }
+        return ([source, appState.quoteDelayText(for: quote), state].compactMap { $0 }).joined(separator: " · ")
     }
 
     private func cell(_ text: String, width: CGFloat) -> some View {
-        Text(text).lineLimit(1).frame(width: width, alignment: .trailing)
+        Text(text).lineLimit(1).minimumScaleFactor(0.85)
+            .frame(width: max(0, width - 16), alignment: .trailing)
+            .padding(.horizontal, 8)
+            .help(text)
     }
 
     private func pnlCell(_ amount: Double?, currency: String, width: CGFloat) -> some View {
         Text(amount.map { PriceFormatter.signedMoney($0, currencyCode: currency) } ?? "—")
             .foregroundStyle(amount.map { appState.palette.color(for: $0) } ?? Color.primary)
             .lineLimit(1)
-            .frame(width: width, alignment: .trailing)
+            .minimumScaleFactor(0.85)
+            .frame(width: max(0, width - 16), alignment: .trailing)
+            .padding(.horizontal, 8)
+            .help(amount.map { PriceFormatter.signedMoney($0, currencyCode: currency) } ?? "—")
     }
 
     private func quantity(_ amount: Double, symbol: SymbolID) -> String {

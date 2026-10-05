@@ -163,7 +163,8 @@ struct PopoverRootView: View {
                     .frame(height: height(for: displayRoute))
                     .transition(pushTransition)
             case .trade(let symbol, let side, let returnRoute):
-                TradeEntryView(symbol: symbol, side: side, returnRoute: returnRoute, route: $route)
+                TradeEntryView(symbol: symbol, side: side, returnRoute: returnRoute, route: $route,
+                               account: appState.watchlist.activeBrokerageAccountID)
                     .frame(height: height(for: displayRoute))
                     .transition(pushTransition)
             case .editTrade(let symbol, let id, let returnRoute):
@@ -173,7 +174,8 @@ struct PopoverRootView: View {
                         symbol: symbol,
                         editing: transaction,
                         returnRoute: returnRoute,
-                        route: $route
+                        route: $route,
+                        account: appState.watchlist.activeBrokerageAccountID
                     )
                     .frame(height: height(for: displayRoute))
                     .transition(pushTransition)
@@ -187,11 +189,13 @@ struct PopoverRootView: View {
                     symbol: symbol,
                     planID: planID,
                     returnRoute: returnRoute,
-                    route: $route
+                    route: $route,
+                    account: appState.watchlist.activeBrokerageAccountID
                 )
                 .frame(height: height(for: displayRoute))
                 .transition(pushTransition)
             case .calibrate(let symbol, let returnRoute):
+                let account = appState.watchlist.activeBrokerageAccountID
                 VStack(spacing: 0) {
                     // The panel's compact editor has Cancel at the bottom. In a window,
                     // every pushed page also needs the same visible navigation row as
@@ -200,6 +204,7 @@ struct PopoverRootView: View {
                         PositionPageHeader(
                             symbol: symbol,
                             title: nil,
+                            accountCaption: AccountIdentity.title(account),
                             onBack: { route = .position(symbol, returnRoute) }
                         )
                     }
@@ -210,10 +215,12 @@ struct PopoverRootView: View {
                             palette: appState.palette,
                             onCancel: { route = .position(symbol, returnRoute) },
                             onSave: { quantity, cost in
+                                guard appState.watchlist.activeBrokerageAccountID == account else { return }
                                 appState.watchlist.calibratePosition(symbol, quantity: quantity, averageCost: cost)
                                 route = .position(symbol, returnRoute)
                             },
                             onClear: {
+                                guard appState.watchlist.activeBrokerageAccountID == account else { return }
                                 appState.watchlist.clearPosition(symbol)
                                 route = .position(symbol, returnRoute)
                             }
@@ -260,6 +267,7 @@ struct PopoverRootView: View {
                 .transition(pushTransition)
             }
         }
+        .id(displayRoute == .list ? "watchlist" : "account-\(appState.watchlist.activeBrokerageAccountID.rawValue)")
         .frame(width: panelWidth, height: presentedHeight, alignment: .top)
         // Keep one title-bar skeleton mounted for the lifetime of the pinned
         // window. Route-specific views contribute actions, but an actionless page
@@ -323,10 +331,20 @@ struct PopoverRootView: View {
                 pinnedPresentedHeight = targetHeight
             }
         }
-        .onChange(of: appState.watchlist.symbols) { _, _ in
+        .onChange(of: appState.watchlist.quoteSymbols) { _, _ in
             appState.watchlistSymbolsChanged()
         }
-        .onChange(of: appState.watchlist.groups.map(\.id)) { _, _ in
+        .onChange(of: appState.watchlist.activeBrokerageAccountID) { _, _ in
+            guard route != .list else { return }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                route = .list
+                searchSession = SearchSession()
+                pinnedPresentedHeight = height(for: .list)
+            }
+        }
+        .onChange(of: appState.sharedWatchlist.groups.map(\.id)) { _, _ in
             appState.watchlistGroupsChanged()
         }
     }
@@ -408,8 +426,8 @@ struct PopoverRootView: View {
         case .list:
             // The search panel needs room for results/recents regardless of list size.
             if searchSession.isActive { return Self.searchHeight }
-            let content = listChromeHeight + CGFloat(appState.watchlist.items.count) * Self.listRowHeight
-            let minimum = appState.watchlist.items.isEmpty ? Self.minHeight : Self.minListHeight
+            let content = listChromeHeight + CGFloat(appState.sharedWatchlist.items.count) * Self.listRowHeight
+            let minimum = appState.sharedWatchlist.items.isEmpty ? Self.minHeight : Self.minListHeight
             return min(max(content, minimum), Self.maxHeight)
         case .detail(let symbol):
             return detailHeight(for: symbol)

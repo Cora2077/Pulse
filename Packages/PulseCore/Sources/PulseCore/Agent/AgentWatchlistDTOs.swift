@@ -68,6 +68,12 @@ public struct AgentPositionSnapshot: Hashable, Codable, Sendable {
     /// What the user intends to do at which price. Rides along with the
     /// position so one read returns holdings and intentions together.
     public var plans: [AgentTradePlan]
+    /// User-entered sector and risk prices, when available.
+    public var tradingProfile: TradingProfile?
+    /// User-entered instrument events.
+    public var events: [InstrumentEvent]
+    /// User-assigned holding portions, when initialized.
+    public var positionAllocation: PositionAllocation?
 
     public init(
         symbol: AgentInstrument,
@@ -78,7 +84,10 @@ public struct AgentPositionSnapshot: Hashable, Codable, Sendable {
         transactions: [AgentTransaction],
         quote: AgentQuoteSnapshot?,
         thesis: String? = nil,
-        plans: [AgentTradePlan] = []
+        plans: [AgentTradePlan] = [],
+        tradingProfile: TradingProfile? = nil,
+        events: [InstrumentEvent] = [],
+        positionAllocation: PositionAllocation? = nil
     ) {
         self.symbol = symbol
         self.quantity = quantity
@@ -89,6 +98,9 @@ public struct AgentPositionSnapshot: Hashable, Codable, Sendable {
         self.quote = quote
         self.thesis = thesis
         self.plans = plans
+        self.tradingProfile = tradingProfile
+        self.events = events
+        self.positionAllocation = positionAllocation
     }
 }
 
@@ -105,6 +117,18 @@ public struct AgentTradePlan: Hashable, Codable, Sendable {
     public var reached: Bool?
     public var createdAt: Date
     public var updatedAt: Date
+    /// User-maintained conditions. Pulse never assesses them itself; omitted
+    /// rather than empty when the plan carries none.
+    public var conditions: [TradePlanCondition]?
+    /// Prior configurations, appended by the store each time an edit changes
+    /// the plan. Omitted rather than empty when there is no history yet.
+    public var history: [TradePlanRevision]?
+    /// Quantity already filled against this plan, derived from the linked
+    /// trades. Always present so a reader never has to recompute it.
+    public var fillQuantity: Double
+    /// Quantity still outstanding: the plan's size less `fillQuantity`, never
+    /// negative.
+    public var remainingQuantity: Double
 
     public init(
         id: UUID,
@@ -115,7 +139,11 @@ public struct AgentTradePlan: Hashable, Codable, Sendable {
         note: String? = nil,
         reached: Bool? = nil,
         createdAt: Date,
-        updatedAt: Date
+        updatedAt: Date,
+        conditions: [TradePlanCondition]? = nil,
+        history: [TradePlanRevision]? = nil,
+        fillQuantity: Double = 0,
+        remainingQuantity: Double = 0
     ) {
         self.id = id
         self.kind = kind
@@ -126,6 +154,10 @@ public struct AgentTradePlan: Hashable, Codable, Sendable {
         self.reached = reached
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.conditions = conditions
+        self.history = history
+        self.fillQuantity = fillQuantity
+        self.remainingQuantity = remainingQuantity
     }
 }
 
@@ -138,14 +170,35 @@ public struct AgentTransaction: Hashable, Codable, Sendable {
     public var date: String
     /// Commission and other costs. Null when the entry carries no fee.
     public var fee: Double?
+    /// The user's execution reason, when recorded.
+    public var note: String?
+    /// Post-trade review, when recorded.
+    public var review: PositionTransactionReview?
+    /// The immutable plan snapshot this fill was recorded from, when it was
+    /// recorded from a plan. Lets a reader pair the trade back to the plan
+    /// without re-deriving it from the current (possibly edited) plan.
+    public var planExecution: TradePlanExecution?
 
-    public init(id: UUID, kind: String, price: Double, quantity: Double, date: String, fee: Double? = nil) {
+    public init(
+        id: UUID,
+        kind: String,
+        price: Double,
+        quantity: Double,
+        date: String,
+        fee: Double? = nil,
+        note: String? = nil,
+        review: PositionTransactionReview? = nil,
+        planExecution: TradePlanExecution? = nil
+    ) {
         self.id = id
         self.kind = kind
         self.price = price
         self.quantity = quantity
         self.date = date
         self.fee = fee
+        self.note = note
+        self.review = review
+        self.planExecution = planExecution
     }
 }
 

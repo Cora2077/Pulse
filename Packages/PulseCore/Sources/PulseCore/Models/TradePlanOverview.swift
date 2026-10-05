@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// One plan paired with the instrument that owns it.
 ///
@@ -8,14 +9,38 @@ import Foundation
 public struct TradePlanEntry: Identifiable, Hashable, Sendable {
     public let symbol: SymbolID
     public let plan: TradePlan
+    public let filledQuantity: Double
+    public let remainingQuantity: Double
+    /// Read-only board scope. The stored plan keeps its original id.
+    public let accountID: BrokerageAccountID?
 
     /// The plan's own id, which is unique across the whole watchlist — the
     /// store refuses to persist a duplicate. Safe to use as a list identity.
-    public var id: UUID { plan.id }
+    public var id: UUID {
+        guard let accountID, accountID != .unassigned else { return plan.id }
+        let bytes = Array(SHA256.hash(data: Data("\(accountID.rawValue)|\(plan.id.uuidString)".utf8)).prefix(16))
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+    }
+    public var remainingEstimatedAmount: Double { plan.price * remainingQuantity }
+    public var remainingPlan: TradePlan {
+        var remainder = plan
+        remainder.quantity = remainingQuantity
+        return remainder
+    }
 
-    public init(symbol: SymbolID, plan: TradePlan) {
+    public func remainingCostDelta(from price: Double) -> TradePlan.CostDelta? {
+        var remainder = plan
+        remainder.quantity = remainingQuantity
+        return remainder.costDelta(from: price)
+    }
+
+    public init(symbol: SymbolID, plan: TradePlan, transactions: [PositionTransaction] = [], accountID: BrokerageAccountID? = nil) {
         self.symbol = symbol
         self.plan = plan
+        self.accountID = accountID
+        let progress = TradePlanExecutionProgress(plan: plan, transactions: transactions)
+        self.filledQuantity = progress.filledQuantity
+        self.remainingQuantity = progress.remainingQuantity
     }
 }
 
@@ -50,7 +75,7 @@ public enum TradePlanOverview {
     /// (one instrument tagged into two groups) contributes its plans once.
     public static func entries(from items: [WatchItem]) -> [TradePlanEntry] {
         items.flatMap { item in
-            item.plans.map { TradePlanEntry(symbol: item.symbol, plan: $0) }
+            item.plans.map { TradePlanEntry(symbol: item.symbol, plan: $0, transactions: item.transactions) }
         }
     }
 

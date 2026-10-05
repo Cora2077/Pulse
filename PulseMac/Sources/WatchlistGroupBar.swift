@@ -25,20 +25,20 @@ struct WatchlistGroupBar: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 HStack(spacing: 4) {
-                    ForEach(Array(appState.watchlist.groups.enumerated()), id: \.element.id) { index, group in
+                    ForEach(Array(appState.sharedWatchlist.groups.enumerated()), id: \.element.id) { index, group in
                         if editingGroupID == group.id {
                             nameField
                                 .id(group.id)
                         } else {
                             WatchlistGroupTab(
                                 name: group.name,
-                                isSelected: appState.watchlist.selectedGroupID == group.id,
+                                isSelected: appState.sharedWatchlist.selectedGroupID == group.id,
                                 shortcutNumber: index < 9 ? index + 1 : nil
                             ) { pointerInitiated in
                                 shouldAnimateNextSelectionScroll =
                                     pointerInitiated
                                     && !reduceMotion
-                                    && appState.watchlist.selectedGroupID != group.id
+                                    && appState.sharedWatchlist.selectedGroupID != group.id
                                 cancelEditing()
                                 onSelect(group.id)
                             }
@@ -60,7 +60,7 @@ struct WatchlistGroupBar: View {
                                 delegate: WatchlistGroupDropDelegate(
                                     destinationID: group.id,
                                     draggingGroupID: $draggingGroupID,
-                                    move: appState.watchlist.moveGroup
+                                    move: appState.sharedWatchlist.moveGroup
                                 )
                             )
                             .contextMenu {
@@ -70,7 +70,7 @@ struct WatchlistGroupBar: View {
                                 Button(PulseLocalization.localizedString("watchlist.group.rename")) {
                                     beginRenaming(group)
                                 }
-                                if appState.watchlist.groups.count > 1 {
+                                if appState.sharedWatchlist.groups.count > 1 {
                                     Divider()
                                     Button(
                                         PulseLocalization.localizedString("watchlist.group.delete"),
@@ -110,7 +110,7 @@ struct WatchlistGroupBar: View {
             .scrollIndicators(.hidden)
             .onHover { barHovering = $0 }
             .onAppear { scrollToSelectedGroup(using: proxy) }
-            .onChange(of: appState.watchlist.selectedGroupID) { _, _ in
+            .onChange(of: appState.sharedWatchlist.selectedGroupID) { _, _ in
                 scrollToSelectedGroup(using: proxy)
             }
         }
@@ -162,7 +162,7 @@ struct WatchlistGroupBar: View {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            _ = appState.watchlist.deleteGroup(group.id)
+            _ = appState.sharedWatchlist.deleteGroup(group.id)
         }
     }
 
@@ -171,7 +171,7 @@ struct WatchlistGroupBar: View {
     }
 
     private func scrollToSelectedGroup(using proxy: ScrollViewProxy) {
-        guard let selectedGroupID = appState.watchlist.selectedGroupID else { return }
+        guard let selectedGroupID = appState.sharedWatchlist.selectedGroupID else { return }
 
         guard !visibleGroupIDs.contains(selectedGroupID) else {
             shouldAnimateNextSelectionScroll = false
@@ -198,9 +198,9 @@ struct WatchlistGroupBar: View {
             // Creation is an occasional, direct action. If the new tag lands
             // outside the viewport, a short scroll helps reveal the result.
             shouldAnimateNextSelectionScroll = !reduceMotion
-            succeeded = appState.watchlist.createGroup(named: nameDraft) != nil
+            succeeded = appState.sharedWatchlist.createGroup(named: nameDraft) != nil
         } else if let editingGroupID {
-            succeeded = appState.watchlist.renameGroup(editingGroupID, to: nameDraft)
+            succeeded = appState.sharedWatchlist.renameGroup(editingGroupID, to: nameDraft)
         } else {
             return
         }

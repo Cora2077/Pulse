@@ -569,7 +569,7 @@ struct WatchlistStoreTransactionTests {
         store.add(apple)
         let valid = PositionTransaction(kind: .buy, price: 100, quantity: 2, fee: 1)
         store.addTransaction(apple.symbol, valid)
-        let savedBeforeInvalidWrites = defaults.data(forKey: "pulse.watchlists.v2")
+        let savedBeforeInvalidWrites = defaults.data(forKey: "pulse.watchlists.v3")
 
         store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: .infinity, quantity: 1))
         store.addTransaction(apple.symbol, PositionTransaction(kind: .buy, price: 100, quantity: 1, fee: -.infinity))
@@ -585,7 +585,7 @@ struct WatchlistStoreTransactionTests {
         store.calibratePosition(apple.symbol, quantity: 3, averageCost: .infinity)
 
         #expect(store.item(for: apple.symbol)?.transactions == [valid])
-        #expect(defaults.data(forKey: "pulse.watchlists.v2") == savedBeforeInvalidWrites)
+        #expect(defaults.data(forKey: "pulse.watchlists.v3") == savedBeforeInvalidWrites)
     }
 
     // MARK: - Trading fees

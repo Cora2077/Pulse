@@ -27,8 +27,18 @@ struct MainInstrumentView: View {
     @State private var editingDrawing: ChartDrawing?
     @State private var isEditingThesis = false
     @State private var thesisDraft = ""
+    /// The account this pane's drafts (thesis and the open drawing editor) were
+    /// composed against, captured on appearance. The pane is normally rebuilt on
+    /// an account switch; this covers the window where it is not.
+    @State private var frozenAccount: BrokerageAccountID?
     @State private var hostWindow: NSWindow?
     @State private var isWindowActiveVisible = false
+
+    /// Non-nil only when the store still holds the ledger this pane's drafts
+    /// came from.
+    private var accountMatchesDraft: Bool {
+        frozenAccount.map { appState.watchlist.activeBrokerageAccountID == $0 } ?? false
+    }
 
     /// Chart overlays are a viewing preference rather than instrument data, so they stay in
     /// this machine's defaults and out of the store and the sync file. The moving averages
@@ -111,6 +121,7 @@ struct MainInstrumentView: View {
         .onAppear {
             updateWindowVisibility()
             attachDrawingHistoryHandlers()
+            if frozenAccount == nil { frozenAccount = appState.watchlist.activeBrokerageAccountID }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { note in
             guard let changed = note.object as? NSWindow, changed === hostWindow else { return }
@@ -153,6 +164,19 @@ struct MainInstrumentView: View {
                 if !chartMarketIsActive && hasCachedData { continue }
                 await refreshChart(request, token: token)
             }
+        }
+        .onChange(of: appState.watchlist.activeBrokerageAccountID) { _, account in
+            // Financial drafts end at an account change; the chart and watch
+            // selection remain mounted because market data is shared.
+            route = .detail(symbol)
+            pendingTabReturn = nil
+            isEditingThesis = false
+            thesisDraft = ""
+            editingDrawing = nil
+            drawingSession.clear()
+            annotationController = ChartAnnotationController()
+            frozenAccount = account
+            attachDrawingHistoryHandlers()
         }
         .onChange(of: symbol) { _, newSymbol in
             route = .detail(newSymbol)
@@ -641,10 +665,10 @@ struct MainInstrumentView: View {
                             } label: {
                                 HStack(spacing: 8) {
                                     Circle()
-                                        .fill(appState.palette.color(isUp: plan.kind == .buy))
+                                        .fill(PlanSideStyle.color(for: plan.kind))
                                         .frame(width: 6, height: 6)
                                     Text(PulseLocalization.localizedString(plan.kind == .buy ? "plan.kind.buy" : "plan.kind.sell"))
-                                        .foregroundStyle(appState.palette.color(isUp: plan.kind == .buy))
+                                        .foregroundStyle(PlanSideStyle.color(for: plan.kind))
                                     Text("\(currencyCode ?? symbol.currencyCode) \(PriceFormatter.price(plan.price, market: symbol.market))")
                                         .foregroundStyle(.primary)
                                     Text("× \(PriceFormatter.quantity(plan.quantity))")
@@ -751,6 +775,7 @@ struct MainInstrumentView: View {
 
     @discardableResult
     private func persistDrawing(_ drawing: ChartDrawing, for target: SymbolID) -> Bool {
+        guard accountMatchesDraft else { return false }
         ensureDrawingItem(for: target)
         let saved = appState.watchlist.setChartDrawing(drawing, for: target)
         if saved, target == symbol {
@@ -761,6 +786,7 @@ struct MainInstrumentView: View {
 
     @discardableResult
     private func persistDrawingDeletion(_ id: UUID, for target: SymbolID) -> Bool {
+        guard accountMatchesDraft else { return false }
         let deleted = appState.watchlist.deleteChartDrawing(id, for: target)
         if deleted, target == symbol, annotationController.selectedDrawingID == id {
             annotationController.selectDrawing(nil)
@@ -901,6 +927,28 @@ struct MainInstrumentView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
+            }
+            if appState.watchlist.brokerageAccountsEnabled, selectedTab != .thesis {
+                Menu {
+                    ForEach(BrokerageAccountID.allCases) { account in
+                        Button {
+                            _ = appState.selectBrokerageAccount(account)
+                        } label: {
+                            if account == appState.watchlist.activeBrokerageAccountID {
+                                Label(AccountIdentity.title(account), systemImage: "checkmark")
+                            } else {
+                                Text(AccountIdentity.title(account))
+                            }
+                        }
+                    }
+                } label: {
+                    Text(AccountIdentity.title(appState.watchlist.activeBrokerageAccountID))
+                        .font(.system(size: 11))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("这部分持仓、成交和计划所属的账户")
+                .accessibilityLabel("持仓与交易账户：\(AccountIdentity.title(appState.watchlist.activeBrokerageAccountID))")
             }
         }
         .padding(.top, 3)
@@ -1201,7 +1249,7 @@ struct MainInstrumentView: View {
     private func planRow(_ plan: TradePlan) -> some View {
         HStack(spacing: 9) {
             Capsule()
-                .fill(appState.palette.color(isUp: plan.kind == .buy))
+                .fill(PlanSideStyle.color(for: plan.kind))
                 .frame(width: 2, height: 26)
             Button {
                 route = .plan(symbol, plan.id, .detail(symbol))
@@ -1210,14 +1258,14 @@ struct MainInstrumentView: View {
                     HStack(spacing: 7) {
                         Text(PulseLocalization.localizedString(plan.kind == .buy ? "plan.kind.buy" : "plan.kind.sell"))
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(appState.palette.color(isUp: plan.kind == .buy))
+                            .foregroundStyle(PlanSideStyle.color(for: plan.kind))
                         Text("\(PriceFormatter.price(plan.price, market: symbol.market)) × \(PriceFormatter.quantity(plan.quantity))")
                             .font(.system(size: 10.5, weight: .medium).monospacedDigit())
                             .foregroundStyle(.primary)
                         if let current = quote?.price, plan.isReached(at: current), plan.status == .active {
                             Text(PulseLocalization.localizedString("plan.reached"))
                                 .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(appState.palette.color(isUp: plan.kind == .buy))
+                                .foregroundStyle(PlanSideStyle.color(for: plan.kind))
                         }
                         Spacer(minLength: 4)
                     }
@@ -1280,6 +1328,7 @@ struct MainInstrumentView: View {
                 if !isEditingThesis {
                     Button {
                         thesisDraft = item?.thesis ?? ""
+                        frozenAccount = appState.watchlist.activeBrokerageAccountID
                         isEditingThesis = true
                     } label: {
                         Label(PulseLocalization.localizedString("main.thesis.edit"), systemImage: "square.and.pencil")
@@ -1303,7 +1352,13 @@ struct MainInstrumentView: View {
                     }
                     Button(PulseLocalization.localizedString("action.save")) {
                         preparePositionItem()
-                        appState.watchlist.setThesis(thesisDraft, for: symbol)
+                        // A thesis belongs to this account's instrument; the
+                        // symbol alone does not authorize the write.
+                        if accountMatchesDraft {
+                            appState.watchlist.setThesis(thesisDraft, for: symbol)
+                        } else {
+                            thesisDraft = ""
+                        }
                         isEditingThesis = false
                     }
                     .buttonStyle(.borderedProminent)
@@ -1324,6 +1379,7 @@ struct MainInstrumentView: View {
                 .contentShape(Rectangle())
                 .onTapGesture {
                     thesisDraft = item?.thesis ?? ""
+                    frozenAccount = appState.watchlist.activeBrokerageAccountID
                     isEditingThesis = true
                 }
             }
@@ -1341,14 +1397,16 @@ struct MainInstrumentView: View {
             PositionHubView(symbol: symbol, returnRoute: returnRoute, route: $route)
                 .padding(.top, 8)
         case .trade(let routedSymbol, let side, let returnRoute) where routedSymbol == symbol:
-            TradeEntryView(symbol: symbol, side: side, returnRoute: returnRoute, route: $route)
+            TradeEntryView(symbol: symbol, side: side, returnRoute: returnRoute, route: $route,
+                           account: appState.watchlist.activeBrokerageAccountID)
         case .editTrade(let routedSymbol, let transactionID, let returnRoute) where routedSymbol == symbol:
             if let transaction = item?.transactions.first(where: { $0.id == transactionID }) {
                 TradeEntryView(
                     symbol: symbol,
                     editing: transaction,
                     returnRoute: returnRoute,
-                    route: $route
+                    route: $route,
+                    account: appState.watchlist.activeBrokerageAccountID
                 )
             } else {
                 dashboard
@@ -1357,9 +1415,15 @@ struct MainInstrumentView: View {
         case .transactions(let routedSymbol, let returnRoute) where routedSymbol == symbol:
             TransactionListView(symbol: symbol, returnRoute: returnRoute, route: $route)
         case .plan(let routedSymbol, let planID, let returnRoute) where routedSymbol == symbol:
-            PlanEditorView(symbol: symbol, planID: planID, returnRoute: returnRoute, route: $route)
+            PlanEditorView(symbol: symbol, planID: planID, returnRoute: returnRoute, route: $route,
+                           account: appState.watchlist.activeBrokerageAccountID)
         case .calibrate(let routedSymbol, let returnRoute) where routedSymbol == symbol:
             if let item {
+                // The account is captured once, when this page is built, and
+                // frozen into both callbacks. Reading it again inside the closure
+                // would let a switch between the two clicks land the write in the
+                // ledger the numbers were not read from.
+                let draftAccount = frozenAccount ?? appState.watchlist.activeBrokerageAccountID
                 VStack(spacing: 0) {
                     PositionPageHeader(
                         symbol: symbol,
@@ -1373,11 +1437,15 @@ struct MainInstrumentView: View {
                             palette: appState.palette,
                             onCancel: { route = returnRoute.popoverRoute },
                             onSave: { quantity, cost in
-                                appState.watchlist.calibratePosition(symbol, quantity: quantity, averageCost: cost)
+                                if appState.watchlist.activeBrokerageAccountID == draftAccount {
+                                    appState.watchlist.calibratePosition(symbol, quantity: quantity, averageCost: cost)
+                                }
                                 route = returnRoute.popoverRoute
                             },
                             onClear: {
-                                appState.watchlist.clearPosition(symbol)
+                                if appState.watchlist.activeBrokerageAccountID == draftAccount {
+                                    appState.watchlist.clearPosition(symbol)
+                                }
                                 route = returnRoute.popoverRoute
                             }
                         )

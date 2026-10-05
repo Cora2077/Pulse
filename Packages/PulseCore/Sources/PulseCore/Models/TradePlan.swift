@@ -45,6 +45,17 @@ public struct TradePlan: Codable, Sendable, Hashable, Identifiable {
     /// to pair the two up for display — a dangling id is treated as unfilled
     /// rather than cascading a deletion into the plan.
     public var filledTransactionID: UUID?
+    /// Intended holding bucket for the plan. This is metadata only; it never
+    /// creates or changes a transaction.
+    public var positionPool: PositionPool?
+    /// Conditions are user-maintained; Pulse never assesses manual conditions.
+    public var conditions: [TradePlanCondition]?
+    /// Prior configurations, appended only by `WatchlistStore.setTradePlan`.
+    public var history: [TradePlanRevision]?
+    /// Which money the user *intends* to buy this plan with. Metadata only: it
+    /// never creates a transaction and never overrides the funding a recorded
+    /// fill actually reports. `.unmarked` is an explicit clearing.
+    public var fundingSource: PositionFundingSource?
 
     public init(
         id: UUID = UUID(),
@@ -55,7 +66,11 @@ public struct TradePlan: Codable, Sendable, Hashable, Identifiable {
         note: String? = nil,
         createdAt: Date = .now,
         updatedAt: Date = .now,
-        filledTransactionID: UUID? = nil
+        filledTransactionID: UUID? = nil,
+        positionPool: PositionPool? = nil,
+        conditions: [TradePlanCondition]? = nil,
+        history: [TradePlanRevision]? = nil,
+        fundingSource: PositionFundingSource? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -66,6 +81,338 @@ public struct TradePlan: Codable, Sendable, Hashable, Identifiable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.filledTransactionID = filledTransactionID
+        self.positionPool = positionPool
+        self.conditions = conditions
+        self.history = history
+        self.fundingSource = fundingSource
+    }
+}
+
+public struct TradePlanCondition: Codable, Sendable, Hashable, Identifiable {
+    public enum Kind: String, Codable, Sendable, CaseIterable { case logic, event, manual }
+    public enum State: String, Codable, Sendable, CaseIterable { case pending, confirmed, needsReview, invalidated }
+
+    public var id: UUID
+    public var title: String
+    public var kind: Kind
+    public var state: State
+    public var note: String?
+    public var sourceURL: String?
+    public var reviewDate: Date?
+    /// An immutable snapshot of the one instrument event this condition is
+    /// linked to, taken when the link was made. It is a copy rather than a
+    /// reference because the event itself is user-editable and can be deleted:
+    /// keeping the bytes the user linked to is what lets `requiresReview` tell
+    /// an untouched link from one whose date, title, or kind has since moved.
+    ///
+    /// `nil` on conditions written before the field existed, and on conditions
+    /// that simply are not linked to an event.
+    public var eventReference: InstrumentEvent?
+
+    public init(
+        id: UUID = UUID(), title: String, kind: Kind, state: State = .pending,
+        note: String? = nil, sourceURL: String? = nil, reviewDate: Date? = nil,
+        eventReference: InstrumentEvent? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.kind = kind
+        self.state = state
+        self.note = note
+        self.sourceURL = sourceURL
+        self.reviewDate = reviewDate
+        self.eventReference = eventReference
+    }
+
+    func normalized() -> Self? {
+        var value = self
+        value.title = value.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        value.note = value.note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.note?.isEmpty == true { value.note = nil }
+        value.sourceURL = value.sourceURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.sourceURL?.isEmpty == true { value.sourceURL = nil }
+        if let linked = value.eventReference {
+            guard let normalizedEvent = linked.normalized() else { return nil }
+            value.eventReference = normalizedEvent
+        }
+        guard !value.title.isEmpty, value.title.count <= 240,
+              value.note.map({ $0.count <= 4_000 }) ?? true,
+              value.sourceURL.map(InstrumentEvent.isValidSourceURL) ?? true,
+              value.reviewDate.map({ $0.timeIntervalSince1970.isFinite }) ?? true else { return nil }
+        return value
+    }
+
+    /// Whether this condition still needs the user's attention at `now`.
+    ///
+    /// True when the user has not confirmed it, when its own review date has
+    /// arrived, or when the event it was linked to is no longer the event it was
+    /// linked to. The last case covers both a deleted event and an edited one:
+    /// the snapshot keeps the bytes as of the link, so a changed `date`,
+    /// `endDate`, `title`, or `kind` means the ground the reasoning stood on has
+    /// moved. Metadata that does not change what the event *is* — its
+    /// `updatedAt`, `note`, and `sourceURL` — is deliberately ignored, so
+    /// tidying an event's annotation never reopens a settled condition.
+    ///
+    /// A linked event whose identity is absent from `currentEvents` is reported
+    /// as missing rather than matched to a lookalike: guessing a replacement for
+    /// a user's own event would silently confirm a link they never made. This is
+    /// a read-only verdict — it never confirms, invalidates, or edits anything.
+    public func requiresReview(at now: Date, currentEvents: [InstrumentEvent]) -> Bool {
+        if state != .confirmed { return true }
+        if let reviewDate, CalendarDay(reviewDate, in: .current) <= CalendarDay(now, in: .current) {
+            return true
+        }
+        guard let reference = eventReference else { return false }
+        guard let current = currentEvents.first(where: { $0.id == reference.id }) else { return true }
+        return current.kind != reference.kind
+            || current.date != reference.date
+            || current.endDate != reference.endDate
+            || current.title != reference.title
+    }
+
+    /// Whether this condition carries an event link a peer that understands the
+    /// field would have to keep. Used by the archive and sync version gates.
+    public var hasEventReference: Bool { eventReference != nil }
+}
+
+/// A nonrecursive plan configuration shared by revisions and execution records.
+public struct TradePlanConfiguration: Codable, Sendable, Hashable {
+    public var kind: TradePlan.Kind
+    public var price: Double
+    public var quantity: Double
+    public var status: TradePlan.Status
+    public var note: String?
+    public var positionPool: PositionPool?
+    public var conditions: [TradePlanCondition]?
+    public var createdAt: Date
+    /// The plan's intended funding at the moment this configuration was
+    /// captured. Copied from the plan so a revision and a fill's immutable
+    /// snapshot both answer "what was intended then" after the plan changes.
+    public var fundingSource: PositionFundingSource?
+
+    public init(plan: TradePlan) {
+        kind = plan.kind
+        price = plan.price
+        quantity = plan.quantity
+        status = plan.status
+        note = plan.note
+        positionPool = plan.positionPool
+        conditions = plan.conditions
+        createdAt = plan.createdAt
+        fundingSource = plan.fundingSource
+    }
+
+    public static func hasFundingMetadata(in configurations: [TradePlanConfiguration]) -> Bool {
+        configurations.contains { $0.fundingSource != nil }
+    }
+
+    /// Whether any configuration in the list carries an event link, whether on
+    /// its own conditions or nested in the conditions of a revision's
+    /// configuration. Checked beside `hasFundingMetadata` so the archive and
+    /// sync version gates ask one shared question instead of each walking the
+    /// tree itself.
+    public static func hasEventReference(in configurations: [TradePlanConfiguration]) -> Bool {
+        configurations.contains { $0.conditions?.contains { $0.eventReference != nil } == true }
+    }
+}
+
+/// Whether a plan carries an event link anywhere it can live: on its own
+/// conditions, or on the conditions a revision captured.
+public extension TradePlan {
+    var hasFundingMetadata: Bool {
+        fundingSource != nil
+            || TradePlanConfiguration.hasFundingMetadata(in: (history ?? []).map(\.configuration))
+    }
+
+    /// Whether any of the plan's own conditions is linked to an instrument
+    /// event.
+    var hasEventReference: Bool {
+        (conditions ?? []).contains { $0.eventReference != nil }
+    }
+
+    /// Whether an event link lives anywhere under this plan: its current
+    /// conditions or a revision's configuration.
+    var hasEventReferenceMetadata: Bool {
+        hasEventReference
+            || TradePlanConfiguration.hasEventReference(in: (history ?? []).map(\.configuration))
+    }
+
+    /// The single badge a plan card shows for its reasoning.
+    ///
+    /// Delegates to `PositionVerificationBadge.derived` so a plan and the
+    /// portion shares it would consume read from one rule rather than two that
+    /// drift. A plan has no `currentEvents` of its own: the caller passes the
+    /// instrument's live events, exactly as the plan workflow surfaces do.
+    func verificationBadge(
+        at now: Date = .now,
+        currentEvents: [InstrumentEvent] = []
+    ) -> PositionVerificationBadge? {
+        PositionVerificationBadge.derived(from: conditions, at: now, currentEvents: currentEvents)
+    }
+}
+
+public extension TradePlanConfiguration {
+    /// The same badge question asked of a captured configuration, so a fill's
+    /// immutable snapshot can be read without rebuilding a `TradePlan`.
+    func verificationBadge(
+        at now: Date = .now,
+        currentEvents: [InstrumentEvent] = []
+    ) -> PositionVerificationBadge? {
+        PositionVerificationBadge.derived(from: conditions, at: now, currentEvents: currentEvents)
+    }
+}
+
+public extension TradePlanConfiguration {
+    /// Whether this configuration's own conditions hold an event link. The
+    /// fill snapshot and every revision use this one question rather than each
+    /// spelling out the nested walk.
+    var hasEventReferenceMetadata: Bool {
+        (conditions ?? []).contains { $0.eventReference != nil }
+    }
+}
+
+public extension TradePlanExecution {
+    /// Whether the immutable fill snapshot holds an event link in its
+    /// conditions.
+    var hasEventReferenceMetadata: Bool { configuration.hasEventReferenceMetadata }
+}
+
+public struct TradePlanRevision: Codable, Sendable, Hashable, Identifiable {
+    public var id: UUID
+    public var date: Date
+    public var configuration: TradePlanConfiguration
+
+    public init(id: UUID = UUID(), date: Date = .now, configuration: TradePlanConfiguration) {
+        self.id = id
+        self.date = date
+        self.configuration = configuration
+    }
+}
+
+public struct TradePlanExecutionProgress: Sendable, Hashable {
+    public let filledQuantity: Double
+    public let remainingQuantity: Double
+    public let hasLinkedTrades: Bool
+
+    public init(plan: TradePlan, transactions: [PositionTransaction]) {
+        let expectedKind: PositionTransaction.Kind = plan.kind == .buy ? .buy : .sell
+        let byID = Dictionary(transactions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var counted = Set<UUID>()
+        var total = 0.0
+        func add(_ transaction: PositionTransaction) {
+            guard transaction.kind == expectedKind, transaction.quantity.isFinite, transaction.quantity > 0,
+                  transaction.price.isFinite, transaction.price > 0,
+                  counted.insert(transaction.id).inserted else { return }
+            let next = total + transaction.quantity
+            total = next.isFinite ? next : .greatestFiniteMagnitude
+        }
+
+        for transaction in transactions where transaction.planExecution?.planID == plan.id {
+            add(transaction)
+        }
+        if let legacyID = plan.filledTransactionID, !counted.contains(legacyID),
+           let transaction = byID[legacyID] {
+            add(transaction)
+        }
+        filledQuantity = total
+        if plan.quantity.isFinite, plan.quantity > 0 {
+            let remaining = max(0, plan.quantity - total)
+            remainingQuantity = remaining <= PositionAllocation.quantityTolerance(plan.quantity, total) ? 0 : remaining
+        } else {
+            remainingQuantity = 0
+        }
+        hasLinkedTrades = !counted.isEmpty
+    }
+
+    public var isComplete: Bool { remainingQuantity == 0 && hasLinkedTrades }
+}
+
+public enum TradePlanExecutionError: LocalizedError, Equatable {
+    case itemNotFound
+    case planNotFound
+    case unsupportedInstrument
+    case invalidFill
+    case duplicateTransactionID
+    case stalePlan
+    case staleAllocation
+    case allocationNeedsReconciliation
+    case historicalPoolSale
+    case insufficientPoolQuantity(pool: PositionPool, requested: Double, available: Double)
+    /// The sale could consume more than one funding source and the caller did
+    /// not say which portions to reduce. Picking one would silently spend
+    /// someone else's money, so the store refuses instead of guessing.
+    case fundingSelectionRequired(available: [PositionFundingSource: Double])
+    case invalidFundingSelection
+
+    public var errorDescription: String? {
+        let chinese = PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+        switch self {
+        case .itemNotFound: return chinese ? "找不到这项持仓。" : "Position not found."
+        case .planNotFound: return chinese ? "这项计划已不存在，请刷新后重试。" : "Trade plan no longer exists. Refresh and try again."
+        case .unsupportedInstrument: return chinese ? "此品种不支持持仓交易。" : "This instrument does not support position trades."
+        case .invalidFill: return chinese ? "成交价格、数量、费用或日期无效。" : "Fill price, quantity, fee, or date is invalid."
+        case .duplicateTransactionID: return chinese ? "成交编号已被其他交易使用。" : "Transaction ID is already in use."
+        case .stalePlan: return chinese ? "计划已变化，请刷新后重新记录成交。" : "Trade plan changed. Refresh before recording this fill."
+        case .staleAllocation: return chinese ? "仓位用途或资金来源已变化，请重新选择卖出份额。" : "Position allocation or funding changed. Select the sale portions again."
+        case .historicalPoolSale: return chinese ? "历史卖出无法直接扣减当前池份额，请从普通交易记录补录，再核对仓位分账。" : "A historical sale cannot consume today's pool shares. Record it as a regular trade, then reconcile the allocation."
+        case .allocationNeedsReconciliation: return chinese ? "请先核对剩余份额，再记录这笔卖出。" : "Reconcile the position allocation before recording this sale."
+        case let .insufficientPoolQuantity(pool, requested, available):
+            if chinese {
+                // The retired observation purpose has no active title: it has
+                // already been folded into unassigned everywhere it is read, and
+                // naming it here would resurrect a destination the product no
+                // longer offers.
+                let title: String
+                switch pool.effectivePurpose {
+                case .strategic: title = "战略底仓"
+                case .tactical: title = "机动仓"
+                case .unassigned, .observation: title = "未分配"
+                }
+                return "\(title)可用数量仅为 \(available)，不足以卖出 \(requested)。"
+            }
+            return "The \(pool.effectivePurpose.rawValue) pool has \(available) units; \(requested) were requested."
+        case .fundingSelectionRequired:
+            return chinese
+                ? "这笔卖出会动用多种资金来源，请指定各份额的卖出数量。"
+                : "This sale spans more than one funding source. Choose which portions to sell."
+        case .invalidFundingSelection:
+            return chinese
+                ? "指定的卖出份额无效：数量必须为正数且不超过各份额，合计需等于成交数量。"
+                : "The chosen sale portions are invalid: quantities must be positive, within each portion, and add up to the fill."
+        }
+    }
+}
+
+extension TradePlan {
+    var hasValidPayload: Bool {
+        guard price.isFinite, price > 0, quantity.isFinite, quantity > 0,
+              createdAt.timeIntervalSince1970.isFinite, updatedAt.timeIntervalSince1970.isFinite,
+              (note.map { $0.count <= 4_000 } ?? true),
+              Self.validConditions(conditions),
+              (history.map(Self.validHistory) ?? true) else { return false }
+        return true
+    }
+
+    /// Condition validity is asked through the allocation's one implementation:
+    /// a portion's conditions and a plan's conditions are the same payload, and
+    /// two validators would eventually disagree about one of them.
+    private static func validConditions(_ conditions: [TradePlanCondition]?) -> Bool {
+        PositionAllocation.validConditions(conditions)
+    }
+
+    private static func validHistory(_ history: [TradePlanRevision]) -> Bool {
+        var ids = Set<UUID>()
+        return history.allSatisfy { validRevision($0) && ids.insert($0.id).inserted }
+    }
+
+    private static func validRevision(_ revision: TradePlanRevision) -> Bool {
+        let value = revision.configuration
+        return revision.date.timeIntervalSince1970.isFinite
+            && value.price.isFinite && value.price > 0
+            && value.quantity.isFinite && value.quantity > 0
+            && value.createdAt.timeIntervalSince1970.isFinite
+            && (value.note.map { $0.count <= 4_000 } ?? true)
+            && validConditions(value.conditions)
     }
 }
 

@@ -1,10 +1,17 @@
 # Development model assignments
 
 - Primary agent and final reviewer: **GPT-6.1 Sol**, reasoning **High**. Own requirements, architecture, task breakdown, acceptance criteria, synthesis, and final diff/test review.
-- Ordinary implementation and testing agents: **GPT-6 Luna**, reasoning **High**. Assign bounded coding, file edits, tests, and code inspection.
-- Difficult implementation agents: **GPT-6 Luna**, reasoning **XHigh**. Use for complex implementation, difficult bugs, and decisions spanning files.
-- Native collaboration model IDs: `gpt-6.1-sol` and `gpt-6-luna`. When selecting a subagent model or reasoning override, use a self-contained prompt or a bounded history fork.
+- Implementation and testing workers: use the locally installed DSH **WorkBuddy** provider with **`deepseek-v4.1-flash`**, via `scripts/dsh-worker.sh`, instead of GPT-6 Luna. Use the model's supported default reasoning and send a self-contained, bounded task through stdin.
+- Kimi K3 is paused at the user's request (2026-10-04) to conserve their monthly quota. Do not invoke it again unless the user explicitly resumes it. The primary agent owns frontend design and interaction specifications in the meantime.
+- Frontend delivery order while K3 is paused: the primary agent supplies concrete visual/interaction specifications, Flash implements bounded tasks, then the primary agent performs final code, test, and actual synthetic native render review. Source review alone does not validate visual quality.
+- Give each worker explicit file ownership and acceptance checks. Do not send chat history, secrets, credentials, or real account data. Workers must not sign/install apps, commit/push, contact people, or perform account actions. The primary agent reviews their diff and verification results.
+- Do not pass third-party model IDs to native collaboration tools. If the DSH worker fails, report the actual failure and continue necessary work in the primary agent; do not silently substitute Luna.
 - The primary model is configured in the chat settings; do not claim to have changed it through delegation.
+
+# Local macOS signing
+
+- Use `scripts/dev-mac.sh` for local builds, or reuse its discovered Apple Development identity and team when invoking Xcode directly. Do not force ad-hoc signing (`CODE_SIGN_IDENTITY=-`) when a valid development identity is available: it causes Keychain approvals to repeat after every rebuild. Keep certificate identifiers and private keys out of the repository.
+- By default, update the user's installed daily app at `/Users/cora/Applications/Pulse Dev.app` after focused checks, then verify that installed app. Avoid switching between demo and daily versions; use an isolated demo only when explicitly requested or necessary to keep a test from changing real data.
 
 # ECNU worker delegation
 

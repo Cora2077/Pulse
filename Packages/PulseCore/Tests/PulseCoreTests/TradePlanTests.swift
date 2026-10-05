@@ -14,7 +14,8 @@ struct TradePlanTests {
         quantity: Double = 100,
         status: TradePlan.Status = .active,
         note: String? = nil,
-        updatedAt: TimeInterval = 1_700_000_000
+        updatedAt: TimeInterval = 1_700_000_000,
+        positionPool: PositionPool? = nil
     ) -> TradePlan {
         TradePlan(
             id: id,
@@ -24,7 +25,8 @@ struct TradePlanTests {
             status: status,
             note: note,
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-            updatedAt: Date(timeIntervalSince1970: updatedAt)
+            updatedAt: Date(timeIntervalSince1970: updatedAt),
+            positionPool: positionPool
         )
     }
 
@@ -251,7 +253,14 @@ struct TradePlanTests {
 
     @Test("A watch item carrying plans survives encoding, and older JSON still decodes")
     func codableRoundTripAndLegacyDecode() throws {
-        let stored = item(symbolA, plans: [plan(kind: .buy, price: 200), plan(kind: .sell, price: 260)])
+        let oldPlan = plan(kind: .buy, price: 200)
+        let oldPlanData = try JSONEncoder().encode(oldPlan)
+        let oldPlanObject = try #require(JSONSerialization.jsonObject(with: oldPlanData) as? [String: Any])
+        #expect(oldPlanObject["positionPool"] == nil)
+        let decodedPlan = try JSONDecoder().decode(TradePlan.self, from: oldPlanData)
+        #expect(decodedPlan.positionPool == nil)
+
+        let stored = item(symbolA, plans: [oldPlan, plan(kind: .sell, price: 260)])
         let data = try JSONEncoder().encode(stored)
         #expect(try JSONDecoder().decode(WatchItem.self, from: data) == stored)
 
@@ -264,6 +273,21 @@ struct TradePlanTests {
         let decoded = try JSONDecoder().decode(WatchItem.self, from: Data(legacy.utf8))
         #expect(decoded.plans.isEmpty)
         #expect(decoded.thesis == nil)
+
+        let archive = WatchlistArchive(lists: [
+            .init(name: "Core", entries: [
+                .init(market: .us, code: "AAPL", plans: [oldPlan])
+            ])
+        ])
+        #expect(archive.version == 2)
+        #expect(try WatchlistArchive.decoded(from: archive.encoded()).lists[0].entries[0].plans?.first?.positionPool == nil)
+
+        let wire = try WatchlistSyncWireCodec.encode(
+            deviceID: "legacy-plan",
+            snapshot: snapshot([item(symbolA, plans: [oldPlan])])
+        )
+        #expect(try WatchlistSyncWireCodec.decode(wire).version == 3)
+        #expect(try WatchlistSyncWireCodec.decode(wire).snapshot.items[0].plans[0].positionPool == nil)
     }
 
     @MainActor
@@ -330,7 +354,8 @@ struct TradePlanTests {
             price: 200,
             quantity: 500,
             note: "add on the dip",
-            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            positionPool: .strategic
         )
         #expect(source.setTradePlan(exported, for: symbolA))
         // The store stamps `updatedAt` itself — that is the field the merge
@@ -338,8 +363,11 @@ struct TradePlanTests {
         let stored = try #require(source.item(for: symbolA)?.plans.first)
         #expect(stored.createdAt == exported.createdAt)
         #expect(stored.updatedAt > exported.updatedAt)
+        let locallyReloaded = WatchlistStore(defaults: sourceDefaults, defaultGroupName: "Core")
+        #expect(locallyReloaded.item(for: symbolA)?.plans.first?.positionPool == .strategic)
 
         let text = try source.archive().encoded()
+        #expect(source.archive().version == 6)
 
         // Untouched install: the archive supplies the plan. Compared field by
         // field because the archive's ISO-8601 dates are second-precision.
@@ -356,6 +384,27 @@ struct TradePlanTests {
         #expect(imported.status == stored.status)
         #expect(imported.note == stored.note)
         #expect(imported.createdAt == stored.createdAt)
+        #expect(imported.positionPool == .strategic)
+
+        let wire = try WatchlistSyncWireCodec.encode(deviceID: "plan-pool", snapshot: source.syncSnapshot())
+        #expect(try WatchlistSyncWireCodec.decode(wire).version == 7)
+        #expect(try WatchlistSyncWireCodec.decode(wire).snapshot.items[0].plans.first?.positionPool == .strategic)
+
+        var archiveObject = try #require(
+            JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        )
+        archiveObject["version"] = 5
+        let olderArchiveHeader = try JSONSerialization.data(withJSONObject: archiveObject)
+        #expect(throws: WatchlistArchive.DecodingFailure.unsupportedVersion(6)) {
+            try WatchlistArchive.decoded(from: String(decoding: olderArchiveHeader, as: UTF8.self))
+        }
+
+        var wireObject = try #require(JSONSerialization.jsonObject(with: wire) as? [String: Any])
+        wireObject["version"] = 6
+        let olderWireHeader = try JSONSerialization.data(withJSONObject: wireObject)
+        #expect(throws: WatchlistSyncWireCodec.CodecError.unsupportedVersion(7)) {
+            try WatchlistSyncWireCodec.decode(olderWireHeader)
+        }
 
         // Install that already wrote its own plan: the file does not overwrite
         // it, the same rule trades and thesis follow.
@@ -368,6 +417,22 @@ struct TradePlanTests {
         #expect(kept.setTradePlan(mine, for: symbolA))
         kept.merge(try WatchlistArchive.decoded(from: text))
         #expect(kept.item(for: symbolA)?.plans.map(\.id) == [mine.id])
+    }
+
+    @Test("A one-sided sync edit carries a plan's intended pool")
+    func syncMergePreservesPlanPoolEdit() {
+        let groupID = UUID()
+        let original = plan(id: UUID(), price: 200, updatedAt: 1_700_000_000)
+        var localEdit = original
+        localEdit.positionPool = .tactical
+        localEdit.updatedAt = Date(timeIntervalSince1970: 1_700_000_100)
+        let base = snapshot([item(symbolA, plans: [original])], groupID: groupID)
+        let local = snapshot([item(symbolA, plans: [localEdit])], groupID: groupID)
+        let remote = snapshot([item(symbolA, plans: [original])], groupID: groupID)
+
+        let merged = WatchlistSyncMerge.merge(base: base, local: local, remote: remote)
+        #expect(merged.conflicts.isEmpty)
+        #expect(merged.snapshot.items[0].plans.first?.positionPool == .tactical)
     }
 
     @Test("An archive carries plans through its own encoding unchanged")

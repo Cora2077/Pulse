@@ -18,20 +18,53 @@ struct DataSettingsView: View {
 
     private enum Phase: Equatable {
         case idle
-        case previewing(WatchlistArchive, WatchlistArchive.ImportPlan)
+        case previewing(ImportPreview)
         case imported(WatchlistArchive.ImportPlan)
         case failed(String)
         case exported(String)
     }
 
+    /// A reviewed import, held together with what it was reviewed *against*.
+    ///
+    /// The plan is a reading of the store at one moment: which symbols are
+    /// already present, which lists exist, what the account holds. Applying it
+    /// later is only honest if both sides still match — the account must still
+    /// be the one the archive was read in, and the source ledger must not have
+    /// changed under it. Otherwise the plan would merge records the user never
+    /// saw, or file an untagged archive into an account that was not the one on
+    /// screen when they read the preview.
+    private struct ImportPreview: Equatable {
+        let archive: WatchlistArchive
+        /// The account this preview was built in. Untagged archives are applied
+        /// into whichever account is selected, so that choice has to be
+        /// recorded rather than re-read at confirm time.
+        let account: BrokerageAccountID
+        /// The account's own ledger state when the plan was computed. A change
+        /// here — another window, a sync, a classification — invalidates the
+        /// plan's "already present" and "will add" readings.
+        let sourceSnapshot: WatchlistSyncSnapshot
+        let plan: WatchlistArchive.ImportPlan
+
+        static func == (lhs: ImportPreview, rhs: ImportPreview) -> Bool {
+            lhs.account == rhs.account && lhs.plan == rhs.plan
+                && lhs.sourceSnapshot == rhs.sourceSnapshot
+        }
+    }
+
     @State private var phase: Phase = .idle
+    @State private var showClassification = false
+    /// An archive tagged with an account other than the current one. Import is
+    /// held here until the user acknowledges it: a mismatch must never be
+    /// resolved by silently writing the records into whichever account happens
+    /// to be selected.
+    @State private var foreignImport: (WatchlistArchive, BrokerageAccountID)?
 
     /// Import is its own two-step review — paste, read the plan, then apply — so
     /// the clipboard actions step aside while a plan is on screen. Sync is a
     /// standing setting and keeps its place either way.
     private var isReviewingImport: Bool {
         switch phase {
-        case .previewing(_, _), .imported(_): true
+        case .previewing(_), .imported(_): true
         default: false
         }
     }
@@ -40,11 +73,18 @@ struct DataSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 switch phase {
-                case .previewing(_, let plan), .imported(let plan):
-                    planCard(plan)
+                case .previewing(let preview):
+                    planCard(preview.plan, archive: preview.archive, scopeAccount: preview.account)
+                case .imported(let plan):
+                    // The archive is already applied; the scope note would have
+                    // nothing left to describe, so the result card omits it.
+                    planCard(plan, archive: nil,
+                             scopeAccount: appState.watchlist.activeBrokerageAccountID)
                 default:
                     EmptyView()
                 }
+                BackupSettingsCard()
+                if appState.watchlist.brokerageAccountsEnabled { accountCard }
                 folderSyncCard
                 if !isReviewingImport {
                     actionsCard
@@ -62,6 +102,26 @@ struct DataSettingsView: View {
         .safeAreaInset(edge: .top, spacing: 0) { header }
         .safeAreaInset(edge: .bottom, spacing: 0) { actionBar }
         .animation(.snappy(duration: 0.24), value: phase)
+        .onChange(of: appState.watchlist.activeBrokerageAccountID) { _, _ in
+            discardStalePreview()
+        }
+        .onChange(of: appState.watchlist.brokeragePortfolio(for: appState.watchlist.activeBrokerageAccountID).flatSnapshot) { _, _ in
+            discardStalePreview()
+        }
+        .sheet(isPresented: $showClassification) {
+            BrokerageAccountClassificationSheet { _ in }
+        }
+        .alert(
+            PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+                ? "账号不匹配" : "Account mismatch",
+            isPresented: foreignImportBinding
+        ) {
+            Button(PulseLocalization.localizedString("action.cancel"), role: .cancel) {
+                foreignImport = nil
+            }
+        } message: {
+            Text(foreignImportMessage)
+        }
     }
 
     private var header: some View {
@@ -85,15 +145,15 @@ struct DataSettingsView: View {
     @ViewBuilder
     private var actionBar: some View {
         switch phase {
-        case .previewing(let archive, let plan):
+        case .previewing(let preview):
             HStack {
                 Spacer()
                 Button(PulseLocalization.localizedString("action.cancel")) { phase = .idle }
                 Button(PulseLocalization.localizedString("data.import.confirm")) {
-                    phase = .imported(appState.watchlist.merge(archive))
+                    confirmImport(preview)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!plan.changesAnything)
+                .disabled(!preview.plan.changesAnything || previewIsStale(preview))
             }
             .controlSize(.small)
             .padding(12)
@@ -119,13 +179,82 @@ struct DataSettingsView: View {
                 subtitle: "data.export.subtitle",
                 systemName: "square.and.arrow.up"
             ) { exportToClipboard() }
+            if appState.watchlist.brokerageAccountsEnabled {
+                scopeNote(accountCopyData("导出当前账号", "Exports the current account"))
+            }
             Divider().padding(.leading, 40)
             actionRow(
                 title: "data.import",
                 subtitle: "data.import.subtitle",
                 systemName: "square.and.arrow.down"
             ) { previewClipboard() }
+            if appState.watchlist.brokerageAccountsEnabled {
+                scopeNote(accountCopyData("导入当前账号", "Imports into the current account"))
+            }
         }
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func accountCopyData(_ chinese: String, _ english: String) -> String {
+        PulseLocalization.currentLanguageIdentifier.hasPrefix("zh") ? chinese : english
+    }
+
+    /// Names the account the export/import above it acts on, and states the one
+    /// thing that is easy to get wrong: backups and sync are not account-scoped,
+    /// these two actions are.
+    private func scopeNote(_ action: String) -> some View {
+        let active = appState.watchlist.activeBrokerageAccountID
+        return HStack(spacing: 5) {
+            Circle().fill(AccountIdentity.dotColor(active)).frame(width: 6, height: 6)
+            Text("\(action)：\(AccountIdentity.title(active)) · "
+                 + accountCopyData("备份与同步包含全部账号",
+                                   "backups and sync cover every account"))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 7)
+    }
+
+    /// Account scope and the way into classification.
+    ///
+    /// It lives on the Data page because that is where a user already goes to
+    /// ask "which records does this app hold, and where do they live" — the
+    /// export/import actions on this page act on one account, and the backups and
+    /// sync below carry all of them.
+    private var accountCard: some View {
+        let active = appState.watchlist.activeBrokerageAccountID
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Image(systemName: AccountIdentity.symbolName(active))
+                    .foregroundStyle(.secondary)
+                Text(PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+                     ? "账号归属" : "Account classification")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Circle()
+                    .fill(AccountIdentity.dotColor(active))
+                    .frame(width: 6, height: 6)
+                Text(AccountIdentity.title(active))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            Text(PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+                 ? "把历史数据从未归属分配到融资账号或萌萌账号。导出与导入只作用于当前账号；本地备份与同步包含全部账号。"
+                 : "Move legacy records from 未归属 into 融资账号 or 萌萌账号. Export and import act on the current account only; local backups and sync carry every account.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button { showClassification = true } label: {
+                Text(PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+                     ? "管理账户归属…" : "Manage classification…")
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
@@ -178,6 +307,16 @@ struct DataSettingsView: View {
                     .foregroundStyle(.orange)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                Text(PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+                    ? "先确认同步文件夹可访问、云端文件已下载，且其他 Mac 已更新 Pulse；然后重试。若目录权限失效，可重新选择原文件夹。"
+                    : "Check folder access, download cloud files, and update Pulse on your other Macs, then retry. Reselect the same folder if its permission expired.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(PulseLocalization.currentLanguageIdentifier.hasPrefix("zh") ? "重试同步" : "Retry sync") {
+                    sync.syncNow()
+                }
+                .disabled(!sync.isConfigured || sync.isSyncing)
             }
 
             ForEach(sync.conflictSummaries) { conflict in
@@ -318,8 +457,10 @@ struct DataSettingsView: View {
     /// Every entry, grouped the way the archive groups them, showing the instrument
     /// Pulse resolved rather than the raw text. Seeing `SPX · S&P 500 Index`, or a row
     /// marked unreadable, is the only way to know an import is the one you meant.
-    private func planCard(_ plan: WatchlistArchive.ImportPlan) -> some View {
+    private func planCard(_ plan: WatchlistArchive.ImportPlan, archive: WatchlistArchive?,
+                          scopeAccount: BrokerageAccountID) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let archive { importScopeNote(archive, account: scopeAccount) }
             ForEach(plan.lists) { list in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 5) {
@@ -353,6 +494,42 @@ struct DataSettingsView: View {
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
+    /// Names the account the import will land in.
+    ///
+    /// A tagged archive whose account does not match is refused before it gets
+    /// here. An untagged one — written by an older build, or hand-authored from
+    /// the format example — carries no account, so it is stated plainly that it
+    /// goes into whichever account is current rather than left ambiguous.
+    private func importScopeNote(_ archive: WatchlistArchive, account: BrokerageAccountID) -> some View {
+        let active = account
+        let chinese = PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+        let text: String
+        if !appState.watchlist.brokerageAccountsEnabled {
+            text = ""
+        } else if let tagged = archive.brokerageAccountID {
+            text = chinese
+                ? "导入到账号：\(AccountIdentity.title(tagged))"
+                : "Importing into account: \(AccountIdentity.title(tagged))"
+        } else {
+            text = chinese
+                ? "数据未标注账号，将导入当前账号：\(AccountIdentity.title(active))"
+                : "Untagged data imports into the current account: \(AccountIdentity.title(active))"
+        }
+        return Group {
+            if !text.isEmpty {
+                HStack(spacing: 5) {
+                    Circle().fill(AccountIdentity.dotColor(archive.brokerageAccountID ?? active))
+                        .frame(width: 6, height: 6)
+                    Text(text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private var message: some View {
         switch phase {
@@ -360,8 +537,8 @@ struct DataSettingsView: View {
             note(text, color: .orange)
         case .exported(let text):
             note(text, color: .green)
-        case .previewing(_, let plan):
-            note(planSummary(for: plan), color: plan.skippedCount > 0 ? .orange : .secondary)
+        case .previewing(let preview):
+            note(planSummary(for: preview.plan), color: preview.plan.skippedCount > 0 ? .orange : .secondary)
         case .imported(let plan):
             note(
                 withDrawingSummary(
@@ -419,12 +596,70 @@ struct DataSettingsView: View {
         }
         do {
             let archive = try WatchlistArchive.decoded(from: text)
-            phase = .previewing(archive, appState.watchlist.importPlan(for: archive))
+            // An archive carries the account it was exported from. Writing it into
+            // a different account would merge two independently recorded ledgers,
+            // so a mismatch is surfaced before the preview and never applied.
+            if let tagged = archive.brokerageAccountID,
+               appState.watchlist.brokerageAccountsEnabled,
+               tagged != appState.watchlist.activeBrokerageAccountID {
+                foreignImport = (archive, tagged)
+                return
+            }
+            phase = .previewing(ImportPreview(
+                archive: archive,
+                account: appState.watchlist.activeBrokerageAccountID,
+                sourceSnapshot: appState.watchlist.brokeragePortfolio(for: appState.watchlist.activeBrokerageAccountID).flatSnapshot,
+                plan: appState.watchlist.importPlan(for: archive)
+            ))
         } catch let failure as WatchlistArchive.DecodingFailure {
             phase = .failed(message(for: failure))
         } catch {
             phase = .failed(PulseLocalization.localizedString("data.error.notArchive"))
         }
+    }
+
+    /// Whether the reviewed plan no longer describes what confirming would do.
+    ///
+    /// Both halves matter. A different account means an untagged archive would
+    /// land somewhere the user never agreed to; a changed source ledger means
+    /// the plan's "already present" and "will add" readings were taken from a
+    /// store that has since moved. Either way the answer is a fresh preview,
+    /// never a merge of data the user did not review.
+    private func previewIsStale(_ preview: ImportPreview) -> Bool {
+        preview.account != appState.watchlist.activeBrokerageAccountID
+            || preview.sourceSnapshot != appState.watchlist.brokeragePortfolio(for: appState.watchlist.activeBrokerageAccountID).flatSnapshot
+    }
+
+    private func confirmImport(_ preview: ImportPreview) {
+        guard !previewIsStale(preview) else {
+            discardStalePreview()
+            return
+        }
+        phase = .imported(appState.watchlist.merge(preview.archive))
+    }
+
+    /// Drops a preview that no longer matches the store and says why, so the
+    /// user can paste and review again instead of applying a plan that was
+    /// computed against a different account or a different ledger.
+    private func discardStalePreview() {
+        guard case .previewing(let preview) = phase, previewIsStale(preview) else { return }
+        phase = .failed(accountCopyData(
+            "账号或数据已变化，之前的导入预览已失效。请重新导入以查看最新结果。",
+            "The account or the data changed, so that import preview no longer applies. Import again to review the current result."
+        ))
+    }
+
+    private var foreignImportBinding: Binding<Bool> {
+        Binding(get: { foreignImport != nil }, set: { if !$0 { foreignImport = nil } })
+    }
+
+    private var foreignImportMessage: String {
+        guard let (_, tagged) = foreignImport else { return "" }
+        let current = appState.watchlist.activeBrokerageAccountID
+        let chinese = PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+        return chinese
+            ? "这份数据属于「\(AccountIdentity.title(tagged))」，当前账号是「\(AccountIdentity.title(current))」。未导入任何内容；请先切换到该账号再导入。"
+            : "This data belongs to \(AccountIdentity.title(tagged)), but the current account is \(AccountIdentity.title(current)). Nothing was imported — switch to that account and import again."
     }
 
     // MARK: - Copy
@@ -500,6 +735,19 @@ struct DataSettingsView: View {
             PulseLocalization.localizedString("data.error.invalidTransactionFee")
         case .invalidChartDrawing, .duplicateChartDrawingID:
             PulseLocalization.localizedString("data.error.invalidChartDrawing")
+        case .invalidTradingProfile:
+            PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+                ? "分类或防守价格无效，请检查导入文件。" : "Invalid classification or defense prices in the import."
+        case .invalidInstrumentEvent, .duplicateInstrumentEventID:
+            PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+                ? "事件日期、来源链接或事件标识无效，请检查导入文件。" : "Invalid event date, source URL, or event ID in the import."
+        case .duplicateTradePlanID, .duplicateTradePlanConditionID, .duplicateTradePlanRevisionID,
+             .invalidTradePlan, .invalidPlanExecution:
+            PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+                ? "计划、条件、历史或成交关联无效，请检查导入文件。" : "Invalid plan, conditions, history, or linked fill in the import."
+        case .invalidPositionAllocation:
+            PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+                ? "仓位分账的数量、来源或历史记录无效，请检查导入文件。" : "Invalid position allocation quantity, source, or history in the import."
         }
     }
 }

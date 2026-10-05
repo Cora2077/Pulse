@@ -109,10 +109,10 @@ struct WatchlistView: View {
             appState.setUserReordering(active)
             if active {
                 watchlistReorderLogger.info(
-                    "Reorder mode entered; itemCount=\(appState.watchlist.items.count, privacy: .public)"
+                    "Reorder mode entered; itemCount=\(appState.sharedWatchlist.items.count, privacy: .public)"
                 )
                 ReorderDiagnostics.shared.reorderModeEntered(
-                    itemCount: appState.watchlist.items.count,
+                    itemCount: appState.sharedWatchlist.items.count,
                     orderMode: listOrderMode,
                     sortOption: listSortOption,
                     prioritizesOpenMarkets: appState.settings.prioritizeOpenMarkets,
@@ -131,7 +131,7 @@ struct WatchlistView: View {
         .onDisappear {
             if isTourHost { appState.onboarding.pauseTour() }
         }
-        .onChange(of: appState.watchlist.allItems.isEmpty) { _, isEmpty in
+        .onChange(of: appState.sharedWatchlist.allItems.isEmpty) { _, isEmpty in
             // A first symbol from any path retires the search step.
             if !isEmpty { appState.onboarding.completeStep(.search) }
             maybeStartTour()
@@ -165,7 +165,7 @@ struct WatchlistView: View {
 
     @ViewBuilder
     private var baseContent: some View {
-        if appState.watchlist.items.isEmpty {
+        if appState.sharedWatchlist.items.isEmpty {
             emptyState
         } else {
             TimelineView(.periodic(from: .now, by: 3600)) { context in
@@ -355,8 +355,8 @@ struct WatchlistView: View {
         ) {
             shareMenuContent
         }
-        .disabled(appState.watchlist.items.isEmpty)
-        .opacity(appState.watchlist.items.isEmpty ? 0.45 : 1)
+        .disabled(appState.sharedWatchlist.items.isEmpty)
+        .opacity(appState.sharedWatchlist.items.isEmpty ? 0.45 : 1)
         ClusterMenu(
             systemName: "ellipsis.circle",
             help: PulseLocalization.localizedString("action.more"),
@@ -409,7 +409,7 @@ struct WatchlistView: View {
         }
         .menuIndicator(.hidden)
         .help(PulseLocalization.localizedString("action.share"))
-        .disabled(appState.watchlist.items.isEmpty)
+        .disabled(appState.sharedWatchlist.items.isEmpty)
 
         Menu {
             moreMenuContent
@@ -592,7 +592,7 @@ struct WatchlistView: View {
                 appState.onboarding.completeStep(.detail)
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(180))
-                    if let first = appState.watchlist.items.first {
+                    if let first = appState.sharedWatchlist.items.first {
                         route = .detail(first.symbol)
                     }
                 }
@@ -608,9 +608,9 @@ struct WatchlistView: View {
     private var tourAnchorAvailable: Bool {
         switch appState.onboarding.tourResumeStep {
         case .search:
-            appState.watchlist.items.isEmpty
+            appState.sharedWatchlist.items.isEmpty
         case .detail, .pin:
-            !appState.watchlist.items.isEmpty
+            !appState.sharedWatchlist.items.isEmpty
         case .kline:
             false
         }
@@ -670,7 +670,7 @@ struct WatchlistView: View {
     }
 
     private func selectGroup(_ id: UUID) {
-        guard appState.watchlist.selectedGroupID != id else { return }
+        guard appState.sharedWatchlist.selectedGroupID != id else { return }
         exitSearch()
         isReordering = false
 
@@ -680,9 +680,9 @@ struct WatchlistView: View {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            appState.watchlist.selectGroup(id)
+            appState.sharedWatchlist.selectGroup(id)
             if listOrderMode == WatchlistOrderMode.manual.rawValue {
-                _ = appState.watchlist.restoreManualOrder()
+                _ = appState.sharedWatchlist.restoreManualOrder()
                 enforcePinnedOrder()
             } else if let option = WatchlistSortOption(rawValue: listSortOption) {
                 applySort(option, animated: false)
@@ -721,7 +721,8 @@ struct WatchlistView: View {
                 mode: mode,
                 item: item,
                 palette: appState.palette,
-                basis: appState.settings.positionCostBasis
+                basis: appState.settings.positionCostBasis,
+                records: appState.sharedWatchlist.records(for: item.symbol)
             )
             let priceText = quote.map { PriceFormatter.price($0.price, market: item.symbol.market) } ?? "—"
             let sessionLabel = appState.isIndex(item.symbol)
@@ -744,7 +745,7 @@ struct WatchlistView: View {
                 symbolCode: item.symbol.displayCode,
                 marketName: item.symbol.market.displayName,
                 presentation: .popover,
-                trailingAccessoryWidth: appState.watchlist.isPinned(item.symbol) ? 11 : 0
+                trailingAccessoryWidth: appState.sharedWatchlist.isPinned(item.symbol) ? 11 : 0
             )
         }
         return widths.max() ?? 48
@@ -752,7 +753,7 @@ struct WatchlistView: View {
 
     private func displayedItems(at date: Date = .now) -> [WatchItem] {
         WatchlistDisplayOrder.items(
-            from: appState.watchlist,
+            from: appState.sharedWatchlist,
             prioritizeOpenMarkets: appState.settings.prioritizeOpenMarkets,
             at: date,
             bypass: isReordering
@@ -1205,7 +1206,7 @@ struct WatchlistView: View {
     private func addSearchResult(_ info: SymbolInfo) {
         let queryAtAddition = normalizedSearchQuery(searchSession.text)
         appState.settings.recordRecentSearch(queryAtAddition)
-        appState.watchlist.add(info)
+        appState.sharedWatchlist.add(info)
         appState.engine.poke()
 
         // Keep the result visible just long enough for its plus icon to become a
@@ -1219,7 +1220,7 @@ struct WatchlistView: View {
 
     /// Unlike adding, removal stays on the results so the user can keep curating.
     private func removeSearchResult(_ info: SymbolInfo) {
-        appState.watchlist.remove(info.symbol)
+        appState.sharedWatchlist.remove(info.symbol)
     }
 
     private func shortErrorText(_ error: any Error) -> String {
@@ -1243,7 +1244,7 @@ struct WatchlistView: View {
     /// First-run is the one rare moment that earns an entrance: icon and text
     /// fade up with a short stagger. Reduced motion drops the offset, keeps the fade.
     private var emptyState: some View {
-        let shouldAnimateEntrance = appState.watchlist.isEmpty
+        let shouldAnimateEntrance = appState.sharedWatchlist.isEmpty
         return VStack(spacing: 10) {
             Spacer()
             Image(systemName: "chart.line.uptrend.xyaxis")
@@ -1312,7 +1313,7 @@ struct WatchlistView: View {
                         item: item,
                         titleColumnWidth: titleColumnWidth,
                         metricColumnWidth: metricColumnWidth,
-                        isPinned: appState.watchlist.isPinned(item.symbol),
+                        isPinned: appState.sharedWatchlist.isPinned(item.symbol),
                         isReordering: isReordering
                     ) {
                         route = .detail(item.symbol)
@@ -1340,11 +1341,17 @@ struct WatchlistView: View {
                             }
                             if item.supportsPosition {
                                 Button(PulseLocalization.localizedString("action.editPosition")) {
+                                    if appState.watchlist.item(for: item.symbol) == nil {
+                                        _ = appState.watchlist.materializeItem(SymbolInfo(
+                                            symbol: item.symbol, name: item.resolvedDisplayName,
+                                            type: item.resolvedInstrumentType ?? .equity
+                                        ))
+                                    }
                                     route = .position(item.symbol, .list)
                                 }
                             }
                             Menu(PulseLocalization.localizedString("watchlist.group.membership")) {
-                                ForEach(appState.watchlist.groups) { group in
+                                ForEach(appState.sharedWatchlist.groups) { group in
                                     // Toggle renders as a native checkmark menu
                                     // item; a Label's icon does not survive menu
                                     // rendering on macOS.
@@ -1355,7 +1362,7 @@ struct WatchlistView: View {
                             Button(PulseLocalization.localizedString("watchlist.sort.adjust")) {
                                 beginAdjustingOrder()
                             }
-                            if let currentGroup = appState.watchlist.selectedGroup {
+                            if let currentGroup = appState.sharedWatchlist.selectedGroup {
                                 Divider()
                                 Button(
                                     PulseLocalization.localizedString(
@@ -1365,7 +1372,7 @@ struct WatchlistView: View {
                                     role: .destructive
                                 ) {
                                     withAnimation(.snappy(duration: 0.22)) {
-                                        appState.watchlist.setMembership(
+                                        appState.sharedWatchlist.setMembership(
                                             item.symbol,
                                             in: currentGroup.id,
                                             included: false
@@ -1462,7 +1469,7 @@ struct WatchlistView: View {
     /// Reorder always edits the persisted baseline. Session grouping is bypassed
     /// while `isReordering`, so the indices match `group.symbols`.
     private func commitReorder(from origin: Int, to target: Int) {
-        let currentSymbols = appState.watchlist.items.map(\.symbol)
+        let currentSymbols = appState.sharedWatchlist.items.map(\.symbol)
         guard currentSymbols.indices.contains(origin), currentSymbols.indices.contains(target) else { return }
         watchlistReorderLogger.info(
             "Reorder gesture ended; from=\(origin, privacy: .public) to=\(target, privacy: .public)"
@@ -1470,7 +1477,7 @@ struct WatchlistView: View {
         var orderedSymbols = currentSymbols
         let moving = orderedSymbols.remove(at: origin)
         orderedSymbols.insert(moving, at: target)
-        let committed = appState.watchlist.commitManualMove(
+        let committed = appState.sharedWatchlist.commitManualMove(
             orderedSymbols: orderedSymbols,
             movingSymbols: [moving]
         )
@@ -1493,10 +1500,10 @@ struct WatchlistView: View {
     /// from the watchlist entirely.
     private func membershipBinding(_ symbol: SymbolID, _ groupID: UUID) -> Binding<Bool> {
         Binding(
-            get: { appState.watchlist.contains(symbol, in: groupID) },
+            get: { appState.sharedWatchlist.contains(symbol, in: groupID) },
             set: { included in
                 withAnimation(.snappy(duration: 0.22)) {
-                    appState.watchlist.setMembership(symbol, in: groupID, included: included)
+                    appState.sharedWatchlist.setMembership(symbol, in: groupID, included: included)
                 }
             }
         )
@@ -1504,20 +1511,20 @@ struct WatchlistView: View {
 
     private func pinnedBinding(_ symbol: SymbolID) -> Binding<Bool> {
         Binding(
-            get: { appState.watchlist.isPinned(symbol) },
+            get: { appState.sharedWatchlist.isPinned(symbol) },
             set: { pinned in
                 let usesAutomaticSort = listOrderMode == WatchlistOrderMode.automatic.rawValue
                 if !usesAutomaticSort {
                     // Capture the unpinned baseline before the pin membership changes.
-                    appState.watchlist.rememberManualOrder()
+                    appState.sharedWatchlist.rememberManualOrder()
                 }
-                guard appState.watchlist.setPinned(symbol, pinned: pinned) else { return }
+                guard appState.sharedWatchlist.setPinned(symbol, pinned: pinned) else { return }
                 withAnimation(.snappy(duration: 0.16)) {
                     if usesAutomaticSort,
                        let option = WatchlistSortOption(rawValue: listSortOption) {
                         applySort(option)
                     } else {
-                        _ = appState.watchlist.restoreManualOrder()
+                        _ = appState.sharedWatchlist.restoreManualOrder()
                         enforcePinnedOrder()
                     }
                 }
@@ -1529,7 +1536,7 @@ struct WatchlistView: View {
     private func selectCustomOrder() {
         searchSession.text = ""
         withAnimation(.snappy(duration: 0.16)) {
-            _ = appState.watchlist.restoreManualOrder()
+            _ = appState.sharedWatchlist.restoreManualOrder()
             enforcePinnedOrder()
         }
         listOrderMode = WatchlistOrderMode.manual.rawValue
@@ -1538,10 +1545,10 @@ struct WatchlistView: View {
     /// Custom order remains stable within the pinned and unpinned sections.
     /// Dragging across their boundary cannot leave a pinned row below a regular row.
     private func enforcePinnedOrder() {
-        appState.watchlist.reorder(
+        appState.sharedWatchlist.reorder(
             WatchlistSortResolver.pinnedFirstSymbols(
-                items: appState.watchlist.items,
-                pinnedSymbols: appState.watchlist.selectedGroup?.pinnedSymbols ?? []
+                items: appState.sharedWatchlist.items,
+                pinnedSymbols: appState.sharedWatchlist.selectedGroup?.pinnedSymbols ?? []
             )
         )
     }
@@ -1556,12 +1563,12 @@ struct WatchlistView: View {
 
     private func applySort(_ option: WatchlistSortOption, animated: Bool = true) {
         if listOrderMode == WatchlistOrderMode.manual.rawValue {
-            appState.watchlist.rememberManualOrder()
+            appState.sharedWatchlist.rememberManualOrder()
         }
 
         let sortedSymbols = WatchlistSortResolver.sortedSymbols(
-            items: appState.watchlist.items,
-            pinnedSymbols: appState.watchlist.selectedGroup?.pinnedSymbols ?? []
+            items: appState.sharedWatchlist.items,
+            pinnedSymbols: appState.sharedWatchlist.selectedGroup?.pinnedSymbols ?? []
         ) { item in
             sortValue(for: item, option: option)
         }
@@ -1572,10 +1579,10 @@ struct WatchlistView: View {
         listSortOption = option.rawValue
         if animated {
             withAnimation(.snappy(duration: 0.16)) {
-                appState.watchlist.reorder(sortedSymbols)
+                appState.sharedWatchlist.reorder(sortedSymbols)
             }
         } else {
-            appState.watchlist.reorder(sortedSymbols)
+            appState.sharedWatchlist.reorder(sortedSymbols)
         }
     }
 
@@ -1620,18 +1627,24 @@ struct WatchlistView: View {
 
     private func sortValue(for item: WatchItem, option: WatchlistSortOption) -> Double? {
         guard let quote = appState.market.quote(for: item.symbol) else { return nil }
-        let metrics = PositionMetrics(item: item, quote: quote)
-        switch option {
-        case .changePercent:
-            return quote.changePercent
-        case .todayPnL:
-            return metrics?.todayPnL
-        case .totalPnL:
-            return PositionValuation(item: item, quote: quote, basis: appState.settings.positionCostBasis)?.holdingPnL
-        case .marketValue:
-            return metrics?.marketValue
+        if option == .changePercent { return quote.changePercent }
+        let held = appState.sharedWatchlist.records(for: item.symbol).filter { $0.hasPosition }
+        guard !held.isEmpty else { return nil }
+        let valuations = held.compactMap {
+            PositionValuation(item: $0, quote: quote, basis: appState.settings.positionCostBasis)
         }
+        guard valuations.count == held.count else { return nil }
+        let value = valuations.reduce(0) { total, position in
+            switch option {
+            case .changePercent: return total
+            case .todayPnL: return total + position.todayPnL
+            case .totalPnL: return total + position.holdingPnL
+            case .marketValue: return total + position.marketValue
+            }
+        }
+        return value.isFinite ? value : nil
     }
+
 }
 
 // MARK: - Components
@@ -1891,8 +1904,8 @@ struct SearchResultRow: View {
     @State private var hovering = false
 
     var body: some View {
-        let isIncluded = appState.watchlist.contains(info.symbol)
-        let selectedGroupName = appState.watchlist.selectedGroup?.name ?? ""
+        let isIncluded = appState.sharedWatchlist.contains(info.symbol)
+        let selectedGroupName = appState.sharedWatchlist.selectedGroup?.name ?? ""
         let addLabel = PulseLocalization.localizedString("search.addToGroup", selectedGroupName)
         let removeLabel = PulseLocalization.localizedString(
             "watchlist.group.removeCurrent",
@@ -1997,7 +2010,8 @@ struct WatchRow: View {
             mode: metricMode,
             item: item,
             palette: appState.palette,
-            basis: appState.settings.positionCostBasis
+            basis: appState.settings.positionCostBasis,
+                records: appState.sharedWatchlist.records(for: item.symbol)
         )
         let priceText = quote.map { PriceFormatter.price($0.price, market: item.symbol.market) } ?? "—"
         // Indices don't trade pre/post; their quote is just the last regular
@@ -2124,7 +2138,7 @@ struct WatchRow: View {
         if let reached = quote.flatMap({ item.reachedPlan(at: $0.price) }) {
             Image(systemName: "target")
                 .font(.system(size: 8))
-                .foregroundStyle(appState.palette.color(isUp: reached.kind == .buy))
+                .foregroundStyle(PlanSideStyle.color(for: reached.kind))
                 .help(PulseLocalization.localizedString("plan.reached"))
         } else if item.hasActivePlans {
             Image(systemName: "scope")
@@ -2171,7 +2185,8 @@ struct WatchRow: View {
             mode: mode,
             item: item,
             palette: appState.palette,
-            basis: appState.settings.positionCostBasis
+            basis: appState.settings.positionCostBasis,
+                records: appState.sharedWatchlist.records(for: item.symbol)
         )
         rowMetricView(display: display)
     }
@@ -2194,14 +2209,16 @@ struct WatchRow: View {
         mode: WatchRowMetricMode,
         item: WatchItem,
         palette: ChangePalette,
-        basis: PositionCostBasis = .average
+        basis: PositionCostBasis = .average,
+        records: [WatchItem]? = nil
     ) -> (text: String, color: Color) {
         let display = WatchRowMetricDisplay.resolve(
             quote: quote,
             metrics: metrics,
             mode: mode,
             item: item,
-            basis: basis
+            basis: basis,
+            records: records
         )
         return (
             display.text,

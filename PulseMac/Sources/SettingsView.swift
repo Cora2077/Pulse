@@ -91,6 +91,10 @@ struct SettingsView: View {
                     Text(PulseLocalization.localizedString("settings.section.general"))
                 }
 
+                Section("计划提醒") {
+                    PlanAlertSettingsView()
+                }
+
                 Section {
                     providerGroupRow(titleKey: "settings.section.providers.accounts", kind: .accounts)
                     providerGroupRow(titleKey: "settings.section.providers.builtin", kind: .builtin)

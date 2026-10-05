@@ -19,12 +19,22 @@ struct WatchlistTextSnapshot {
 
     @MainActor
     init(appState: AppState, exportedAt: Date = .now) {
-        self.init(
-            watchlist: appState.watchlist,
-            market: appState.market,
+        groupName = appState.sharedWatchlist.selectedGroup?.name ?? ""
+        let displayItems = WatchlistDisplayOrder.items(
+            from: appState.sharedWatchlist,
             prioritizeOpenMarkets: appState.settings.prioritizeOpenMarkets,
-            exportedAt: exportedAt
+            at: exportedAt
         )
+        items = displayItems.map { item in
+            Item(symbol: item.symbol, name: item.resolvedDisplayName,
+                 instrumentType: item.resolvedInstrumentType,
+                 quote: appState.market.quote(for: item.symbol),
+                 intradayCandles: IntradayTrendSnapshot(
+                    candles: appState.market.sparklines[item.symbol] ?? [],
+                    market: item.symbol.market, includesExtendedHours: false
+                 ).candles)
+        }
+        self.exportedAt = exportedAt
     }
 
     @MainActor

@@ -15,11 +15,16 @@ struct PositionHubView: View {
     static let transactionRowHeight: CGFloat = 24
 
     /// Everything above the trade rows on a held position — header, P&L cells,
-    /// stats, separators, the trade buttons, and the section title — measured
-    /// from the shipped layout. The old fixed 420pt page left 40pt of dead
-    /// space under three rows; the page height is now this plus one
-    /// `transactionRowHeight` per row actually shown.
-    static let summaryHeightAboveTrades: CGFloat = 312
+    /// stats, separators, the funding composition line, the trade buttons, and
+    /// the section title — measured from the shipped layout. The old fixed
+    /// 420pt page left 40pt of dead space under three rows; the page height is
+    /// now this plus one `transactionRowHeight` per row actually shown.
+    ///
+    /// The composition row is one 12pt line with an 8pt top gap, so it adds 20pt
+    /// to the budget; it renders only when the holding carries a funding
+    /// annotation or is awaiting review.
+    static let compositionRowHeight: CGFloat = 20
+    static let summaryHeightAboveTrades: CGFloat = 312 + compositionRowHeight
 
     @Environment(AppState.self) private var appState
     @Environment(\.pulseHost) private var host
@@ -36,6 +41,7 @@ struct PositionHubView: View {
             PositionPageHeader(
                 symbol: symbol,
                 title: nil,
+                accountCaption: AccountIdentity.title(appState.watchlist.activeBrokerageAccountID),
                 onBack: { route = returnRoute.popoverRoute },
                 // In the menu-bar panel the action remains in the page row. The
                 // pinned window promotes it to the title bar below.
@@ -117,6 +123,11 @@ struct PositionHubView: View {
             }
             .padding(.top, 10)
 
+            if let composition = fundingComposition(item) {
+                fundingCompositionRow(composition)
+                    .padding(.top, 8)
+            }
+
             separator
 
             tradeButtons(recordStyle: false)
@@ -126,6 +137,91 @@ struct PositionHubView: View {
             recentTransactions(item)
         }
         .padding(.horizontal, 12)
+    }
+
+    // MARK: - Funding composition
+
+    /// The per-source share counts for one holding, or `nil` when there is
+    /// nothing to say.
+    ///
+    /// It reads the live allocation rather than any trade's annotation, because
+    /// the allocation is what the pools actually show; summing transactions
+    /// would report a composition that does not match the cards. A `nil` source
+    /// is counted under "not annotated" — an old portion is unknown, never a
+    /// guess at margin.
+    struct FundingComposition {
+        var own: Double = 0
+        var margin: Double = 0
+        var unmarked: Double = 0
+        var needsReview: Bool
+
+        var isEmpty: Bool { own == 0 && margin == 0 && unmarked == 0 && !needsReview }
+    }
+
+    private func fundingComposition(_ item: WatchItem) -> FundingComposition? {
+        guard item.positionQuantity > 0 else { return nil }
+        let needsReview = item.positionAllocationNeedsReconciliation
+        guard let allocation = item.positionAllocation, !needsReview else {
+            // Nothing to break down, but the holding still has a funding state
+            // worth stating: "awaiting review" is a real answer and must not be
+            // rendered as an all-zero composition, which would read as "no
+            // margin".
+            return needsReview ? FundingComposition(needsReview: true) : nil
+        }
+        var composition = FundingComposition(needsReview: false)
+        for portion in allocation.portions {
+            switch portion.fundingSource {
+            case .some(.own): composition.own += portion.quantity
+            case .some(.margin): composition.margin += portion.quantity
+            case .some(.unmarked), .none: composition.unmarked += portion.quantity
+            }
+        }
+        return composition.isEmpty ? nil : composition
+    }
+
+    @ViewBuilder
+    private func fundingCompositionRow(_ composition: FundingComposition) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "creditcard")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(composition.margin > 0 ? PoolFundingStyle.marginTint : .secondary)
+            Text(poolCopy("来源构成", "Funding"))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            if composition.needsReview {
+                Text(poolCopy("分账待核对，来源构成未确认", "Allocation needs review; composition unconfirmed"))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            } else {
+                // Compact, in a fixed order, so the three numbers are
+                // comparable between holdings at a glance. Only non-zero parts
+                // are printed; a zero would be noise, and "not annotated" is
+                // itself the meaningful absence.
+                Text(compositionParts(composition))
+                    .font(.system(size: 10, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+        }
+        .help(poolCopy("按份额卡的资金来源汇总；不是融资余额或净资产。",
+                       "Summed from portion funding annotations. Not a broker balance or net worth."))
+    }
+
+    private func compositionParts(_ composition: FundingComposition) -> String {
+        var parts: [String] = []
+        if composition.own > 0 {
+            parts.append(poolCopy("普通 ", "Own ") + PriceFormatter.quantity(composition.own))
+        }
+        if composition.margin > 0 {
+            parts.append(poolCopy("融资 ", "Margin ") + PriceFormatter.quantity(composition.margin))
+        }
+        if composition.unmarked > 0 {
+            parts.append(poolCopy("未标注 ", "Unannotated ") + PriceFormatter.quantity(composition.unmarked))
+        }
+        return parts.joined(separator: " · ")
     }
 
     @ViewBuilder
@@ -389,6 +485,13 @@ struct PositionPageHeader: View {
     let symbol: SymbolID
     /// Optional leading emphasis ("买入"/"卖出"), tinted by the caller.
     var title: (text: String, color: Color)?
+    /// The account this page is writing into, named in the chrome.
+    ///
+    /// A plan or a trade is written into whichever ledger is *currently*
+    /// selected, and the account can only change from the toolbar — which
+    /// resets the draft. Naming it here is what stops a form from being filled
+    /// in for one account and confirmed into another.
+    var accountCaption: String?
     let onBack: () -> Void
     /// Optional trailing edit affordance (the hub's quick-set entry).
     var onEdit: (() -> Void)?
@@ -418,6 +521,16 @@ struct PositionPageHeader: View {
                     .fixedSize()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            if let accountCaption {
+                // Fixed and secondary: an account is identity, not an alert, so
+                // it never competes with the instrument name or the side colour.
+                Text(accountCaption)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .help(accountCaption)
+            }
             if let onEdit {
                 ClusterIcon(
                     systemName: "square.and.pencil",

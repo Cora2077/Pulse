@@ -12,13 +12,21 @@ struct MainPlanListView: View {
 
         var id: String { rawValue }
 
-        var titleKey: String {
+        /// The `waiting` entry means "still to be executed", which is wider than
+        /// the string table's "waiting to trigger": a plan whose price already
+        /// arrived is still pending work. The label is worded here so the filter
+        /// says what it does; the other three keep their existing translations.
+        var title: String {
             switch self {
-            case .all: "main.planList.filter.all"
-            case .waiting: "main.planList.filter.waiting"
-            case .done: "main.planList.filter.done"
-            case .dropped: "main.planList.filter.dropped"
+            case .all: PulseLocalization.localizedString("main.planList.filter.all")
+            case .waiting: copy("待执行", "Pending")
+            case .done: PulseLocalization.localizedString("main.planList.filter.done")
+            case .dropped: PulseLocalization.localizedString("main.planList.filter.dropped")
             }
+        }
+
+        private func copy(_ chinese: String, _ english: String) -> String {
+            PulseLocalization.currentLanguageIdentifier.hasPrefix("zh") ? chinese : english
         }
     }
 
@@ -32,17 +40,40 @@ struct MainPlanListView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.colorScheme) private var colorScheme
     @Binding var route: PopoverRoute
+    /// Asks the host to show this symbol's summary beside the list instead of
+    /// navigating away. When the host supplies it the list stays alive, with its
+    /// search, filter, sort and scroll intact; when it does not (the routed
+    /// `.planList` page renders this view too) the old push behaviour stands.
+    var onInspect: ((SymbolID) -> Void)?
     @State private var query = ""
-    @State private var statusFilter: StatusFilter = .all
+    /// The page opens on what still needs doing. A plan the user has already
+    /// finished or dropped is a record, and the reason to visit this page is
+    /// the open work; history stays reachable from the same control.
+    @State private var statusFilter: StatusFilter = .waiting
     @State private var sortOrder: SortOrder = .reached
     @State private var reachedOnly = false
+    @State private var executionEntry: TradePlanEntry?
+    @State private var workflowEntry: TradePlanEntry?
+    /// The editor is presented as a local sheet rather than through the window
+    /// route. Routing it would replace this page and throw away the search,
+    /// filter, sort and scroll position the user set up to find the plan.
+    @State private var editorPresentation: PlanEditorPresentation?
+    @State private var showsAlertSettings = false
+
+    /// One editing session. `Identifiable` so it can drive `.sheet(item:)`,
+    /// which keeps the identity tied to the plan being edited. Internal rather
+    /// than private because the sheet host below is a separate type.
+    struct PlanEditorPresentation: Identifiable {
+        let symbol: SymbolID
+        let planID: UUID?
+        var id: String { "\(symbol.description)-\(planID?.uuidString ?? "new")" }
+    }
 
     private var entries: [TradePlanEntry] { appState.watchlist.tradePlanEntries }
 
     private func currentPrice(_ symbol: SymbolID) -> Double? {
-        guard let price = appState.market.quote(for: symbol)?.price,
-              price.isFinite, price > 0 else { return nil }
-        return price
+        guard let quote = appState.market.quote(for: symbol), TradingQuoteHealth.isCurrent(quote) else { return nil }
+        return quote.price
     }
 
     private func isReached(_ entry: TradePlanEntry) -> Bool {
@@ -55,7 +86,10 @@ struct MainPlanListView: View {
         return entries.filter { entry in
             switch statusFilter {
             case .all: break
-            case .waiting where entry.plan.status != .active: return false
+            // 待执行 is not just "active": a plan the user already filled out
+            // completely has nothing left to act on, so it belongs with the
+            // history rather than in the default work list.
+            case .waiting where !isPending(entry): return false
             case .done where entry.plan.status != .done: return false
             case .dropped where entry.plan.status != .cancelled: return false
             default: break
@@ -68,6 +102,11 @@ struct MainPlanListView: View {
                 || name.localizedCaseInsensitiveContains(needle)
                 || (entry.plan.note ?? "").localizedCaseInsensitiveContains(needle)
         }
+    }
+
+    /// A plan still waiting on the user: it is live and it has quantity left.
+    private func isPending(_ entry: TradePlanEntry) -> Bool {
+        entry.plan.status == .active && entry.remainingQuantity > 0
     }
 
     private var orderedEntries: [TradePlanEntry] {
@@ -101,8 +140,8 @@ struct MainPlanListView: View {
                 // is to find the plan whose price difference costs the most.
                 // Rows with no size or no quote have no amount to rank on and
                 // sink to the bottom.
-                let leftCost = PulseUI.PlanCostText.summary(for: lhs.plan, current: leftPrice)?.amount ?? -Double.infinity
-                let rightCost = PulseUI.PlanCostText.summary(for: rhs.plan, current: rightPrice)?.amount ?? -Double.infinity
+                let leftCost = PulseUI.PlanCostText.summary(for: lhs.remainingPlan, current: leftPrice)?.amount ?? -Double.infinity
+                let rightCost = PulseUI.PlanCostText.summary(for: rhs.remainingPlan, current: rightPrice)?.amount ?? -Double.infinity
                 if leftCost != rightCost { return leftCost > rightCost }
             }
             return lhs.id.uuidString < rhs.id.uuidString
@@ -118,6 +157,7 @@ struct MainPlanListView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            alertSummaryBar
             filters
             if entries.isEmpty {
                 emptyState("main.planList.empty")
@@ -128,6 +168,63 @@ struct MainPlanListView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .sheet(item: $executionEntry) { entry in
+            PlanExecutionSheet(entry: entry, account: appState.watchlist.activeBrokerageAccountID,
+                               onClose: { executionEntry = nil })
+        }
+        .sheet(item: $workflowEntry) { entry in
+            PlanWorkflowDetailView(symbol: entry.symbol, planID: entry.id,
+                                   account: appState.watchlist.activeBrokerageAccountID)
+                .frame(width: 650, height: 600)
+        }
+        .sheet(item: $editorPresentation) { presentation in
+            PlanEditorSheet(presentation: presentation) { editorPresentation = nil }
+        }
+    }
+
+    /// The reminder controls folded into one line. The trigger rules and their
+    /// caveats are help text, not something to read on every visit, so they move
+    /// into the popover with the same `PlanAlertSettingsView` the page used to
+    /// show inline. No alert field changes meaning here.
+    private var alertSummaryBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: appState.planAlerts.enabled ? "bell.badge" : "bell.slash")
+                .font(.system(size: 11))
+                .foregroundStyle(appState.planAlerts.enabled ? Color.accentColor : Color.secondary)
+            Text(copy(
+                "到价提醒 \(onOff(appState.planAlerts.enabled)) · 板块提醒 \(onOff(appState.planAlerts.sectorEnabled))",
+                "Price alerts \(onOff(appState.planAlerts.enabled)) · Sector alerts \(onOff(appState.planAlerts.sectorEnabled))"
+            ))
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            Spacer(minLength: 4)
+            Button(copy("设置", "Settings")) {
+                showsAlertSettings = true
+            }
+            .controlSize(.small)
+            .popover(isPresented: $showsAlertSettings, arrowEdge: .bottom) {
+                PlanAlertSettingsView()
+                    .padding(14)
+                    .frame(width: 380)
+            }
+            if let error = appState.planAlerts.lastError {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .help(error)
+            }
+        }
+        .frame(height: 32)
+        .padding(.horizontal, 18)
+    }
+
+    private func onOff(_ enabled: Bool) -> String {
+        copy(enabled ? "开" : "关", enabled ? "on" : "off")
+    }
+
+    private func copy(_ chinese: String, _ english: String) -> String {
+        PulseLocalization.currentLanguageIdentifier.hasPrefix("zh") ? chinese : english
     }
 
     private var header: some View {
@@ -179,7 +276,7 @@ struct MainPlanListView: View {
             HStack(spacing: 10) {
                 Picker(PulseLocalization.localizedString("main.planList.filter.status"), selection: $statusFilter) {
                     ForEach(StatusFilter.allCases) { filter in
-                        Text(PulseLocalization.localizedString(filter.titleKey)).tag(filter)
+                        Text(filter.title).tag(filter)
                     }
                 }
                 .pickerStyle(.menu)
@@ -218,24 +315,44 @@ struct MainPlanListView: View {
                 }
                 .scrollIndicators(.visible)
             }
-            .frame(minWidth: 1_115, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(minWidth: Self.tableMinWidth, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(.horizontal, 18)
             .padding(.bottom, 12)
         }
         .scrollIndicators(.visible)
     }
 
+    /// Column spacing is shared by the header and the rows, and the widths below
+    /// are the same numbers in both. That is the whole reason the two use one
+    /// constant: a header that drifts from its rows mislabels every column.
+    ///
+    /// The quantity and status columns were widened to stop numbers and status
+    /// words colliding, and the spacing was added between all nine columns. The
+    /// symbol and note columns gave up the difference so the table's minimum
+    /// width does not grow and narrow windows do not start scrolling sideways.
+    private static let columnSpacing: CGFloat = 12
+    private static let symbolColumnWidth: CGFloat = 177
+    /// The name/code label plus the 3pt gap and the 48pt action cluster fill the
+    /// symbol column exactly, so the actions cannot be pushed out of it.
+    private static let symbolLabelWidth: CGFloat = 126
+    private static let noteColumnWidth: CGFloat = 96
+    private static let quantityColumnWidth: CGFloat = 104
+    private static let statusColumnWidth: CGFloat = 130
+    /// The row's own minimum, so the horizontal scroll view and the header
+    /// agree on how wide the table really is.
+    private static let tableMinWidth: CGFloat = 1_115
+
     private var tableHeader: some View {
-        HStack(spacing: 0) {
-            columnHeader("main.planList.column.symbol", width: 225, alignment: .leading)
+        HStack(spacing: Self.columnSpacing) {
+            columnHeader("main.planList.column.symbol", width: Self.symbolColumnWidth, alignment: .leading)
             columnHeader("main.planList.column.kind", width: 66, alignment: .leading)
             columnHeader("main.planList.column.target", width: 108, alignment: .trailing)
             columnHeader("main.planList.column.current", width: 108, alignment: .trailing)
             columnHeader("main.planList.column.distance", width: 100, alignment: .trailing)
             columnHeader("main.planList.column.cost", width: 130, alignment: .trailing)
-            columnHeader("main.planList.column.quantity", width: 88, alignment: .trailing)
-            columnHeader("main.planList.column.status", width: 115, alignment: .leading)
-            columnHeader("main.planList.column.note", width: 175, alignment: .leading)
+            columnHeader("main.planList.column.quantity", width: Self.quantityColumnWidth, alignment: .trailing)
+            columnHeader("main.planList.column.status", width: Self.statusColumnWidth, alignment: .leading)
+            columnHeader("main.planList.column.note", width: Self.noteColumnWidth, alignment: .leading)
         }
         .padding(.vertical, 8)
     }
@@ -246,10 +363,14 @@ struct MainPlanListView: View {
         let name = quoteName ?? appState.displayName(for: entry.symbol)
         let distance = current.map { entry.plan.gapPercent(from: $0) }
 
-        return HStack(spacing: 0) {
+        return HStack(spacing: Self.columnSpacing) {
             HStack(spacing: 3) {
                 Button {
-                    route = .detail(entry.symbol)
+                    if let onInspect {
+                        onInspect(entry.symbol)
+                    } else {
+                        route = .detail(entry.symbol)
+                    }
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(name).font(.system(size: 11.5, weight: .medium)).lineLimit(1)
@@ -260,13 +381,13 @@ struct MainPlanListView: View {
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.tertiary)
                     }
-                    .frame(width: 155, alignment: .leading)
+                    .frame(width: Self.symbolLabelWidth, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 rowActions(entry)
             }
-            .frame(width: 225, alignment: .leading)
+            .frame(width: Self.symbolColumnWidth, alignment: .leading)
 
             directionCell(entry.plan.kind)
             textCell(PriceFormatter.price(entry.plan.price, market: entry.symbol.market), width: 108, alignment: .trailing, monospaced: true)
@@ -274,19 +395,36 @@ struct MainPlanListView: View {
             textCell(distance.map(PriceFormatter.percentMagnitude) ?? "—", width: 100, alignment: .trailing, monospaced: true)
             textCell(costText(entry, current: current), width: 130, alignment: .trailing,
                      secondary: true, shrink: true)
-            textCell(PriceFormatter.quantity(entry.plan.quantity), width: 88, alignment: .trailing, monospaced: true)
+            quantityCell(entry)
             statusCell(entry, reached: isReached(entry), hasQuote: current != nil)
-            textCell(entry.plan.note?.isEmpty == false ? entry.plan.note! : "—", width: 175, alignment: .leading, secondary: true)
+            textCell(entry.plan.note?.isEmpty == false ? entry.plan.note! : "—", width: Self.noteColumnWidth, alignment: .leading, secondary: true)
         }
         .font(.system(size: 10.5))
-        .padding(.vertical, 6)
+        .padding(.vertical, 7)
+    }
+
+    /// How much is still open, named so it cannot be read as the planned size.
+    /// Fill progress is shown once in the adjacent status column.
+    private func quantityCell(_ entry: TradePlanEntry) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(PriceFormatter.quantity(isPending(entry)
+                ? entry.remainingQuantity
+                : entry.plan.quantity))
+                .lineLimit(1)
+        }
+        .monospacedDigit()
+        .frame(width: Self.quantityColumnWidth, alignment: .trailing)
+        .help(copy(
+            "待执行 \(PriceFormatter.quantity(entry.remainingQuantity)) · 计划 \(PriceFormatter.quantity(entry.plan.quantity)) · 已成 \(PriceFormatter.quantity(entry.filledQuantity))",
+            "Open \(PriceFormatter.quantity(entry.remainingQuantity)) · planned \(PriceFormatter.quantity(entry.plan.quantity)) · filled \(PriceFormatter.quantity(entry.filledQuantity))"
+        ))
     }
 
     /// The money the quote is worth against the plan's own price. The label
     /// already says which way it cuts, so the cell carries no sign of its own;
     /// the em dash stands in wherever there is nothing to compare.
     private func costText(_ entry: TradePlanEntry, current: Double?) -> String {
-        PlanCostText.string(for: entry.plan, current: current, symbol: entry.symbol) ?? "—"
+        PlanCostText.string(for: entry.remainingPlan, current: current, symbol: entry.symbol) ?? "—"
     }
 
     private func columnHeader(_ key: String, width: CGFloat, alignment: Alignment) -> some View {
@@ -298,7 +436,7 @@ struct MainPlanListView: View {
     }
 
     private func directionCell(_ kind: TradePlan.Kind) -> some View {
-        let color = appState.palette.color(isUp: kind == .buy)
+        let color = PlanSideStyle.color(for: kind)
         let backgroundOpacity = colorScheme == .dark ? 0.22 : 0.10
         let borderOpacity = colorScheme == .dark ? 0.46 : 0.30
         return Text(PulseLocalization.localizedString(kind == .buy ? "plan.kind.buy" : "plan.kind.sell"))
@@ -331,27 +469,53 @@ struct MainPlanListView: View {
             .frame(width: width, alignment: alignment)
     }
 
+    /// Three independent facts, deliberately not collapsed into one word:
+    /// whether the user still means to act on the plan, how much of it has been
+    /// filled, and whether the price condition holds right now. A price that
+    /// arrived is not a completed trade, and ending a plan by hand without
+    /// filling it all is not called complete either.
+    ///
+    /// The price hint sits in a trailing sub-row rather than overlaid on the
+    /// intent, so a long intent such as "已结束，未全部成交" can never be
+    /// overwritten by the hint.
     private func statusCell(_ entry: TradePlanEntry, reached: Bool, hasQuote: Bool) -> some View {
-        HStack(spacing: 5) {
-            Text(PulseLocalization.localizedString(statusKey(entry.plan.status)))
+        VStack(alignment: .leading, spacing: 1) {
+            Text(planIntentTitle(entry))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            if reached {
-                Text(PulseLocalization.localizedString("plan.reached"))
-                    .foregroundStyle(appState.palette.color(isUp: entry.plan.kind == .buy))
+                .minimumScaleFactor(0.85)
+            HStack(spacing: 4) {
+                if entry.filledQuantity > 0 {
+                    Text(copy(
+                        "已成 \(PriceFormatter.quantity(entry.filledQuantity))/待执行 \(PriceFormatter.quantity(entry.remainingQuantity))",
+                        "Filled \(PriceFormatter.quantity(entry.filledQuantity))/open \(PriceFormatter.quantity(entry.remainingQuantity))"
+                    ))
+                    .font(.system(size: 8.5, design: .monospaced))
+                    .foregroundStyle(.tertiary)
                     .lineLimit(1)
-            } else if entry.plan.status == .active && !hasQuote {
-                Text("—").foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
+                if reached {
+                    Text(PulseLocalization.localizedString("plan.reached"))
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(PlanSideStyle.color(for: entry.plan.kind))
+                        .lineLimit(1)
+                } else if entry.plan.status == .active && !hasQuote {
+                    Text(copy("无有效报价", "No live quote"))
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
         }
         .font(.system(size: 9.5, weight: reached ? .medium : .regular))
-        .frame(width: 115, alignment: .leading)
+        .frame(width: Self.statusColumnWidth, alignment: .leading)
     }
 
     private func rowActions(_ entry: TradePlanEntry) -> some View {
         HStack(spacing: 2) {
             Button {
-                route = .plan(entry.symbol, entry.plan.id, .planList)
+                editorPresentation = PlanEditorPresentation(symbol: entry.symbol, planID: entry.plan.id)
             } label: {
                 Image(systemName: "pencil")
                     .font(.system(size: 9))
@@ -362,6 +526,15 @@ struct MainPlanListView: View {
             .help(PulseLocalization.localizedString("main.planList.action.edit"))
 
             Menu {
+                if entry.plan.status == .active, entry.remainingQuantity > 0 {
+                    Button("记录已成交") { executionEntry = entry }
+                }
+                Button("逻辑与修改记录") { workflowEntry = entry }
+                Divider()
+                if entry.plan.status == .active {
+                    Button("暂缓到价提醒 15 分钟") { appState.planAlerts.snooze(entry.plan) }
+                    Divider()
+                }
                 Button(PulseLocalization.localizedString("main.planList.action.markWaiting")) {
                     restate(entry, as: .active)
                 }
@@ -395,14 +568,6 @@ struct MainPlanListView: View {
         appState.watchlist.setTradePlan(updated, for: entry.symbol)
     }
 
-    private func statusKey(_ status: TradePlan.Status) -> String {
-        switch status {
-        case .active: "plan.status.active"
-        case .done: "plan.status.done"
-        case .cancelled: "plan.status.cancelled"
-        }
-    }
-
     private func emptyState(_ key: String) -> some View {
         Text(PulseLocalization.localizedString(key))
             .font(.system(size: 12))
@@ -412,5 +577,42 @@ struct MainPlanListView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 18)
             .padding(.top, 20)
+    }
+}
+
+/// Hosts `PlanEditorView` inside a sheet so editing a plan never tears down the
+/// list behind it.
+///
+/// `PlanEditorView` reports "done" by writing its `route` back to the value it
+/// was given as `returnRoute`, so the sheet owns a private route and closes when
+/// that value comes back. This is the same hosting pattern the position-pool
+/// editor already uses, reused rather than re-invented; the editor itself is
+/// unchanged, and the window-level `.plan` route still works for every other
+/// caller.
+private struct PlanEditorSheet: View {
+    let presentation: MainPlanListView.PlanEditorPresentation
+    let onClose: () -> Void
+
+    @Environment(AppState.self) private var appState
+    @State private var route: PopoverRoute = .planList
+
+    init(presentation: MainPlanListView.PlanEditorPresentation, onClose: @escaping () -> Void) {
+        self.presentation = presentation
+        self.onClose = onClose
+        _route = State(initialValue: .plan(presentation.symbol, presentation.planID, .planList))
+    }
+
+    var body: some View {
+        PlanEditorView(
+            symbol: presentation.symbol,
+            planID: presentation.planID,
+            returnRoute: .planList,
+            route: $route,
+            account: appState.watchlist.activeBrokerageAccountID
+        )
+        .frame(width: 520, height: 460)
+        .onChange(of: route) { _, value in
+            if value == .planList { onClose() }
+        }
     }
 }

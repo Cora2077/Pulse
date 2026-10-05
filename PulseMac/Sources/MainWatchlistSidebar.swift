@@ -18,8 +18,11 @@ struct MainWatchlistSidebar: View {
 
     @Environment(AppState.self) private var appState
     @Binding var selectedSymbol: SymbolID?
-    let onShowHoldings: () -> Void
-    let onShowPlans: () -> Void
+    /// The global page actually on screen, or `nil` while an instrument is
+    /// shown. The sidebar marks this one entry and nothing else, so a position
+    /// opened from 资金 cannot leave 资金 lit.
+    let currentPage: MainWorkspacePage?
+    let onShowPage: (MainWorkspacePage) -> Void
     @State private var selectedGroupID: UUID?
     @State private var filter: Filter = .all
     @State private var query = ""
@@ -31,20 +34,30 @@ struct MainWatchlistSidebar: View {
     @State private var dragStartWidth: CGFloat?
 
     private var normalizedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var currentGroup: WatchlistGroup? { appState.watchlist.group(for: selectedGroupID) }
+    private var currentGroup: WatchlistGroup? { appState.sharedWatchlist.group(for: selectedGroupID) }
+    /// The summary is computed against quotes that are actually usable for an
+    /// intraday attention signal, so a closed or stale feed cannot make the
+    /// sidebar claim a plan is in range when the plan page would disagree.
+    /// `now` is captured once per render rather than read per plan — the
+    /// freshness window is a property of the moment, not of each row.
     private var planSummary: TradePlanOverview.Summary {
-        TradePlanOverview.summary(
+        let now = Date.now
+        return TradePlanOverview.summary(
             appState.watchlist.tradePlanEntries,
-            currentPrice: { appState.market.quote(for: $0)?.price }
+            currentPrice: { symbol in
+                guard let quote = appState.market.quote(for: symbol),
+                      TradingQuoteHealth.isCurrent(quote, now: now) else { return nil }
+                return quote.price
+            }
         )
     }
     private var groupItems: [WatchItem] {
         guard let currentGroup else { return [] }
-        return appState.watchlist.items(in: currentGroup.id).filter { item in
+        return appState.sharedWatchlist.items(in: currentGroup.id).filter { item in
             switch filter {
             case .all: true
-            case .positions: item.hasPosition
-            case .plans: item.plans.contains { $0.status == .active }
+            case .positions: appState.sharedWatchlist.hasPosition(for: item.symbol)
+            case .plans: appState.sharedWatchlist.hasActivePlan(for: item.symbol)
             }
         }
     }
@@ -60,13 +73,20 @@ struct MainWatchlistSidebar: View {
                     groupPicker
                     filterPicker
                     watchlistContent
+                        // The entries below are fixed chrome; the watchlist is
+                        // the part that gives way, but never below a usable
+                        // handful of rows.
+                        .frame(minHeight: 120)
                 } else {
                     searchContent
+                        .frame(minHeight: 120)
                 }
                 overviewButtons
+                    .layoutPriority(1)
             }
             .frame(width: sidebarWidth)
             .frame(maxHeight: .infinity)
+            .background(Color(nsColor: .windowBackgroundColor))
 
             Rectangle()
                 .fill(Color(nsColor: .separatorColor).opacity(0.8))
@@ -83,15 +103,15 @@ struct MainWatchlistSidebar: View {
                 }
         }
         .onAppear {
-            if selectedGroupID == nil { selectedGroupID = appState.watchlist.selectedGroup?.id }
+            if selectedGroupID == nil { selectedGroupID = appState.sharedWatchlist.selectedGroup?.id }
         }
         .onChange(of: query) { _, _ in scheduleSearch() }
-        .onChange(of: appState.watchlist.groups) { _, groups in
+        .onChange(of: appState.sharedWatchlist.groups) { _, groups in
             if !groups.contains(where: { $0.id == selectedGroupID }) {
                 selectedGroupID = groups.first?.id
             }
         }
-        .onChange(of: appState.watchlist.symbols) { _, _ in
+        .onChange(of: appState.sharedWatchlist.quoteSymbols) { _, _ in
             appState.watchlistSymbolsChanged()
         }
         .onDisappear { searchTask?.cancel() }
@@ -117,7 +137,7 @@ struct MainWatchlistSidebar: View {
     private var groupPicker: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 5) {
-                ForEach(appState.watchlist.groups) { group in
+                ForEach(appState.sharedWatchlist.groups) { group in
                     Button(group.name) { selectedGroupID = group.id }
                         .buttonStyle(.plain)
                         .font(.system(size: 11, weight: selectedGroupID == group.id ? .semibold : .regular))
@@ -145,76 +165,108 @@ struct MainWatchlistSidebar: View {
         .padding(.vertical, 8)
     }
 
+    /// The global entries, in stable purpose groups: 今日 is the one page that
+    /// answers "what needs me now", 资金 is where the money is, 计划与事件 is
+    /// intent and observation windows, 复盘 is what actually happened. Grouping
+    /// is by purpose rather than by pre/regular/post session, because the
+    /// session is a view *inside* 今日 and must not rearrange navigation.
     private var overviewButtons: some View {
-        VStack(spacing: 0) {
-            holdingsButton
-            planListButton
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(MainWorkspacePage.SidebarGroup.allCases) { group in
+                groupHeader(group)
+                ForEach(group.pages) { page in
+                    pageButton(page)
+                }
+            }
         }
+        .padding(.bottom, 8)
         .background(alignment: .top) { Divider() }
     }
 
-    private var holdingsButton: some View {
-        Button(action: onShowHoldings) {
+    private func groupHeader(_ group: MainWorkspacePage.SidebarGroup) -> some View {
+        Text(group.title)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 14)
+            .padding(.top, 9)
+            .padding(.bottom, 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func pageButton(_ page: MainWorkspacePage) -> some View {
+        let isCurrent = currentPage == page
+        return Button {
+            onShowPage(page)
+        } label: {
             HStack(spacing: 9) {
-                Image(systemName: "briefcase")
+                Image(systemName: page.systemImage)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
                     .frame(width: 20)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(PulseLocalization.localizedString("main.holdings.title"))
-                        .font(.system(size: 12, weight: .medium))
-                    Text(PulseLocalization.localizedString("main.holdings.count", holdingCount))
-                        .font(.system(size: 10).monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    Text(page.title)
+                        .font(.system(size: 12, weight: isCurrent ? .semibold : .medium))
+                    if let detail = pageDetail(page) {
+                        Text(detail)
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                if isCurrent {
+                    // A live accent bar in addition to the wash below: the
+                    // filled background alone is easy to miss against the
+                    // sidebar's own window colour.
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: 3, height: 15)
+                }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(minHeight: 36)
+            .contentShape(RoundedRectangle(cornerRadius: 7))
+            .background(
+                isCurrent ? Color.accentColor.opacity(0.12) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 7)
+            )
         }
         .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+        .accessibilityAddTraits(isCurrent ? [.isSelected] : [])
+        .accessibilityLabel(page.title)
+    }
+
+    /// The secondary count line. A zero count is hidden rather than printed as
+    /// "0", so an empty page reads as empty instead of as a measured nothing.
+    private func pageDetail(_ page: MainWorkspacePage) -> String? {
+        switch page {
+        case .holdings:
+            let count = holdingCount
+            return count > 0 ? PulseLocalization.localizedString("main.holdings.count", count) : nil
+        case .plans:
+            guard planSummary.total > 0 else { return nil }
+            return PulseLocalization.localizedString(
+                "plan.list.summary", planSummary.total, planSummary.reached
+            )
+        case .accounts:
+            // The overview is a reading of every account, so its subtitle names
+            // how many are being read rather than counting anything of its own.
+            return PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+                ? "融资账号 · 萌萌账号"
+                : "Financing · Mengmeng"
+        case .workbench, .positionPools, .events, .journal:
+            return nil
+        }
     }
 
     private var holdingCount: Int {
         appState.watchlist.allItems.filter { $0.supportsPosition && $0.hasPositionHistory }.count
     }
 
-    private var planListButton: some View {
-        Button(action: onShowPlans) {
-            HStack(spacing: 9) {
-                Image(systemName: planSummary.reached > 0 ? "target" : "scope")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(planSummary.reached > 0 ? Color.accentColor : Color.secondary)
-                    .frame(width: 20)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(PulseLocalization.localizedString("plan.list.title"))
-                        .font(.system(size: 12, weight: .medium))
-                    if planSummary.total > 0 {
-                        Text(PulseLocalization.localizedString(
-                            "plan.list.summary", planSummary.total, planSummary.reached
-                        ))
-                        .font(.system(size: 10).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
     @ViewBuilder private var watchlistContent: some View {
-        if appState.watchlist.groups.isEmpty {
+        if appState.sharedWatchlist.groups.isEmpty {
             emptyState("main.empty.noGroups", symbol: "folder")
         } else if groupItems.isEmpty {
             emptyState(filter == .all ? "main.empty.watchlist" : "main.empty.filter", symbol: "line.3.horizontal.decrease.circle")
@@ -223,6 +275,9 @@ struct MainWatchlistSidebar: View {
                 LazyVStack(spacing: 1) {
                     ForEach(groupItems) { item in
                         MainWatchRow(symbol: item.symbol, name: item.resolvedDisplayName, selected: selectedSymbol == item.symbol) {
+                            // A watchlist row means 盯盘: it opens the instrument
+                            // itself and drops any global page, so the sidebar
+                            // cannot keep showing a page the user has left.
                             selectedSymbol = item.symbol
                         }
                     }
@@ -256,6 +311,9 @@ struct MainWatchlistSidebar: View {
                         SearchRow(info: info,
                                   isAdded: currentGroup?.symbols.contains(info.symbol) == true,
                                   selected: selectedSymbol == info.symbol,
+                                  // Search is an external entry point, so it
+                                  // lands on the instrument like a watchlist
+                                  // row rather than on whatever page was open.
                                   onSelect: { selectedSymbol = info.symbol },
                                   onAdd: { add(info) })
                     }
@@ -304,7 +362,7 @@ struct MainWatchlistSidebar: View {
     private func add(_ info: SymbolInfo) {
         guard let selectedGroupID else { return }
         appState.settings.recordRecentSearch(normalizedQuery)
-        appState.watchlist.add(info, to: selectedGroupID)
+        appState.sharedWatchlist.add(info, to: selectedGroupID)
         appState.engine.poke()
     }
 }
@@ -353,6 +411,7 @@ private struct MainWatchRow: View {
             .background(selected ? Color.accentColor.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 }
 

@@ -57,6 +57,44 @@ struct WatchlistArchiveTests {
     }
 
     @MainActor
+    @Test("Trade reviews survive archive export, restore, and same-trade import")
+    func reviewArchiveRoundTrip() throws {
+        let symbol = SymbolID(market: .us, code: "AAPL")
+        let id = UUID()
+        let review = PositionTransactionReview(followedPlan: true, retrospective: "Good entry")
+        let archive = WatchlistArchive(lists: [
+            .init(name: "Core", entries: [
+                .init(market: .us, code: "AAPL", transactions: [PositionTransaction(
+                    id: id, kind: .buy, price: 200, quantity: 2,
+                    note: "Breakout", review: review
+                )])
+            ])
+        ])
+        #expect(archive.version == 3)
+        let decoded = try WatchlistArchive.decoded(from: archive.encoded())
+
+        let (restored, defaults, suite) = try makeStore("review-archive")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        restored.merge(decoded)
+        let restoredTransaction = try #require(restored.item(for: symbol)?.transactions.first)
+        #expect(restoredTransaction.note == "Breakout")
+        #expect(restoredTransaction.review == review)
+
+        let (existing, existingDefaults, existingSuite) = try makeStore("review-archive-existing")
+        defer { existingDefaults.removePersistentDomain(forName: existingSuite) }
+        existing.add(SymbolInfo(symbol: symbol, name: "Apple"))
+        existing.addTransaction(symbol, PositionTransaction(
+            id: id, kind: .buy, price: 180, quantity: 1
+        ))
+        existing.merge(decoded)
+        let existingTransaction = try #require(existing.item(for: symbol)?.transactions.first)
+        #expect(existingTransaction.price == 180)
+        #expect(existingTransaction.quantity == 1)
+        #expect(existingTransaction.note == "Breakout")
+        #expect(existingTransaction.review == review)
+    }
+
+    @MainActor
     @Test("Exported list order survives the round trip")
     func orderIsPreserved() throws {
         let (source, sourceDefaults, sourceSuite) = try makeStore("order-source")
@@ -584,7 +622,7 @@ struct ChartDrawingArchiveTests {
         #expect(archivedDrawing.updatedAt == sourceDrawing.updatedAt)
         #expect(archivedDrawing == sourceDrawing)
         #expect(restored.item(for: symbol)?.drawings.first == archivedDrawing)
-        #expect(restored.archive().version == WatchlistArchive.currentVersion)
+        #expect(restored.archive().version == 2)
         #expect(source.deleteChartDrawing(drawing.id, for: symbol))
 
         let deletedArchive = try WatchlistArchive.decoded(from: source.archive().encoded())

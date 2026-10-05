@@ -11,13 +11,25 @@ struct WatchRowMetricDisplay {
         metrics _: PositionMetrics?,
         mode: WatchRowMetricMode,
         item: WatchItem,
-        basis: PositionCostBasis = .average
+        basis: PositionCostBasis = .average,
+        records: [WatchItem]? = nil
     ) -> Self {
         guard let quote else {
             return Self(text: "…", colorValue: nil)
         }
 
         let currencyCode = quote.currencyCode ?? item.symbol.currencyCode
+        if let records, mode != .changePercent {
+            let held = records.filter { $0.hasPosition }
+            guard !held.isEmpty else { return fallbackPercent(quote) }
+            let valuations = held.compactMap { PositionValuation(item: $0, quote: quote, basis: basis) }
+            guard valuations.count == held.count else { return Self(text: "…", colorValue: nil) }
+            let amount = valuations.reduce(0) { total, value in
+                total + (mode == .todayPnL ? value.todayPnL : value.holdingPnL)
+            }
+            guard amount.isFinite else { return Self(text: "…", colorValue: nil) }
+            return Self(text: PriceFormatter.signedMoney(amount, currencyCode: currencyCode), colorValue: amount)
+        }
         let valuation = PositionValuation(item: item, quote: quote, basis: basis)
         switch mode {
         case .changePercent:

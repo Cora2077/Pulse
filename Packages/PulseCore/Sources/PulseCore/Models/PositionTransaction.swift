@@ -32,6 +32,18 @@ public struct PositionTransaction: Codable, Sendable, Hashable, Identifiable {
     /// Reserved for V1.5 (no UI yet).
     public var fee: Double?
     public var note: String?
+    /// Immutable plan context captured when this user-reported fill was recorded.
+    public var planExecution: TradePlanExecution?
+    /// Optional post-trade notes. The transaction's `note` remains the
+    /// execution reason; this records whether its plan was followed and what
+    /// the user learned afterward.
+    public var review: PositionTransactionReview?
+    /// Which money actually bought this — the fill's own fact, not the plan's
+    /// intent. A plan may have been written expecting margin and the user may
+    /// have paid with their own cash; the portion this transaction creates
+    /// inherits *this* value, never the plan's. `nil` on records written before
+    /// the field existed; see `PositionFundingSource`.
+    public var fundingSource: PositionFundingSource?
 
     public var hasValidFee: Bool { fee.map { $0.isFinite && $0 >= 0 } ?? true }
 
@@ -43,7 +55,10 @@ public struct PositionTransaction: Codable, Sendable, Hashable, Identifiable {
         date: Date = .now,
         createdAt: Date = .now,
         fee: Double? = nil,
-        note: String? = nil
+        note: String? = nil,
+        planExecution: TradePlanExecution? = nil,
+        review: PositionTransactionReview? = nil,
+        fundingSource: PositionFundingSource? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -53,6 +68,68 @@ public struct PositionTransaction: Codable, Sendable, Hashable, Identifiable {
         self.createdAt = createdAt
         self.fee = fee
         self.note = note
+        self.planExecution = planExecution
+        self.review = review
+        self.fundingSource = fundingSource
+    }
+}
+
+public struct TradePlanExecution: Codable, Sendable, Hashable {
+    public var planID: UUID
+    public var configuration: TradePlanConfiguration
+
+    public init(planID: UUID, configuration: TradePlanConfiguration) {
+        self.planID = planID
+        self.configuration = configuration
+    }
+}
+
+public struct PositionTransactionReview: Codable, Sendable, Hashable {
+    public var followedPlan: Bool?
+    public var retrospective: String?
+    public var strategy: String?
+    /// When the user next wants to look at this trade again, as a forward-looking
+    /// checkpoint. Kept apart from `retrospective`, which records what already
+    /// happened: one is a note to the future and the other a note about the
+    /// past, and collapsing them would make "no plan yet" look like "reviewed".
+    public var nextReviewDate: Date?
+    /// What the user wants to check at `nextReviewDate`. Free text, and it may
+    /// stand on its own without a date — "watch the next earnings" is a
+    /// checkpoint even before a day is picked.
+    public var nextReviewNote: String?
+
+    public init(
+        followedPlan: Bool? = nil,
+        retrospective: String? = nil,
+        strategy: String? = nil,
+        nextReviewDate: Date? = nil,
+        nextReviewNote: String? = nil
+    ) {
+        self.followedPlan = followedPlan
+        self.retrospective = retrospective
+        self.strategy = strategy
+        self.nextReviewDate = nextReviewDate
+        self.nextReviewNote = nextReviewNote
+    }
+
+    /// Whether this checkpoint carries at least one of its two fields. The
+    /// empty review rule in `WatchlistStore.updateTransactionReview` reads
+    /// this so a checkpoint-only edit is a real change rather than something
+    /// normalized away to `nil`.
+    var hasCheckpoint: Bool { nextReviewDate != nil || nextReviewNote != nil }
+
+    /// Trims and validates the checkpoint fields, returning nil for anything
+    /// unusable. A non-finite date or an over-long note is rejected whole so the
+    /// caller can refuse the update instead of writing a half-applied one.
+    func normalizedCheckpoint() -> Self? {
+        var value = self
+        if let date = value.nextReviewDate, !date.timeIntervalSince1970.isFinite { return nil }
+        if let note = value.nextReviewNote {
+            let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+            value.nextReviewNote = trimmed.isEmpty ? nil : trimmed
+            if (value.nextReviewNote?.count ?? 0) > 4_000 { return nil }
+        }
+        return value
     }
 }
 

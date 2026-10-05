@@ -7,21 +7,52 @@ public struct WatchlistSyncSnapshot: Codable, Sendable, Equatable {
     public var items: [WatchItem]
     public var groups: [WatchlistGroup]
     public var retainedHistoryItems: [WatchItem]
+    /// Named accounts only. Nil means a pre-account snapshot; top-level fields
+    /// always represent unassigned data, never the currently selected account.
+    public var brokerageAccounts: [BrokerageAccountPortfolio]?
+    public var accountSettings: BrokerageAccountSettings?
 
     public init(
         items: [WatchItem],
         groups: [WatchlistGroup],
-        retainedHistoryItems: [WatchItem] = []
+        retainedHistoryItems: [WatchItem] = [],
+        brokerageAccounts: [BrokerageAccountPortfolio]? = nil,
+        accountSettings: BrokerageAccountSettings? = nil
     ) {
         self.items = items
         self.groups = groups
         self.retainedHistoryItems = retainedHistoryItems
+        self.brokerageAccounts = brokerageAccounts
+        self.accountSettings = accountSettings
+    }
+
+    public var allAccountItems: [WatchItem] {
+        items + retainedHistoryItems + (brokerageAccounts ?? []).flatMap { $0.items + $0.retainedHistoryItems }
+    }
+
+    public var hasAccountSettings: Bool {
+        accountSettings != nil || (brokerageAccounts ?? []).contains { $0.settings != nil }
     }
 }
 
 /// Deterministic three-way merge for snapshots from two devices and their last
 /// common snapshot. Transaction edits that cannot be reconciled are reported.
 public enum WatchlistSyncMerge {
+    public struct PositionAllocationConflict: Sendable, Equatable, Identifiable {
+        public var symbol: SymbolID
+        public var base: PositionAllocation?
+        public var local: PositionAllocation?
+        public var remote: PositionAllocation?
+        public var id: String { symbol.description }
+
+        public init(symbol: SymbolID, base: PositionAllocation?, local: PositionAllocation?, remote: PositionAllocation?) {
+            self.symbol = symbol
+            self.base = base
+            self.local = local
+            self.remote = remote
+        }
+    }
+
     public struct TransactionConflict: Sendable, Equatable, Identifiable {
         public var symbol: SymbolID
         public var transactionID: UUID
@@ -46,29 +77,46 @@ public enum WatchlistSyncMerge {
         }
     }
 
+    /// Account assignment can move history between portfolios. Conflicting
+    /// assignments require one complete side, so a trade cannot exist twice.
+    public struct BrokerageConflict: Sendable, Equatable {
+        public var accountIDs: [BrokerageAccountID]
+        public var local: WatchlistSyncSnapshot
+        public var remote: WatchlistSyncSnapshot
+    }
+
     public struct Result: Sendable, Equatable {
         /// Includes all non-conflicting changes. A conflicting transaction uses
         /// the local version provisionally; callers should resolve conflicts
         /// before applying this snapshot or advancing their common base.
         public var snapshot: WatchlistSyncSnapshot
         public var conflicts: [TransactionConflict]
+        public var positionAllocationConflicts: [PositionAllocationConflict]
+        public var brokerageConflict: BrokerageConflict? = nil
         fileprivate var transactionOrderSources: [SymbolID: [[PositionTransaction]]]
 
-        public var isConflictFree: Bool { conflicts.isEmpty }
+        public var isConflictFree: Bool { conflicts.isEmpty && positionAllocationConflicts.isEmpty && brokerageConflict == nil }
 
-        public init(snapshot: WatchlistSyncSnapshot, conflicts: [TransactionConflict]) {
+        public init(
+            snapshot: WatchlistSyncSnapshot,
+            conflicts: [TransactionConflict],
+            positionAllocationConflicts: [PositionAllocationConflict] = []
+        ) {
             self.snapshot = snapshot
             self.conflicts = conflicts
+            self.positionAllocationConflicts = positionAllocationConflicts
             self.transactionOrderSources = [:]
         }
 
         fileprivate init(
             snapshot: WatchlistSyncSnapshot,
             conflicts: [TransactionConflict],
+            positionAllocationConflicts: [PositionAllocationConflict],
             transactionOrderSources: [SymbolID: [[PositionTransaction]]]
         ) {
             self.snapshot = snapshot
             self.conflicts = conflicts
+            self.positionAllocationConflicts = positionAllocationConflicts
             self.transactionOrderSources = transactionOrderSources
         }
     }
@@ -84,9 +132,24 @@ public enum WatchlistSyncMerge {
         _ result: Result,
         choosing resolution: ConflictResolution
     ) -> WatchlistSyncSnapshot {
+        if let conflict = result.brokerageConflict {
+            return resolution == .local ? conflict.local : conflict.remote
+        }
         var snapshot = result.snapshot
         for conflict in result.conflicts {
-            let selected = resolution == .local ? conflict.local : conflict.remote
+            var selected = resolution == .local ? conflict.local : conflict.remote
+            if selected?.planExecution == nil {
+                selected?.planExecution = conflict.local?.planExecution ?? conflict.remote?.planExecution ?? conflict.base?.planExecution
+            }
+            if selected?.fundingSource == nil {
+                selected?.fundingSource = conflict.local?.fundingSource
+                    ?? conflict.remote?.fundingSource
+                    ?? conflict.base?.fundingSource
+            }
+            // Resolving a conflict means picking one device's trade, so its
+            // review travels with it unchanged. A nil review on the chosen side
+            // is either "never learned" or "the user cleared it", and filling
+            // from the side they just rejected would override their pick.
             replaceTransaction(
                 selected,
                 id: conflict.transactionID,
@@ -95,8 +158,17 @@ public enum WatchlistSyncMerge {
                 in: &snapshot
             )
         }
+        for conflict in result.positionAllocationConflicts {
+            replacePositionAllocation(
+                resolution == .local ? conflict.local : conflict.remote,
+                for: conflict.symbol,
+                in: &snapshot
+            )
+        }
         snapshot.retainedHistoryItems.removeAll {
             $0.materializedTransactions().isEmpty && $0.drawings.isEmpty
+                && $0.tradingProfile == nil && $0.events.isEmpty && $0.positionAllocation == nil
+                && $0.thesis == nil && $0.plans.isEmpty
         }
         return snapshot
     }
@@ -106,7 +178,23 @@ public enum WatchlistSyncMerge {
         local: WatchlistSyncSnapshot,
         remote: WatchlistSyncSnapshot
     ) -> Result {
+        var local = local
+        var remote = remote
+        func inheritSettings(_ snapshot: inout WatchlistSyncSnapshot) {
+            if snapshot.accountSettings == nil { snapshot.accountSettings = base.accountSettings }
+            if snapshot.brokerageAccounts != nil {
+                for index in snapshot.brokerageAccounts!.indices {
+                    if snapshot.brokerageAccounts![index].settings == nil {
+                        let id = snapshot.brokerageAccounts![index].accountID
+                        snapshot.brokerageAccounts![index].settings = base.brokerageAccounts?.first { $0.accountID == id }?.settings
+                    }
+                }
+            }
+        }
+        inheritSettings(&local)
+        inheritSettings(&remote)
         var conflicts: [TransactionConflict] = []
+        var allocationConflicts: [PositionAllocationConflict] = []
         let mergedGroups = mergeGroups(base: base.groups, local: local.groups, remote: remote.groups)
         let baseItems = itemMap(base)
         let localItems = itemMap(local)
@@ -120,11 +208,13 @@ public enum WatchlistSyncMerge {
                 base: baseItems[symbol],
                 local: localItems[symbol],
                 remote: remoteItems[symbol],
-                conflicts: &conflicts
+                conflicts: &conflicts,
+                allocationConflicts: &allocationConflicts
             )
             if let merged { mergedBySymbol[symbol] = merged }
         }
         let conflictedSymbols = Set(conflicts.map(\.symbol))
+            .union(allocationConflicts.map(\.symbol))
 
         let survivingSymbols = Set(mergedBySymbol.keys)
         var groups = mergedGroups
@@ -162,6 +252,8 @@ public enum WatchlistSyncMerge {
                 // back into the default group as a group-less active item.
                 if !item.materializedTransactions().isEmpty
                     || !item.drawings.isEmpty
+                    || item.tradingProfile != nil || !item.events.isEmpty
+                    || item.positionAllocation != nil || item.thesis != nil || !item.plans.isEmpty
                     || conflictedSymbols.contains(symbol) {
                     retained[symbol] = item
                 }
@@ -170,7 +262,9 @@ public enum WatchlistSyncMerge {
             } else if localActive.contains(symbol) || remoteActive.contains(symbol) || baseActive.contains(symbol) {
                 // Group-less active items are supported by WatchlistStore for detail pages.
                 active[symbol] = item
-            } else if !item.materializedTransactions().isEmpty {
+            } else if !item.materializedTransactions().isEmpty
+                        || item.tradingProfile != nil || !item.events.isEmpty
+                        || item.positionAllocation != nil || item.thesis != nil || !item.plans.isEmpty {
                 retained[symbol] = item
             }
         }
@@ -199,6 +293,7 @@ public enum WatchlistSyncMerge {
             if $0.symbol != $1.symbol { return symbolLessThan($0.symbol, $1.symbol) }
             return $0.transactionID.uuidString < $1.transactionID.uuidString
         }
+        allocationConflicts.sort { symbolLessThan($0.symbol, $1.symbol) }
         let transactionOrderSources = Dictionary(uniqueKeysWithValues: conflictedSymbols.map { symbol in
             (symbol, [
                 baseItems[symbol]?.transactions ?? [],
@@ -206,11 +301,54 @@ public enum WatchlistSyncMerge {
                 remoteItems[symbol]?.transactions ?? []
             ])
         })
-        return Result(snapshot: WatchlistSyncSnapshot(
+        var result = Result(snapshot: WatchlistSyncSnapshot(
             items: itemOrder.compactMap { active[$0] },
             groups: groupOrder.compactMap { groupsByID[$0] },
             retainedHistoryItems: retainedOrder.compactMap { retained[$0] }
-        ), conflicts: conflicts, transactionOrderSources: transactionOrderSources)
+        ), conflicts: conflicts, positionAllocationConflicts: allocationConflicts,
+            transactionOrderSources: transactionOrderSources)
+        let settingsDisputed: Bool
+        if local.accountSettings == remote.accountSettings {
+            result.snapshot.accountSettings = local.accountSettings; settingsDisputed = false
+        } else if local.accountSettings == base.accountSettings {
+            result.snapshot.accountSettings = remote.accountSettings; settingsDisputed = false
+        } else if remote.accountSettings == base.accountSettings {
+            result.snapshot.accountSettings = local.accountSettings; settingsDisputed = false
+        } else {
+            result.snapshot.accountSettings = local.accountSettings; settingsDisputed = true
+        }
+        if base.brokerageAccounts != nil || local.brokerageAccounts != nil || remote.brokerageAccounts != nil || settingsDisputed {
+            let b = Dictionary(uniqueKeysWithValues: (base.brokerageAccounts ?? []).map { ($0.accountID, $0) })
+            let l = Dictionary(uniqueKeysWithValues: (local.brokerageAccounts ?? base.brokerageAccounts ?? []).map { ($0.accountID, $0) })
+            let r = Dictionary(uniqueKeysWithValues: (remote.brokerageAccounts ?? base.brokerageAccounts ?? []).map { ($0.accountID, $0) })
+            var merged: [BrokerageAccountPortfolio] = []
+            var disputed: [BrokerageAccountID] = settingsDisputed ? [.unassigned] : []
+            for id in BrokerageAccountID.allCases where id != .unassigned {
+                let chosen: BrokerageAccountPortfolio?
+                if l[id] == r[id] { chosen = l[id] }
+                else if l[id] == b[id] { chosen = r[id] }
+                else if r[id] == b[id] { chosen = l[id] }
+                else { chosen = l[id]; disputed.append(id) }
+                if let chosen { merged.append(chosen) }
+            }
+            result.snapshot.brokerageAccounts = merged
+            // Two devices can assign the same legacy trade to different accounts.
+            // Never let an otherwise conflict-free merge duplicate that history.
+            var tradeIDs = Set<UUID>()
+            let duplicated = result.snapshot.allAccountItems.flatMap(\.transactions).contains {
+                !tradeIDs.insert($0.id).inserted
+            }
+            if !disputed.isEmpty || duplicated {
+                result.brokerageConflict = BrokerageConflict(
+                    accountIDs: duplicated ? BrokerageAccountID.allCases : disputed,
+                    local: local, remote: remote
+                )
+                result.snapshot = local
+                result.conflicts = []
+                result.positionAllocationConflicts = []
+            }
+        }
+        return result
     }
 
     private static func itemMap(_ snapshot: WatchlistSyncSnapshot) -> [SymbolID: WatchItem] {
@@ -227,7 +365,8 @@ public enum WatchlistSyncMerge {
         base: WatchItem?,
         local: WatchItem?,
         remote: WatchItem?,
-        conflicts: inout [TransactionConflict]
+        conflicts: inout [TransactionConflict],
+        allocationConflicts: inout [PositionAllocationConflict]
     ) -> WatchItem? {
         let initialConflictCount = conflicts.count
         let baseTransactions = transactionMap(base?.transactions ?? [])
@@ -259,10 +398,42 @@ public enum WatchlistSyncMerge {
                 ))
                 chosen = l
             }
-            if let chosen { transactions.append(chosen) }
+            if var chosen {
+                if chosen.planExecution == nil {
+                    chosen.planExecution = l?.planExecution ?? r?.planExecution ?? b?.planExecution
+                }
+                // A transaction that reached this device without the funding
+                // field must not erase one another device recorded. `nil` means
+                // "never learned", so it is the only value that gets filled;
+                // an explicit `.unmarked` is a real decision and stays put.
+                if chosen.fundingSource == nil {
+                    chosen.fundingSource = l?.fundingSource ?? r?.fundingSource ?? b?.fundingSource
+                }
+                // The review's checkpoint fields fill the same way, one field at
+                // a time, so a peer that never learned `nextReviewDate` does not
+                // drop the one this copy holds while keeping its own note. A
+                // wholly missing review is only adopted from the peer that
+                // changed it when this copy is the untouched base — `nil` on a
+                // copy that changed can be an explicit clearing, and undoing
+                // that would resurrect a review the user deleted.
+                chosen.review = mergedTransactionReview(
+                    chosen: chosen,
+                    base: b,
+                    local: l,
+                    remote: r
+                )
+                transactions.append(chosen)
+            }
         }
 
         let mergedLots = mergeLots(base: base?.lots ?? [], local: local?.lots ?? [], remote: remote?.lots ?? [])
+        let allocation = mergePositionAllocation(
+            symbol: symbol,
+            base: base?.positionAllocation,
+            local: local?.positionAllocation,
+            remote: remote?.positionAllocation,
+            conflicts: &allocationConflicts
+        )
         let value = mergeOptionalItemPresence(base: base, local: local, remote: remote)
         guard let seed = value else {
             // A separately added transaction is meaningful even when a device
@@ -272,12 +443,27 @@ public enum WatchlistSyncMerge {
             // remote choice must have somewhere to place the edited trade
             // without restoring the deleted watchlist membership.
             let hasTransactionConflict = conflicts.count > initialConflictCount
+            let hasAllocationConflict = allocationConflicts.contains { $0.symbol == symbol }
             let drawings = ChartDrawingMerge.merge(
                 base: base?.drawings ?? [],
                 local: local?.drawings ?? [],
                 remote: remote?.drawings ?? []
             )
-            guard !transactions.isEmpty || hasTransactionConflict || !drawings.isEmpty else { return nil }
+            let tradingProfile = mergeTradingProfile(
+                base: base?.tradingProfile,
+                local: local?.tradingProfile,
+                remote: remote?.tradingProfile
+            )
+            let events = InstrumentEventMerge.merge(
+                base: base?.events ?? [],
+                local: local?.events ?? [],
+                remote: remote?.events ?? []
+            )
+            guard !transactions.isEmpty || hasTransactionConflict || !drawings.isEmpty
+                    || tradingProfile != nil || !events.isEmpty || allocation != nil
+                    || hasAllocationConflict || !(base?.plans.isEmpty ?? true)
+                    || !(local?.plans.isEmpty ?? true) || !(remote?.plans.isEmpty ?? true)
+                    || base?.thesis != nil || local?.thesis != nil || remote?.thesis != nil else { return nil }
             let source = local ?? remote ?? base
             return WatchItem(
                 symbol: symbol,
@@ -291,8 +477,12 @@ public enum WatchlistSyncMerge {
                 ]),
                 // Plans and drawings follow durable user-authored history into
                 // the retained item rather than vanishing with membership.
+                thesis: threeWay(base?.thesis, local?.thesis, remote?.thesis),
                 plans: mergePlans(base: base?.plans ?? [], local: local?.plans ?? [], remote: remote?.plans ?? []),
-                drawings: drawings
+                drawings: drawings,
+                tradingProfile: tradingProfile,
+                events: events,
+                positionAllocation: allocation
             )
         }
 
@@ -308,6 +498,11 @@ public enum WatchlistSyncMerge {
         result.instrumentType = threeWay(base?.instrumentType, local?.instrumentType, remote?.instrumentType)
         result.addedAt = threeWay(base?.addedAt, local?.addedAt, remote?.addedAt, fallback: seed.addedAt) ?? seed.addedAt
         result.thesis = threeWay(base?.thesis, local?.thesis, remote?.thesis)
+        result.tradingProfile = mergeTradingProfile(
+            base: base?.tradingProfile,
+            local: local?.tradingProfile,
+            remote: remote?.tradingProfile
+        )
         result.plans = mergePlans(
             base: base?.plans ?? [],
             local: local?.plans ?? [],
@@ -318,6 +513,12 @@ public enum WatchlistSyncMerge {
             local: local?.drawings ?? [],
             remote: remote?.drawings ?? []
         )
+        result.events = InstrumentEventMerge.merge(
+            base: base?.events ?? [],
+            local: local?.events ?? [],
+            remote: remote?.events ?? []
+        )
+        result.positionAllocation = allocation
         result.transactions = replay(transactions, preservingOrderFrom: [
             base?.transactions ?? [], local?.transactions ?? [], remote?.transactions ?? []
         ])
@@ -381,9 +582,138 @@ public enum WatchlistSyncMerge {
             } else {
                 chosen = newer(localPlan, remotePlan)
             }
-            if let chosen { merged.append(chosen) }
+            if var chosen {
+                chosen.conditions = chosen.conditions ?? localPlan?.conditions ?? remotePlan?.conditions ?? basePlan?.conditions
+                chosen.conditions = filledConditionEventReferences(
+                    chosen.conditions,
+                    localPlan?.conditions,
+                    remotePlan?.conditions,
+                    basePlan?.conditions
+                )
+                // Same rule as transactions: a missing annotation is filled
+                // from a peer that has one, and an explicit `.unmarked` wins
+                // for itself rather than being treated as absent.
+                if chosen.fundingSource == nil {
+                    chosen.fundingSource = localPlan?.fundingSource
+                        ?? remotePlan?.fundingSource
+                        ?? basePlan?.fundingSource
+                }
+                let revisions = (chosen.history ?? []) + (localPlan?.history ?? []) + (remotePlan?.history ?? []) + (basePlan?.history ?? [])
+                if !revisions.isEmpty {
+                    chosen.history = Dictionary(revisions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                        .values.sorted { $0.date == $1.date ? $0.id.uuidString < $1.id.uuidString : $0.date < $1.date }
+                }
+                merged.append(chosen)
+            }
         }
         return TradePlan.ordered(merged)
+    }
+
+    /// Fills the review's forward-looking checkpoint from whichever side holds
+    /// one, field by field, keeping the chosen review's own values.
+    ///
+    /// Fill missing fields only when the common base did not know them.
+    /// A nil field previously present in the base is an explicit clearing.
+    private static func mergedReview(
+        _ chosen: PositionTransactionReview,
+        _ local: PositionTransactionReview?,
+        _ remote: PositionTransactionReview?,
+        _ base: PositionTransactionReview?
+    ) -> PositionTransactionReview {
+        var result = chosen
+        if result.nextReviewDate == nil, base?.nextReviewDate == nil {
+            result.nextReviewDate = local?.nextReviewDate ?? remote?.nextReviewDate ?? base?.nextReviewDate
+        }
+        if result.nextReviewNote == nil, base?.nextReviewNote == nil {
+            result.nextReviewNote = local?.nextReviewNote ?? remote?.nextReviewNote ?? base?.nextReviewNote
+        }
+        return result
+    }
+
+    /// Picks and completes the review of the transaction the merge chose.
+    ///
+    /// Within a review the checkpoint fields fill in independently. A wholly
+    /// missing review is only adopted from the other side when the chosen copy
+    /// is the untouched base, because `nil` on a copy that changed is
+    /// indistinguishable from the user clearing it — and resurrecting a
+    /// deliberately deleted review is worse than leaving it absent. When the
+    /// chosen copy already holds a review, the missing checkpoint fields are
+    /// still filled from the peers.
+    private static func mergedTransactionReview(
+        chosen: PositionTransaction,
+        base: PositionTransaction?,
+        local: PositionTransaction?,
+        remote: PositionTransaction?
+    ) -> PositionTransactionReview? {
+        if let review = chosen.review {
+            return mergedReview(review, local?.review, remote?.review, base?.review)
+        }
+        guard chosen == base, let adopted = local?.review ?? remote?.review ?? base?.review else {
+            return nil
+        }
+        return mergedReview(adopted, local?.review, remote?.review, base?.review)
+    }
+
+    /// Fills a plan condition's linked event snapshot from a peer that has one.
+    ///
+    /// A plan's conditions are merged as a whole (`chosen.conditions`), so a
+    /// copy that predates the event-reference field would otherwise let the
+    /// link disappear. Conditions are matched by id and only a `nil` reference
+    /// is filled — an existing snapshot is the user's link and is never
+    /// replaced by a lookalike from another device.
+    private static func filledConditionEventReferences(
+        _ conditions: [TradePlanCondition]?,
+        _ local: [TradePlanCondition]?,
+        _ remote: [TradePlanCondition]?,
+        _ base: [TradePlanCondition]?
+    ) -> [TradePlanCondition]? {
+        guard var conditions else { return nil }
+        var sources: [UUID: InstrumentEvent] = [:]
+        for list in [base, local, remote] {
+            for condition in list ?? [] {
+                guard let reference = condition.eventReference, sources[condition.id] == nil else { continue }
+                sources[condition.id] = reference
+            }
+        }
+        guard !sources.isEmpty else { return conditions }
+        for index in conditions.indices where conditions[index].eventReference == nil {
+            // If the common base knew this link, absence is an unlink edit.
+            guard base?.first(where: { $0.id == conditions[index].id })?.eventReference == nil else { continue }
+            if let reference = sources[conditions[index].id] {
+                conditions[index].eventReference = reference
+            }
+        }
+        return conditions
+    }
+
+    private static func mergeTradingProfile(
+        base: TradingProfile?, local: TradingProfile?, remote: TradingProfile?
+    ) -> TradingProfile? {
+        let merged = TradingProfile(
+            sector: threeWay(base?.sector, local?.sector, remote?.sector),
+            stopPrice: threeWay(base?.stopPrice, local?.stopPrice, remote?.stopPrice),
+            targetPrice: threeWay(base?.targetPrice, local?.targetPrice, remote?.targetPrice)
+        )
+        return merged.sector == nil && merged.stopPrice == nil && merged.targetPrice == nil ? nil : merged
+    }
+
+    private static func mergePositionAllocation(
+        symbol: SymbolID,
+        base: PositionAllocation?,
+        local: PositionAllocation?,
+        remote: PositionAllocation?,
+        conflicts: inout [PositionAllocationConflict]
+    ) -> PositionAllocation? {
+        if local == remote { return local }
+        if local == base { return remote }
+        if remote == base { return local }
+        conflicts.append(PositionAllocationConflict(
+            symbol: symbol,
+            base: base,
+            local: local,
+            remote: remote
+        ))
+        return local
     }
 
     private static func newer(_ local: TradePlan?, _ remote: TradePlan?) -> TradePlan? {
@@ -792,6 +1122,18 @@ public enum WatchlistSyncMerge {
         }
         patch(&snapshot.items)
         patch(&snapshot.retainedHistoryItems)
+    }
+
+    private static func replacePositionAllocation(
+        _ allocation: PositionAllocation?,
+        for symbol: SymbolID,
+        in snapshot: inout WatchlistSyncSnapshot
+    ) {
+        if let index = snapshot.items.firstIndex(where: { $0.symbol == symbol }) {
+            snapshot.items[index].positionAllocation = allocation
+        } else if let index = snapshot.retainedHistoryItems.firstIndex(where: { $0.symbol == symbol }) {
+            snapshot.retainedHistoryItems[index].positionAllocation = allocation
+        }
     }
 }
 

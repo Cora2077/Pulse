@@ -83,7 +83,7 @@ struct WatchlistShareSnapshot {
     @MainActor
     init(appState: AppState) {
         let displayItems = WatchlistDisplayOrder.items(
-            from: appState.watchlist,
+            from: appState.sharedWatchlist,
             prioritizeOpenMarkets: appState.settings.prioritizeOpenMarkets
         )
         let rows = displayItems.map { item in
@@ -94,7 +94,8 @@ struct WatchlistShareSnapshot {
                 metrics: metrics,
                 mode: appState.settings.watchRowMetricMode,
                 item: item,
-                basis: appState.settings.positionCostBasis
+                basis: appState.settings.positionCostBasis,
+                records: appState.sharedWatchlist.records(for: item.symbol)
             )
             return Row(
                 id: item.symbol,
@@ -114,7 +115,7 @@ struct WatchlistShareSnapshot {
         }
         let locale = appState.settings.locale
         // The shared list is the selected tag, so the card is titled after it
-        let groupName = appState.watchlist.selectedGroup?.name
+        let groupName = appState.sharedWatchlist.selectedGroup?.name
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         // The card is rendered from live store data, so its freshness is the capture moment
         self.init(

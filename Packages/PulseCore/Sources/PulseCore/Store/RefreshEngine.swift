@@ -68,7 +68,7 @@ public final class RefreshEngine {
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.tick()
-                let markets = Set(self.watchlist.symbols.map(\.market))
+                let markets = Set(self.watchlist.quoteSymbols.map(\.market))
                 // Wake at scheduler resolution while trading; slow down off-hours (the
                 // per-symbol worth-refreshing filter keeps off-hour ticks request-free).
                 let interval = TradingCalendar.anyActive(markets) ? Self.baseTick : 60
@@ -95,7 +95,7 @@ public final class RefreshEngine {
 
     private func tick() async {
         guard !writesHeld else { return }
-        let symbols = watchlist.symbols
+        let symbols = watchlist.quoteSymbols
         guard !symbols.isEmpty else { return }
 
         let routing = await provider.quoteRouting(for: symbols)
