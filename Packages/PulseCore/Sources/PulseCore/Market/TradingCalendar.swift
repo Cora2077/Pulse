@@ -7,10 +7,10 @@ public enum SessionState: String, Sendable {
 }
 
 /// Trading sessions per market (in each exchange's time zone).
-/// TODO: holiday calendar (Chinese New Year / National Day / Thanksgiving, etc.); the MVP uses a simple Monday-to-Friday rule.
-/// Japan makes this the most visible gap: about twenty public holidays plus the
-/// 12/31–1/3 exchange closure means roughly six weeks of weekdays a year are
-/// reported open when Tokyo is shut.
+/// Sessions still follow the clock; which days have one at all comes from
+/// `ExchangeCalendar`, whose verified tables cover a bounded set of years. A
+/// year beyond them falls back to the weekday-only rule this type has always
+/// used, deliberately rather than by omission — see `ExchangeCalendar`.
 public enum TradingCalendar {
     public static func state(of market: Market, at date: Date = .now) -> SessionState {
         if market == .crypto { return .regular }
@@ -21,6 +21,15 @@ public enum TradingCalendar {
             return .closed
         }
         let m = hour * 60 + minute
+
+        // Read exchange-local dates for holiday lookups. Overnight branches
+        // below check the date of the session they belong to.
+        let compsDay = calendar.dateComponents([.year, .month, .day], from: date)
+        let exchangeDay = CalendarDay(
+            year: compsDay.year ?? 0,
+            month: compsDay.month ?? 0,
+            day: compsDay.day ?? 0
+        )
 
         // Metals run almost continuously: Sun 18:00 ET through Fri 17:00 ET, pausing
         // one hour a day for settlement. Like the US overnight session, that reaches
@@ -39,11 +48,33 @@ public enum TradingCalendar {
         // at 15:30, the Futures Exchange at 21:00 and 15:00 — so the window is
         // their union: an instrument simply has no bars in the part it misses.
         if market == .metalCN {
-            if m >= 20 * 60 { return (2...6).contains(weekday) ? .regular : .closed }
+            if m >= 20 * 60 {
+                // A night leg is the *next* day's session, so it exists only when
+                // the current day and the one it runs into are both ordinary.
+                // Friday into Saturday keeps its leg; a night that would run into
+                // a holiday does not, and nothing hops past the holiday to the
+                // next weekday.
+                guard (2...6).contains(weekday),
+                      !ExchangeCalendar.isHoliday(.metalCN, on: exchangeDay),
+                      !ExchangeCalendar.isMetalCNNightCancelled(on: exchangeDay),
+                      !ExchangeCalendar.isHoliday(.metalCN, on: ExchangeCalendar.nextDay(exchangeDay))
+                else { return .closed }
+                return .regular
+            }
             // The small hours belong to the previous evening's session: Saturday
-            // has one because Friday night ran into it, Monday does not.
-            if m < 2 * 60 + 30 { return (3...7).contains(weekday) ? .regular : .closed }
+            // has one because Friday night ran into it, Monday does not — and a
+            // holiday cancels it from the evening before it, so the midnight from
+            // a holiday eve into the holiday morning stays shut.
+            if m < 2 * 60 + 30 {
+                guard (3...7).contains(weekday),
+                      !ExchangeCalendar.isHoliday(.metalCN, on: exchangeDay),
+                      !ExchangeCalendar.isMetalCNNightCancelled(on: ExchangeCalendar.previousDay(exchangeDay)),
+                      !ExchangeCalendar.isHoliday(.metalCN, on: ExchangeCalendar.previousDay(exchangeDay))
+                else { return .closed }
+                return .regular
+            }
             guard (2...6).contains(weekday) else { return .closed }
+            guard ExchangeCalendar.isTradingDay(.metalCN, on: exchangeDay) else { return .closed }
             if (9 * 60)..<(11 * 60 + 30) ~= m { return .regular }
             if (11 * 60 + 30)..<(13 * 60 + 30) ~= m { return .lunchBreak }
             if (13 * 60 + 30)..<(15 * 60 + 30) ~= m { return .regular }
@@ -51,13 +82,33 @@ public enum TradingCalendar {
         }
 
         // The US overnight session runs Sun 20:00 ET through Fri 04:00 ET, so it is the one
-        // stretch that exists outside the Monday–Friday rule below.
+        // stretch that exists outside the Monday–Friday rule below. It is quoted for the
+        // *next* session, which is what its holidays have to be checked against.
         if market == .us {
-            if weekday == 1 { return m >= 20 * 60 ? .overnight : .closed } // Sunday evening opens the week
-            if (2...6).contains(weekday), m < 4 * 60 { return .overnight } // Mon–Fri small hours
-            if (2...5).contains(weekday), m >= 20 * 60 { return .overnight } // Mon–Thu nights (Friday night has no session)
+            // Sunday evening 20:00 opens Monday's session, and only if Monday trades.
+            if weekday == 1 {
+                guard m >= 20 * 60 else { return .closed }
+                return ExchangeCalendar.isTradingDay(.us, on: ExchangeCalendar.nextDay(exchangeDay))
+                    ? .overnight : .closed
+            }
+            if (2...6).contains(weekday), m < 4 * 60 {
+                // 00:00–04:00 already carries its own session's date, so a holiday
+                // morning stays shut; there is no earlier weekday to fall back to.
+                return ExchangeCalendar.isTradingDay(.us, on: exchangeDay) ? .overnight : .closed
+            }
+            if (2...5).contains(weekday), m >= 20 * 60 {
+                // Monday–Thursday evenings all trade toward the following calendar
+                // day, holiday or not. A holiday Monday evening therefore reopens
+                // for an ordinary Tuesday.
+                return ExchangeCalendar.isTradingDay(.us, on: ExchangeCalendar.nextDay(exchangeDay))
+                    ? .overnight : .closed
+            }
         }
         guard (2...6).contains(weekday) else { return .closed }
+        // Equities and Tokyo keep their clock sessions only on a trading day;
+        // weekends and verified holidays report `.closed`, lunch break included.
+        // Metals (`metal`) stay above this: they run their own continuous week.
+        guard ExchangeCalendar.isTradingDay(market, on: exchangeDay) else { return .closed }
 
         switch market {
         case .sh, .sz:
@@ -66,14 +117,28 @@ public enum TradingCalendar {
             if (13 * 60)..<(15 * 60) ~= m { return .regular }
             return .closed
         case .hk:
+            // A half day ends the whole session at 12:10 HKT: no lunch break and
+            // no afternoon, so every minute from 12:10 is shut. An ordinary day
+            // keeps the lunch break and the 16:10 close, closing auction included.
+            if let early = ExchangeCalendar.earlyCloseMinutes(.hk, on: exchangeDay) {
+                if (9 * 60 + 30)..<early.regular ~= m { return .regular }
+                return .closed
+            }
             if (9 * 60 + 30)..<(12 * 60) ~= m { return .regular }
             if (12 * 60)..<(13 * 60) ~= m { return .lunchBreak }
             if (13 * 60)..<(16 * 60 + 10) ~= m { return .regular }  // Includes the closing auction
             return .closed
         case .us:
+            // A half day moves both edges of the afternoon: the regular session
+            // ends at 13:00 ET and after-hours trading runs to 17:00 ET instead
+            // of 20:00. Pre-market is unchanged, so a trading date with no
+            // verified early close keeps exactly the hours it always had.
+            let early = ExchangeCalendar.earlyCloseMinutes(.us, on: exchangeDay)
+            let regularClose = early?.regular ?? 16 * 60
+            let postClose = early?.extended ?? 20 * 60
             if (4 * 60)..<(9 * 60 + 30) ~= m { return .preMarket }
-            if (9 * 60 + 30)..<(16 * 60) ~= m { return .regular }
-            if (16 * 60)..<(20 * 60) ~= m { return .postMarket }
+            if (9 * 60 + 30)..<regularClose ~= m { return .regular }
+            if regularClose..<postClose ~= m { return .postMarket }
             return .closed
         case .jp:
             // Tokyo moved its close from 15:00 to 15:30 in November 2024; the

@@ -194,6 +194,53 @@ struct IntradayTrendTests {
         #expect(IntradayTradingSession.usSessionKind(for: extended[2].time) == .post)
     }
 
+    @Test("US half-day chart closes at 13:00 with post-market ending at 17:00")
+    func earlyCloseChartFrame() throws {
+        let calendar = exchangeCalendar(.us)
+        let day = try #require(calendar.date(from: DateComponents(year: 2026, month: 11, day: 27)))
+        let regular = IntradayTradingSession(market: .us, referenceDate: day)
+        let extended = IntradayTradingSession(market: .us, referenceDate: day, includesExtendedHours: true)
+        #expect(regular.totalMinutes == 210)
+        #expect(calendar.component(.hour, from: regular.close) == 13)
+        #expect(calendar.component(.hour, from: try #require(extended.postClose)) == 17)
+        let afternoon = try #require(calendar.date(bySettingHour: 14, minute: 0, second: 0, of: day))
+        #expect(extended.sessionKind(for: afternoon) == .post)
+        #expect(IntradayTradingSession.usSessionKind(for: afternoon) == .post)
+        #expect(extended.date(forMinute: extended.axisUpperBound) == extended.postClose)
+    }
+
+    @Test("HK half-day chart has no afternoon session or lunch gap")
+    func hongKongEarlyCloseChartFrame() throws {
+        let calendar = exchangeCalendar(.hk)
+        let day = try #require(calendar.date(from: DateComponents(year: 2026, month: 12, day: 24)))
+        let session = IntradayTradingSession(market: .hk, referenceDate: day)
+        #expect(session.totalMinutes == 160)
+        #expect(session.morningEnd == nil)
+        #expect(session.afternoonStart == nil)
+        #expect(calendar.dateComponents([.hour, .minute], from: session.close) == DateComponents(hour: 12, minute: 10))
+        #expect(session.date(forMinute: 160) == session.close)
+    }
+
+    @Test("Historical bars respect each date's holiday and half-day bounds")
+    func dateSpecificSessionFiltering() throws {
+        let calendar = exchangeCalendar(.us)
+        func at(_ day: Int, _ hour: Int, _ minute: Int = 0) throws -> Date {
+            try #require(calendar.date(from: DateComponents(year: 2026, month: 11, day: day, hour: hour, minute: minute)))
+        }
+        let candles = [
+            candle(at: try at(25, 15), close: 1),
+            candle(at: try at(26, 10), close: 2),
+            candle(at: try at(27, 13), close: 3),
+            candle(at: try at(27, 15), close: 4),
+            candle(at: try at(27, 17), close: 5),
+            candle(at: try at(27, 17, 1), close: 6),
+        ]
+        let regular = IntradayTradingSession.filterCandles(candles, market: .us, includesExtendedHours: false)
+        let extended = IntradayTradingSession.filterCandles(candles, market: .us, includesExtendedHours: true)
+        #expect(regular.map(\.close) == [1, 3])
+        #expect(extended.map(\.close) == [1, 3, 4, 5])
+    }
+
     private func exchangeCalendar(_ market: Market) -> Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = market.timeZone

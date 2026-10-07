@@ -26,6 +26,8 @@ public struct IntradayTradingSession: Sendable, Hashable {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = market.timeZone
         let day = calendar.startOfDay(for: referenceDate)
+        let earlyClose = ExchangeCalendar.earlyCloseMinutes(market,
+            on: CalendarDay(referenceDate, in: market.timeZone))
         func at(_ hour: Int, _ minute: Int) -> Date {
             calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day) ?? day
         }
@@ -38,9 +40,9 @@ public struct IntradayTradingSession: Sendable, Hashable {
             close = at(15, 0)
         case .hk:
             open = at(9, 30)
-            morningEnd = at(12, 0)
-            afternoonStart = at(13, 0)
-            close = at(16, 0)
+            morningEnd = earlyClose == nil ? at(12, 0) : nil
+            afternoonStart = earlyClose == nil ? at(13, 0) : nil
+            close = earlyClose.map { at($0.regular / 60, $0.regular % 60) } ?? at(16, 0)
         case .jp:
             open = at(9, 0)
             morningEnd = at(11, 30)
@@ -55,7 +57,7 @@ public struct IntradayTradingSession: Sendable, Hashable {
             open = at(9, 30)
             morningEnd = nil
             afternoonStart = nil
-            close = at(16, 0)
+            close = earlyClose.map { at($0.regular / 60, $0.regular % 60) } ?? at(16, 0)
         case .crypto:
             open = at(0, 0)
             morningEnd = nil
@@ -98,7 +100,7 @@ public struct IntradayTradingSession: Sendable, Hashable {
         }
         if includesExtendedHours, market == .us {
             preOpen = at(4, 0)
-            postClose = at(20, 0)
+            postClose = earlyClose.map { at($0.extended / 60, $0.extended % 60) } ?? at(20, 0)
         } else {
             preOpen = nil
             postClose = nil
@@ -146,8 +148,12 @@ public struct IntradayTradingSession: Sendable, Hashable {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = market.timeZone
         let lowerMinute = includesExtendedHours ? 4 * 60 : 9 * 60 + 30
-        let upperMinute = includesExtendedHours ? 20 * 60 : 16 * 60
         return candles.filter { candle in
+            let day = CalendarDay(candle.time, in: market.timeZone)
+            guard ExchangeCalendar.isTradingDay(market, on: day) else { return false }
+            let earlyClose = ExchangeCalendar.earlyCloseMinutes(market, on: day)
+            let upperMinute = includesExtendedHours
+                ? (earlyClose?.extended ?? 20 * 60) : (earlyClose?.regular ?? 16 * 60)
             let components = calendar.dateComponents([.hour, .minute], from: candle.time)
             let minute = (components.hour ?? 0) * 60 + (components.minute ?? 0)
             return minute >= lowerMinute && minute <= upperMinute
@@ -161,7 +167,9 @@ public struct IntradayTradingSession: Sendable, Hashable {
         let components = calendar.dateComponents([.hour, .minute], from: date)
         let minute = (components.hour ?? 0) * 60 + (components.minute ?? 0)
         if minute < 9 * 60 + 30 { return .pre }
-        if minute > 16 * 60 { return .post }
+        let close = ExchangeCalendar.earlyCloseMinutes(.us,
+            on: CalendarDay(date, in: Market.us.timeZone))?.regular ?? 16 * 60
+        if minute > close { return .post }
         return .regular
     }
 
