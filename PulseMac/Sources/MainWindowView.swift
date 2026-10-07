@@ -344,11 +344,13 @@ struct MainWindowView: View {
         !appState.isMainWindowDemo && !appState.localBackups.isAvailable
     }
 
-    /// Everything an account change must tear down.
-    ///
-    /// Financial editors and inspectors belong to one ledger. Rebuild them on
-    /// a switch while preserving the shared watched-symbol selection and list.
+    /// Idle financial pages refresh for the new ledger; editors retain their
+    /// source, fields, and view identity until saved or explicitly cancelled.
     private func accountChanged() {
+        if route?.preservesAccountDraft == true || instrumentOverlay || overview == nil {
+            refreshGeneration &+= 1
+            return
+        }
         accountGeneration &+= 1
         if overview == .positionPools, deferredAlert == nil {
             // The pool board owns all-account filters and source-scoped drafts.

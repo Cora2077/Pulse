@@ -51,7 +51,6 @@ struct PlanEditorView: View {
     /// exists in the new account would otherwise be edited by a form filled in
     /// for the old one.
     @State private var draftAccount: BrokerageAccountID
-    @State private var accountChangedMessage: String?
 
     init(symbol: SymbolID, planID: UUID?, returnRoute: PositionReturnRoute,
          route: Binding<PopoverRoute>, account: BrokerageAccountID) {
@@ -67,10 +66,10 @@ struct PlanEditorView: View {
     }
 
     /// Whether the draft's account no longer matches the store: writes are
-    /// refused and the footer offers a reload instead.
-    private var showsAccountNotice: Bool { accountChangedMessage != nil }
+    /// refused until the user returns to the source account.
+    private var showsAccountNotice: Bool { !accountMatchesDraft }
 
-    private var item: WatchItem? { appState.watchlist.item(for: symbol) }
+    private var item: WatchItem? { appState.watchlist.draftItem(for: symbol, account: draftAccount) }
     private var quote: Quote? { appState.market.quote(for: symbol) }
     private var currencyCode: String? { quote?.currencyCode ?? symbol.currencyCode }
 
@@ -93,6 +92,9 @@ struct PlanEditorView: View {
                 accountCaption: AccountIdentity.title(draftAccount),
                 onBack: { route = returnRoute.popoverRoute }
             )
+            AccountDraftNotice(account: draftAccount)
+                .padding(.horizontal, 12)
+                .padding(.bottom, accountMatchesDraft ? 0 : 6)
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     kindPicker
@@ -123,9 +125,7 @@ struct PlanEditorView: View {
                 .padding(.bottom, 8)
             }
 
-            if let accountChangedMessage {
-                errorRow(accountChangedMessage, isStale: false, allowsDismiss: false)
-            } else if let saveError {
+            if accountMatchesDraft, let saveError {
                 errorRow(saveError, isStale: saveErrorIsStale, allowsDismiss: true)
             }
 
@@ -153,20 +153,6 @@ struct PlanEditorView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onSubmit { save() }
         .task { load() }
-        .onChange(of: appState.watchlist.activeBrokerageAccountID) { _, _ in
-            noteAccountChange()
-        }
-    }
-
-    /// One line when the ledger underneath this draft changed. The draft is not
-    /// re-pointed at the new account; it is refused, and the user is told to
-    /// reopen the editor.
-    private func noteAccountChange() {
-        guard !accountMatchesDraft else { return }
-        accountChangedMessage = poolCopy(
-            "当前账号已切换，本页草稿不会写入其他账号。请重新打开计划编辑。",
-            "The account changed. This draft will not be written into another account; reopen the plan editor."
-        )
     }
 
     // MARK: - Form rows
@@ -663,7 +649,7 @@ struct PlanEditorView: View {
     /// switch does block it: there is no version of this draft that belongs to
     /// the ledger now selected.
     private var canSave: Bool {
-        !didSave && isValid && !showsAccountNotice
+        !didSave && isValid && accountMatchesDraft
     }
 
     private func clearError() {
@@ -673,7 +659,6 @@ struct PlanEditorView: View {
     private func save() {
         guard !didSave, accountMatchesDraft, let item, let price = parsedPrice,
               let quantity = parsedQuantity else {
-            noteAccountChange()
             return
         }
         let amount = price * quantity
@@ -738,7 +723,6 @@ struct PlanEditorView: View {
 
     private func deletePlan() {
         guard !didSave, accountMatchesDraft, let planID else {
-            noteAccountChange()
             return
         }
         didSave = true

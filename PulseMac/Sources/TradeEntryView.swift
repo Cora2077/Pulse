@@ -41,7 +41,6 @@ struct TradeEntryView: View {
     /// trade is recorded against the ledger the user was filling in, and the
     /// store object survives an account switch with a different ledger inside.
     @State private var draftAccount: BrokerageAccountID
-    @State private var accountChangedMessage: String?
 
     init(
         symbol: SymbolID,
@@ -110,7 +109,7 @@ struct TradeEntryView: View {
 
     private var marketToday: Date { Self.marketToday(for: symbol.market) }
 
-    private var item: WatchItem? { appState.watchlist.item(for: symbol) }
+    private var item: WatchItem? { appState.watchlist.draftItem(for: symbol, account: draftAccount) }
     private var quote: Quote? { appState.market.quote(for: symbol) }
     private var currencyCode: String? { quote?.currencyCode ?? symbol.currencyCode }
 
@@ -160,9 +159,8 @@ struct TradeEntryView: View {
     }
 
     /// Whether the draft's own account no longer matches the store. The form
-    /// stops writing and says so; the caller resets the page from its own
-    /// account watcher.
-    private var showsAccountNotice: Bool { accountChangedMessage != nil }
+    /// blocks writes until the user returns to the source account.
+    private var showsAccountNotice: Bool { !accountMatchesDraft }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -174,9 +172,9 @@ struct TradeEntryView: View {
                 accountCaption: AccountIdentity.title(draftAccount),
                 onBack: { route = dismissRoute }
             )
-            if let accountChangedMessage {
-                accountChangedRow(accountChangedMessage)
-            }
+            AccountDraftNotice(account: draftAccount)
+                .padding(.horizontal, 12)
+                .padding(.bottom, accountMatchesDraft ? 0 : 6)
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     PositionInputCell(
@@ -247,35 +245,6 @@ struct TradeEntryView: View {
         // (the button's default action covers Return when no field has focus).
         .onSubmit { save() }
         .task(id: symbol) { await loadDailyCandles() }
-        .onChange(of: appState.watchlist.activeBrokerageAccountID) { _, _ in
-            noteAccountChange()
-        }
-    }
-
-    /// One line, at the top of the form, when the ledger underneath it changed.
-    /// The draft is not silently re-pointed at the new account: it is refused
-    /// and the user is told to reopen it.
-    private func accountChangedRow(_ message: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 10))
-                .foregroundStyle(.orange)
-            Text(message)
-                .font(.system(size: 10))
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 4)
-    }
-
-    private func noteAccountChange() {
-        guard !accountMatchesDraft else { return }
-        accountChangedMessage = poolCopy(
-            "当前账号已切换，本页草稿不会写入其他账号。请重新打开表单。",
-            "The account changed. This draft will not be written into another account; reopen the form."
-        )
     }
 
     /// Reuses the detail chart's 250-bar daily cache when it's already warm;
@@ -672,7 +641,6 @@ struct TradeEntryView: View {
     private func save() {
         guard !didSave, accountMatchesDraft, let item, let price = parsedPrice,
               let quantity = parsedQuantity, isValid else {
-            noteAccountChange()
             return
         }
         didSave = true
@@ -704,7 +672,6 @@ struct TradeEntryView: View {
     /// log has nothing to show.
     private func deleteEditedTransaction() {
         guard !didSave, accountMatchesDraft, let editing else {
-            noteAccountChange()
             return
         }
         didSave = true

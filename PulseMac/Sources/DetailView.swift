@@ -27,6 +27,7 @@ struct DetailView: View {
     /// stored text exactly as it was.
     @State private var isEditingThesis = false
     @State private var thesisDraft = ""
+    @State private var thesisSourceItem: WatchItem?
     /// The account this page's thesis draft was composed against. The draft is
     /// page state, and an account switch can replace the store's ledger while it
     /// is open.
@@ -72,16 +73,11 @@ struct DetailView: View {
             }
         }
         .onAppear {
-            frozenAccount = appState.watchlist.activeBrokerageAccountID
+            if !isEditingThesis { frozenAccount = appState.watchlist.activeBrokerageAccountID }
             maybeOfferKlineTourStep()
         }
-        // The thesis draft belongs to the ledger this page was opened against.
-        // Abandoning it is honest: the text on screen describes an instrument
-        // the newly selected account may not even hold.
-        .onChange(of: appState.watchlist.activeBrokerageAccountID) { _, _ in
-            frozenAccount = nil
-            isEditingThesis = false
-            thesisDraft = ""
+        .onChange(of: appState.watchlist.activeBrokerageAccountID) { _, account in
+            if !isEditingThesis { frozenAccount = account }
         }
         .onDisappear {
             // Leaving with the candle bubble up counts as the step seen; the pin
@@ -1205,7 +1201,7 @@ struct DetailView: View {
     /// written it — and it is usually the thing they came back to read.
     @ViewBuilder
     private var thesisArea: some View {
-        if let item {
+        if let item = isEditingThesis ? thesisSourceItem : item {
             // The same hairline `sectionSeparator` draws, but tightened on both
             // sides. The position block above ends on a value row with no
             // bottom inset, so the stock 8pt above the divider read as a hole;
@@ -1225,6 +1221,7 @@ struct DetailView: View {
                     }
                 }
                 if isEditingThesis {
+                    AccountDraftNotice(account: frozenAccount ?? appState.watchlist.activeBrokerageAccountID)
                     // Edited in place rather than in a sheet: this is an
                     // accessory (LSUIElement) app, and a sheet is its own
                     // window — typing into one takes key status the app cannot
@@ -1247,14 +1244,12 @@ struct DetailView: View {
                             // A thesis belongs to this account's instrument. The
                             // symbol is the same in the new ledger, so it cannot
                             // authorize the write on its own.
-                            if accountMatchesDraft {
-                                appState.watchlist.setThesis(thesisDraft, for: symbol)
-                            } else {
-                                thesisDraft = ""
-                            }
+                            guard accountMatchesDraft else { return }
+                            appState.watchlist.setThesis(thesisDraft, for: symbol)
                             isEditingThesis = false
                         }
                         .keyboardShortcut(.defaultAction)
+                        .disabled(!accountMatchesDraft)
                     }
                     .controlSize(.small)
                 } else {
@@ -1275,6 +1270,7 @@ struct DetailView: View {
                     .contentShape(Rectangle())
                     .onTapGesture {
                         thesisDraft = item.thesis ?? ""
+                        thesisSourceItem = item
                         // A fresh edit is composed against the ledger open now.
                         frozenAccount = appState.watchlist.activeBrokerageAccountID
                         isEditingThesis = true

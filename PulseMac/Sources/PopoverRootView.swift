@@ -35,6 +35,14 @@ enum PopoverRoute: Hashable {
     case appearanceSettings
     /// Local MCP agent endpoint: enable toggle and connection fields.
     case mcpSettings
+
+    /// These forms keep their source account and fields across a switch.
+    var preservesAccountDraft: Bool {
+        switch self {
+        case .trade, .editTrade, .plan, .calibrate: true
+        default: false
+        }
+    }
 }
 
 /// The two provider classes in settings: sources the user connects with their
@@ -74,6 +82,7 @@ struct PopoverRootView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.pulseHost) private var host
     @State private var route: PopoverRoute = .list
+    @State private var draftRouteAccount: BrokerageAccountID?
     /// The standalone window animates this staged value alongside route motion.
     /// Owning the height explicitly keeps the lower-edge resize predictable while
     /// the retained watchlist preserves its title-bar safe area during exit.
@@ -105,6 +114,7 @@ struct PopoverRootView: View {
     /// A child route whose symbol has been removed from the watchlist resolves
     /// back to the list; the stale `route` value is overwritten by the next push.
     private var displayRoute: PopoverRoute {
+        if route.preservesAccountDraft { return route }
         switch route {
         case .position(let symbol, _), .trade(let symbol, _, _),
              .transactions(let symbol, _), .calibrate(let symbol, _):
@@ -164,18 +174,18 @@ struct PopoverRootView: View {
                     .transition(pushTransition)
             case .trade(let symbol, let side, let returnRoute):
                 TradeEntryView(symbol: symbol, side: side, returnRoute: returnRoute, route: $route,
-                               account: appState.watchlist.activeBrokerageAccountID)
+                               account: draftRouteAccount ?? appState.watchlist.activeBrokerageAccountID)
                     .frame(height: height(for: displayRoute))
                     .transition(pushTransition)
             case .editTrade(let symbol, let id, let returnRoute):
-                if let transaction = appState.watchlist.item(for: symbol)?
+                if let transaction = draftItem(for: symbol)?
                     .transactions.first(where: { $0.id == id }) {
                     TradeEntryView(
                         symbol: symbol,
                         editing: transaction,
                         returnRoute: returnRoute,
                         route: $route,
-                        account: appState.watchlist.activeBrokerageAccountID
+                        account: draftRouteAccount ?? appState.watchlist.activeBrokerageAccountID
                     )
                     .frame(height: height(for: displayRoute))
                     .transition(pushTransition)
@@ -190,12 +200,12 @@ struct PopoverRootView: View {
                     planID: planID,
                     returnRoute: returnRoute,
                     route: $route,
-                    account: appState.watchlist.activeBrokerageAccountID
+                    account: draftRouteAccount ?? appState.watchlist.activeBrokerageAccountID
                 )
                 .frame(height: height(for: displayRoute))
                 .transition(pushTransition)
             case .calibrate(let symbol, let returnRoute):
-                let account = appState.watchlist.activeBrokerageAccountID
+                let account = draftRouteAccount ?? appState.watchlist.activeBrokerageAccountID
                 VStack(spacing: 0) {
                     // The panel's compact editor has Cancel at the bottom. In a window,
                     // every pushed page also needs the same visible navigation row as
@@ -208,7 +218,8 @@ struct PopoverRootView: View {
                             onBack: { route = .position(symbol, returnRoute) }
                         )
                     }
-                    if let item = appState.watchlist.item(for: symbol) {
+                    AccountDraftNotice(account: account).padding(.horizontal, 12)
+                    if let item = draftItem(for: symbol) {
                         PositionEditorView(
                             item: item,
                             quote: appState.market.quote(for: symbol),
@@ -267,7 +278,6 @@ struct PopoverRootView: View {
                 .transition(pushTransition)
             }
         }
-        .id(displayRoute == .list ? "watchlist" : "account-\(appState.watchlist.activeBrokerageAccountID.rawValue)")
         .frame(width: panelWidth, height: presentedHeight, alignment: .top)
         // Keep one title-bar skeleton mounted for the lifetime of the pinned
         // window. Route-specific views contribute actions, but an actionless page
@@ -336,6 +346,9 @@ struct PopoverRootView: View {
         }
         .onChange(of: appState.watchlist.activeBrokerageAccountID) { _, _ in
             guard route != .list else { return }
+            if route.preservesAccountDraft { return }
+            // The shared market detail can contain an in-place thesis draft.
+            if case .detail = route { return }
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
             withTransaction(transaction) {
@@ -344,9 +357,18 @@ struct PopoverRootView: View {
                 pinnedPresentedHeight = height(for: .list)
             }
         }
+        .onChange(of: route) { _, newRoute in
+            draftRouteAccount = newRoute.preservesAccountDraft
+                ? appState.watchlist.activeBrokerageAccountID : nil
+        }
         .onChange(of: appState.sharedWatchlist.groups.map(\.id)) { _, _ in
             appState.watchlistGroupsChanged()
         }
+    }
+
+    private func draftItem(for symbol: SymbolID) -> WatchItem? {
+        appState.watchlist.draftItem(for: symbol,
+            account: draftRouteAccount ?? appState.watchlist.activeBrokerageAccountID)
     }
 
     /// The pinned window animates this value alongside the page transition.
@@ -422,6 +444,9 @@ struct PopoverRootView: View {
     /// The list page height adapts to the watchlist size (chrome, row height, bottom bar, and padding),
     /// clamped between the min and max
     private func height(for route: PopoverRoute) -> CGFloat {
+        let noticeHeight: CGFloat = route.preservesAccountDraft
+            && draftRouteAccount != nil
+            && draftRouteAccount != appState.watchlist.activeBrokerageAccountID ? 54 : 0
         switch route {
         case .list:
             // The search panel needs room for results/recents regardless of list size.
@@ -456,7 +481,7 @@ struct PopoverRootView: View {
             // The entry form is a stack of labelled fields. The panel gets the
             // tightest budget that still fits them; a pinned window can afford
             // the room to breathe.
-            return host == .pinnedWindow ? 420 : 330
+            return (host == .pinnedWindow ? 420 : 330) + noticeHeight
         case .transactions:
             return 500
         case .planList:
@@ -464,11 +489,11 @@ struct PopoverRootView: View {
             // budget: the same order of magnitude as the trade log above.
             return host == .pinnedWindow ? 520 : 460
         case .calibrate:
-            return 370
+            return 370 + noticeHeight
         case .plan:
             // A labelled form: kind, two input cells, note, status, amount.
             // The pinned window has the room to breathe.
-            return host == .pinnedWindow ? 420 : 380
+            return (host == .pinnedWindow ? 420 : 380) + noticeHeight
         case .settings:
             // Root is an index of destinations; keep it short so agents and data stay on-screen.
             return 460

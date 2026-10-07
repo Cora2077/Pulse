@@ -602,6 +602,7 @@
 "settings.mcp.rowStatus.off" = "关";
 "settings.mcp.rowStatus.attention" = "需处理";
 
+
 /* Feedback and support */
 "diagnostics.copyReorderLog" = "复制排序日志";
 "feedback.menu" = "反馈";
@@ -790,6 +791,10 @@
 
 "plan.detail.change.logic" = "逻辑/条件已更新";
 "plan.detail.change.note" = "计划备注已更新";
+
+/* Account draft preservation */
+"draft.account.kept" = "草稿已保留在「%@」，返回该账号后可保存。";
+"draft.account.resume" = "返回%@";
 "account.menu.accessibility" = "当前账号：%@，打开账号菜单";
 
 "main.holdings.empty.accountHint" = "当前查看「%@」。可在标题旁切换账户；其他账户的持仓仍保留。";

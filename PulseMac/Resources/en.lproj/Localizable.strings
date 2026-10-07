@@ -454,6 +454,7 @@
 "settings.mcp.rowStatus.off" = "Off";
 "settings.mcp.rowStatus.attention" = "Needs Attention";
 
+
 /* Feedback and support */
 "diagnostics.copyReorderLog" = "Copy Reorder Log";
 "feedback.menu" = "Feedback";
@@ -790,6 +791,10 @@
 
 "plan.detail.change.logic" = "Logic/conditions updated";
 "plan.detail.change.note" = "Plan note updated";
+
+/* Account draft preservation */
+"draft.account.kept" = "Draft kept for %@. Return to save.";
+"draft.account.resume" = "Return to %@";
 "account.menu.accessibility" = "Current account: %@; open account menu";
 
 "main.holdings.empty.accountHint" = "Viewing %@. Switch accounts beside the title; holdings in other accounts are preserved.";

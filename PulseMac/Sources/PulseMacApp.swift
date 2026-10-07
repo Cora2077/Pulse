@@ -80,6 +80,23 @@ struct PulseMacApp: App {
             MainWindowHost {
                 MainWindowView()
                     .windowContainerBackgroundCompat()
+                    #if DEBUG
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        if appState.isMainWindowDemo,
+                           CommandLine.arguments.contains("--account-draft-demo") {
+                            HStack {
+                                Text("Synthetic draft test · \(appState.watchlist.activeBrokerageAccountID.rawValue)")
+                                Spacer()
+                                ForEach(BrokerageAccountID.allCases) { account in
+                                    Button("Test switch: \(account.rawValue)") {
+                                        _ = appState.selectBrokerageAccount(account)
+                                    }
+                                }
+                            }
+                            .font(.caption).controlSize(.small).padding(8)
+                        }
+                    }
+                    #endif
             }
             .defaultAppStorage(MainWindow.preferenceDefaults)
             .environment(appState)
