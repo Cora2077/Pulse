@@ -790,3 +790,6 @@
 
 "plan.detail.change.logic" = "逻辑/条件已更新";
 "plan.detail.change.note" = "计划备注已更新";
+"account.menu.accessibility" = "当前账号：%@，打开账号菜单";
+
+"main.holdings.empty.accountHint" = "当前查看「%@」。可在标题旁切换账户；其他账户的持仓仍保留。";

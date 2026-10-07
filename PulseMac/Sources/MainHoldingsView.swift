@@ -183,7 +183,7 @@ struct MainHoldingsView: View {
 
     private var filteredItems: [WatchItem] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filtered = appState.watchlist.allItems.filter { item in
+        let filtered = accountItems.filter { item in
             guard item.supportsPosition, item.hasPositionHistory else { return false }
             let isOpen = item.positionQuantity != 0
             guard filter == .current ? isOpen : !isOpen else { return false }
@@ -203,7 +203,10 @@ struct MainHoldingsView: View {
         let rows = displayRows
         VStack(alignment: .leading, spacing: 0) {
             header(itemCount: rows.count)
-            allocationCard
+            if accountItems.contains(where: { $0.supportsPosition && $0.positionQuantity != 0 })
+                || !allocationPlans.isEmpty {
+                allocationCard
+            }
             if rows.isEmpty {
                 emptyState
             } else {
@@ -349,6 +352,9 @@ struct MainHoldingsView: View {
             HStack(spacing: 10) {
                 Text(PulseLocalization.localizedString("main.holdings.title"))
                     .font(.system(size: 23, weight: .semibold))
+                if appState.watchlist.brokerageAccountsEnabled {
+                    holdingsAccountMenu
+                }
                 Text(PulseLocalization.localizedString("main.holdings.subtitle", itemCount))
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -448,8 +454,38 @@ struct MainHoldingsView: View {
     }
 
     private var allocationItems: [WatchItem] {
-        let snapshot = appState.watchlist.syncSnapshot()
-        return snapshot.items + snapshot.retainedHistoryItems
+        accountItems
+    }
+
+    /// Both the distribution and detail rows read the same selected book.
+    /// A sync snapshot's top-level items are the legacy unassigned book, not
+    /// the current account, so it must not serve as a holdings-page source.
+    private var accountItems: [WatchItem] {
+        let portfolio = appState.watchlist.brokeragePortfolio(for: appState.watchlist.activeBrokerageAccountID)
+        return portfolio.items + portfolio.retainedHistoryItems
+    }
+
+    private var holdingsAccountMenu: some View {
+        let account = appState.watchlist.activeBrokerageAccountID
+        return Menu {
+            ForEach(BrokerageAccountID.allCases) { choice in
+                Button {
+                    _ = appState.selectBrokerageAccount(choice)
+                } label: {
+                    if choice == account {
+                        Label(AccountIdentity.title(choice), systemImage: "checkmark")
+                    } else {
+                        Text(AccountIdentity.title(choice))
+                    }
+                }
+            }
+        } label: {
+            Label(AccountIdentity.title(account), systemImage: AccountIdentity.symbolName(account))
+                .font(.system(size: 11, weight: .medium))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel(PulseLocalization.localizedString("account.menu.accessibility", AccountIdentity.title(account)))
     }
 
     private var selectedAllocationPlan: AllocationPlanChoice? {
@@ -1271,6 +1307,12 @@ struct MainHoldingsView: View {
                                                    ? (filter == .current ? "main.holdings.empty.current" : "main.holdings.empty.closed")
                                                    : "main.holdings.empty.search"))
                 .font(.system(size: 13)).foregroundStyle(.secondary)
+            if query.isEmpty, appState.watchlist.brokerageAccountsEnabled {
+                Text(PulseLocalization.localizedString("main.holdings.empty.accountHint",
+                     AccountIdentity.title(appState.watchlist.activeBrokerageAccountID)))
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

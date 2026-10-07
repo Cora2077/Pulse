@@ -791,3 +791,6 @@
 
 "plan.detail.change.logic" = "논리/조건 업데이트";
 "plan.detail.change.note" = "계획 메모 업데이트";
+"account.menu.accessibility" = "현재 계좌: %@. 계좌 메뉴 열기";
+
+"main.holdings.empty.accountHint" = "현재 %@을 보고 있습니다. 제목 옆에서 계좌를 전환할 수 있으며 다른 계좌의 보유 내역은 유지됩니다.";

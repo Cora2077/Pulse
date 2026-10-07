@@ -206,7 +206,7 @@ struct MainWindowView: View {
         }
         .toolbar {
             if appState.watchlist.brokerageAccountsEnabled, let overview,
-               overview != .positionPools, overview != .accounts, !instrumentOverlay {
+               overview != .positionPools, overview != .accounts, overview != .holdings, !instrumentOverlay {
                 ToolbarItem(placement: .navigation) {
                     accountToolbarMenu
                 }

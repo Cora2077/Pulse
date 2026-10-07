@@ -791,3 +791,6 @@
 
 "plan.detail.change.logic" = "ロジック・条件を更新";
 "plan.detail.change.note" = "計画メモを更新";
+"account.menu.accessibility" = "現在の口座：%@。口座メニューを開く";
+
+"main.holdings.empty.accountHint" = "現在は「%@」を表示しています。タイトル横で口座を切り替えられます。他の口座の保有銘柄は保持されています。";

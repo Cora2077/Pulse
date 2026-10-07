@@ -44,6 +44,16 @@ enum TacticalBoardSelfTest {
         }
 
         let appState = AppState()
+        // Must run before `seedFixture`: the whole point is to render the
+        // untouched isolated demo books, so no other fixture may bleed in.
+        if CommandLine.arguments.contains("--holdings-account-only") {
+            guard CommandLine.arguments.contains("--main-window-demo") else {
+                report("holdings-account", "--holdings-account-only requires --main-window-demo for the isolated throwaway defaults")
+                return finish()
+            }
+            renderHoldingsAccounts(appState: appState, into: outputDirectory)
+            return finish()
+        }
         if CommandLine.arguments.contains("--shared-watchlist-only") {
             renderSharedWatchlist(appState: appState, into: outputDirectory)
             return finish()
@@ -1976,6 +1986,129 @@ enum TacticalBoardSelfTest {
         // The overview is a reader: the portfolios it displayed are unchanged.
         expect(store.brokeragePortfolio(for: .financing).items.contains { $0.symbol == financingSymbol },
                "overview-render", "rendering the overview must not move records out of an account")
+    }
+
+    // MARK: - Holdings by active account
+
+    /// Renders the production holdings page under each real active account
+    /// selection and proves the render is a pure reader.
+    ///
+    /// The three cases are the actual selections the page can be opened in:
+    /// `unassigned` with the demo's seeded holdings, `financing` genuinely
+    /// empty, and `mengmeng` with exactly one synthetic instrument. Nothing
+    /// here fabricates rows, labels, or charts: the images are whatever the
+    /// production view draws for the real store.
+    private static func renderHoldingsAccounts(appState: AppState, into directory: URL) {
+        let store = appState.watchlist
+        guard store.enableBrokerageAccounts() || store.brokerageAccountsEnabled else {
+            report("holdings-account", "named accounts could not be enabled in the isolated suite")
+            return
+        }
+
+        // A distinct, fictional instrument plus a deterministic synthetic
+        // quote. The quote only adds a price; the row must be listed from the
+        // position alone, so removing it would not hide the holding.
+        let symbol = SymbolID(market: .us, code: "ZZHLDMENG")
+        let name = "虚构萌萌持仓"
+        let syntheticQuantity = 7.0
+        let syntheticPrice = 100.0
+        let quotePrice = 123.0
+
+        let unassignedQuantities = quantityMap(store.brokeragePortfolio(for: .unassigned))
+        let unassignedHoldings = unassignedQuantities.filter { $0.value > 0 }.count
+        expect(unassignedHoldings > 0,
+               "holdings-account", "the inline demo must seed unassigned with current holdings")
+        print("HOLDINGS_ACCOUNT_BASELINE unassigned holdings=\(unassignedHoldings)")
+        fflush(stdout)
+
+        // Seed the one synthetic holding out of band, with the selection pinned
+        // back to unassigned afterwards, so the renders below start from the
+        // baseline books.
+        store.withBrokerageAccount(.mengmeng) {
+            store.add(SymbolInfo(symbol: symbol, name: name))
+            store.addTransaction(symbol, PositionTransaction(kind: .buy, price: syntheticPrice, quantity: syntheticQuantity))
+        }
+        appState.market.apply(quotes: [Quote(symbol: symbol, name: name, price: quotePrice,
+                                             previousClose: syntheticPrice, timestamp: .now,
+                                             marketState: .regular)])
+        _ = appState.selectBrokerageAccount(.unassigned)
+        expect(store.activeBrokerageAccountID == .unassigned,
+               "holdings-account", "the synthetic fixture must leave unassigned selected")
+
+        let mengmengQuantities = quantityMap(store.brokeragePortfolio(for: .mengmeng))
+        expect(mengmengQuantities[symbol] == syntheticQuantity,
+               "holdings-account", "mengmeng must hold exactly the synthetic quantity")
+        let financingQuantities = quantityMap(store.brokeragePortfolio(for: .financing))
+        expect(!financingQuantities.values.contains { $0 > 0 },
+               "holdings-account", "financing must start with no current holdings")
+        expect(store.brokeragePortfolio(for: .financing).items.isEmpty,
+               "holdings-account", "financing must start with an empty book")
+
+        let cases: [(account: BrokerageAccountID, file: String)] = [
+            (.unassigned, "holdings-account-unassigned.png"),
+            (.financing, "holdings-account-financing-empty.png"),
+            (.mengmeng, "holdings-account-mengmeng.png"),
+        ]
+        for item in cases {
+            _ = appState.selectBrokerageAccount(item.account)
+            expect(store.activeBrokerageAccountID == item.account,
+                   "holdings-account", "\(item.account.rawValue) must be the active selection before its render")
+
+            // Pinned readers, taken before the view exists.
+            let snapshot = store.syncSnapshot()
+            let quantities = quantityMap(store.brokeragePortfolio(for: item.account))
+            let unassignedNow = quantityMap(store.brokeragePortfolio(for: .unassigned))
+            let expectedHoldings = quantities.filter { $0.value > 0 }.count
+            expect(unassignedNow == unassignedQuantities,
+                   "holdings-account", "the seeded unassigned quantities changed before the \(item.account.rawValue) render")
+
+            let view = MainHoldingsView(onSelect: { _ in })
+                .environment(appState)
+                .environment(\.locale, Locale(identifier: "zh_CN"))
+                .environment(\.colorScheme, .dark)
+                .frame(width: 1_200, height: 820)
+
+            do {
+                try renderInOffscreenWindow(view: view, width: 1_200, height: 820,
+                    to: directory.appendingPathComponent(item.file),
+                    scheme: .dark, requiresBoardBand: false)
+                print("HOLDINGS_ACCOUNT_RENDER \(item.account.rawValue) file=\(item.file) holdings=\(expectedHoldings)")
+                fflush(stdout)
+            } catch {
+                report("holdings-account-render", "\(item.account.rawValue) render failed: \(error)")
+                continue
+            }
+
+            // A real render must be a pure reader of every book.
+            expect(store.activeBrokerageAccountID == item.account,
+                   "holdings-account", "rendering \(item.account.rawValue) moved the active selection")
+            expect(store.syncSnapshot() == snapshot,
+                   "holdings-account", "rendering \(item.account.rawValue) changed the compatibility snapshot")
+            expect(quantityMap(store.brokeragePortfolio(for: item.account)) == quantities,
+                   "holdings-account", "rendering \(item.account.rawValue) changed its own portfolio")
+            expect(quantityMap(store.brokeragePortfolio(for: .unassigned)) == unassignedQuantities,
+                   "holdings-account", "rendering \(item.account.rawValue) changed the seeded unassigned quantities")
+        }
+
+        // Pure snapshot checks, independent of any render.
+        expect(!quantityMap(store.brokeragePortfolio(for: .financing)).values.contains { $0 > 0 },
+               "holdings-account", "financing must still have no current holdings")
+        expect(store.brokeragePortfolio(for: .financing).items.allSatisfy { $0.positionQuantity <= 0 },
+               "holdings-account", "financing must expose no positive-position holding")
+        expect(quantityMap(store.brokeragePortfolio(for: .mengmeng))[symbol] == syntheticQuantity,
+               "holdings-account", "mengmeng must still hold exactly the synthetic quantity")
+        expect(quantityMap(store.brokeragePortfolio(for: .unassigned)) == unassignedQuantities,
+               "holdings-account", "the unassigned seeded quantities must be unchanged throughout")
+    }
+
+    /// Symbol → position quantity for one book, so a comparison names the
+    /// symbol instead of relying on row order.
+    private static func quantityMap(_ portfolio: BrokerageAccountPortfolio) -> [SymbolID: Double] {
+        var quantities: [SymbolID: Double] = [:]
+        for item in portfolio.items {
+            quantities[item.symbol, default: 0] += item.positionQuantity
+        }
+        return quantities
     }
 
     /// Renders `view` through a real offscreen `NSWindow`.

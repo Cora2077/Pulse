@@ -790,3 +790,6 @@
 
 "plan.detail.change.logic" = "Logic/conditions updated";
 "plan.detail.change.note" = "Plan note updated";
+"account.menu.accessibility" = "Current account: %@; open account menu";
+
+"main.holdings.empty.accountHint" = "Viewing %@. Switch accounts beside the title; holdings in other accounts are preserved.";
