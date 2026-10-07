@@ -578,6 +578,18 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
             case skipped(Entry.Resolution)
         }
 
+        /// Why an import was refused outright, when it was.
+        ///
+        /// A refusal is a decision about the whole archive, not a per-entry
+        /// reading, so it is stated once here instead of being smeared across
+        /// the items. It is deliberately not `Codable`: a plan is a transient
+        /// reading of two live stores, never something to persist.
+        public enum RejectionReason: Sendable, Equatable {
+            /// The archive names an account other than the one the import would
+            /// land in. Merging would join two independently recorded ledgers.
+            case accountMismatch(archiveAccountID: BrokerageAccountID, destinationAccountID: BrokerageAccountID)
+        }
+
         public struct Item: Sendable, Equatable, Identifiable {
             public let id: Int
             public let entry: Entry
@@ -605,11 +617,20 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         /// add or change across existing and new instruments.
         public var drawingCount: Int
         public var metadataCount: Int
+        /// Non-nil when the whole archive is refused. A rejected plan carries no
+        /// list plans, so it reads as "nothing to apply" everywhere.
+        public var rejectionReason: RejectionReason?
 
-        public init(lists: [ListPlan], drawingCount: Int = 0, metadataCount: Int = 0) {
+        public init(
+            lists: [ListPlan],
+            drawingCount: Int = 0,
+            metadataCount: Int = 0,
+            rejectionReason: RejectionReason? = nil
+        ) {
             self.lists = lists
             self.drawingCount = drawingCount
             self.metadataCount = metadataCount
+            self.rejectionReason = rejectionReason
         }
 
         public var allItems: [Item] { lists.flatMap(\.items) }
@@ -622,7 +643,10 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
             allItems.filter { if case .restorePosition = $0.outcome { true } else { false } }.count
         }
         public var changesAnything: Bool {
-            newListCount > 0 || addCount > 0 || restoreCount > 0 || drawingCount > 0 || metadataCount > 0
+            // A refused plan has nothing to apply, whatever its counts say.
+            guard rejectionReason == nil else { return false }
+            return newListCount > 0 || addCount > 0 || restoreCount > 0
+                || drawingCount > 0 || metadataCount > 0
         }
     }
 }

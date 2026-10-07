@@ -2285,8 +2285,18 @@ public final class WatchlistStore {
     /// The settings screen shows this before asking for confirmation so the user can
     /// see the instruments Pulse understood rather than the text they pasted.
     public func importPlan(for archive: WatchlistArchive) -> WatchlistArchive.ImportPlan {
-        if let id = archive.brokerageAccountID, id != activeBrokerageAccountID {
-            return WatchlistArchive.ImportPlan(lists: [])
+        // Account tags are explicit even when they name `.unassigned`. Refuse
+        // a different destination regardless of whether accounts are enabled;
+        // only untagged archives use whichever account is currently selected.
+        if let archiveAccountID = archive.brokerageAccountID,
+           archiveAccountID != activeBrokerageAccountID {
+            return WatchlistArchive.ImportPlan(
+                lists: [],
+                rejectionReason: .accountMismatch(
+                    archiveAccountID: archiveAccountID,
+                    destinationAccountID: activeBrokerageAccountID
+                )
+            )
         }
         var listPlans: [WatchlistArchive.ImportPlan.ListPlan] = []
         var itemID = 0
@@ -2381,10 +2391,11 @@ public final class WatchlistStore {
     /// An entry Pulse cannot resolve is skipped on its own; it never fails the import.
     @discardableResult
     public func merge(_ archive: WatchlistArchive) -> WatchlistArchive.ImportPlan {
-        if let id = archive.brokerageAccountID, id != activeBrokerageAccountID {
-            return WatchlistArchive.ImportPlan(lists: [])
-        }
         let plan = importPlan(for: archive)
+        // The plan already decided whether this archive may be applied at all,
+        // so a refusal returns that same plan untouched: no mutation, no
+        // persistence, and no sync callback.
+        guard plan.rejectionReason == nil else { return plan }
 
         for (list, listPlan) in zip(archive.lists, plan.lists) {
             let name = normalizedName(list.name)

@@ -57,7 +57,7 @@ struct DataSettingsView: View {
     /// held here until the user acknowledges it: a mismatch must never be
     /// resolved by silently writing the records into whichever account happens
     /// to be selected.
-    @State private var foreignImport: (WatchlistArchive, BrokerageAccountID)?
+    @State private var foreignImport: WatchlistArchive.ImportPlan.RejectionReason?
 
     /// Import is its own two-step review — paste, read the plan, then apply — so
     /// the clipboard actions step aside while a plan is on screen. Sync is a
@@ -153,7 +153,11 @@ struct DataSettingsView: View {
                     confirmImport(preview)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!preview.plan.changesAnything || previewIsStale(preview))
+                .disabled(
+                    !preview.plan.changesAnything
+                        || preview.plan.rejectionReason != nil
+                        || previewIsStale(preview)
+                )
             }
             .controlSize(.small)
             .padding(12)
@@ -596,20 +600,21 @@ struct DataSettingsView: View {
         }
         do {
             let archive = try WatchlistArchive.decoded(from: text)
-            // An archive carries the account it was exported from. Writing it into
-            // a different account would merge two independently recorded ledgers,
-            // so a mismatch is surfaced before the preview and never applied.
-            if let tagged = archive.brokerageAccountID,
-               appState.watchlist.brokerageAccountsEnabled,
-               tagged != appState.watchlist.activeBrokerageAccountID {
-                foreignImport = (archive, tagged)
+            // The core plan is the single authority on whether this archive may
+            // be applied at all. It is computed once here and inspected before
+            // anything reaches the screen; a refusal is reported with the two
+            // account identities the plan captured, so the alert never has to
+            // hold (or re-read) the archive itself.
+            let plan = appState.watchlist.importPlan(for: archive)
+            if let reason = plan.rejectionReason {
+                foreignImport = reason
                 return
             }
             phase = .previewing(ImportPreview(
                 archive: archive,
                 account: appState.watchlist.activeBrokerageAccountID,
                 sourceSnapshot: appState.watchlist.brokeragePortfolio(for: appState.watchlist.activeBrokerageAccountID).flatSnapshot,
-                plan: appState.watchlist.importPlan(for: archive)
+                plan: plan
             ))
         } catch let failure as WatchlistArchive.DecodingFailure {
             phase = .failed(message(for: failure))
@@ -635,7 +640,15 @@ struct DataSettingsView: View {
             discardStalePreview()
             return
         }
-        phase = .imported(appState.watchlist.merge(preview.archive))
+        // `merge` returns the plan it actually applied. A refused plan must be
+        // reported as such instead of being shown as a successful import whose
+        // counts happen to be zero.
+        let applied = appState.watchlist.merge(preview.archive)
+        if let reason = applied.rejectionReason {
+            foreignImport = reason
+            return
+        }
+        phase = .imported(applied)
     }
 
     /// Drops a preview that no longer matches the store and says why, so the
@@ -653,13 +666,29 @@ struct DataSettingsView: View {
         Binding(get: { foreignImport != nil }, set: { if !$0 { foreignImport = nil } })
     }
 
+    /// Names both accounts and says what to do about it.
+    ///
+    /// With accounts switched off there is no account to switch to, so the only
+    /// honest instruction is to turn the feature on and then choose the account
+    /// the archive names. Either way the user makes the choice: nothing here
+    /// enables the feature, selects an account, or retries on its own.
     private var foreignImportMessage: String {
-        guard let (_, tagged) = foreignImport else { return "" }
-        let current = appState.watchlist.activeBrokerageAccountID
-        let chinese = PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
-        return chinese
-            ? "这份数据属于「\(AccountIdentity.title(tagged))」，当前账号是「\(AccountIdentity.title(current))」。未导入任何内容；请先切换到该账号再导入。"
-            : "This data belongs to \(AccountIdentity.title(tagged)), but the current account is \(AccountIdentity.title(current)). Nothing was imported — switch to that account and import again."
+        guard let reason = foreignImport else { return "" }
+        switch reason {
+        case .accountMismatch(let archiveAccountID, let destinationAccountID):
+            let source = AccountIdentity.title(archiveAccountID)
+            let destination = AccountIdentity.title(destinationAccountID)
+            guard appState.watchlist.brokerageAccountsEnabled else {
+                return accountCopyData(
+                    "未导入任何内容。这份数据属于「\(source)」，当前账号是「\(destination)」。请先开启券商账号功能，选择「\(source)」账号后再重新导入。",
+                    "Nothing was imported. This data belongs to \(source), but the current account is \(destination). Enable brokerage accounts, select \(source), then import again."
+                )
+            }
+            return accountCopyData(
+                "未导入任何内容。这份数据属于「\(source)」，当前账号是「\(destination)」。请先切换到「\(source)」账号再重新导入。",
+                "Nothing was imported. This data belongs to \(source), but the current account is \(destination). Switch to \(source) and import again."
+            )
+        }
     }
 
     // MARK: - Copy
