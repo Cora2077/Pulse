@@ -214,7 +214,7 @@ private struct PoolBudgetFilter {
 struct BudgetMoney: View {
     let value: Double?
     let currency: String
-    var placeholder: String = poolCopy("未录入", "Not set")
+    var placeholder: String = PulseLocalization.localizedString("poolBudget.placeholder.notSet")
     var assumed = false
 
     var body: some View {
@@ -234,34 +234,20 @@ enum PoolBudgetNotice {
     static func messages(_ result: PoolBudgetProjection.Result) -> [String] {
         var lines: [String] = []
         if result.unvaluablePriceCount > 0 {
-            lines.append(poolCopy(
-                "\(result.unvaluablePriceCount) 项持仓缺少可用行情，未计入估值。",
-                "\(result.unvaluablePriceCount) positions have no usable quote and are left out of the value."
-            ))
+            lines.append(PulseLocalization.localizedString("poolBudget.notice.unpriced", result.unvaluablePriceCount))
         }
         if result.rejectedInputCount > 0 || result.rejectedEntryCount > 0 {
-            lines.append(poolCopy(
-                "\(result.rejectedInputCount + result.rejectedEntryCount) 项数据无效或溢出，已跳过。",
-                "\(result.rejectedInputCount + result.rejectedEntryCount) records were invalid or overflowed and were skipped."
-            ))
+            lines.append(PulseLocalization.localizedString("poolBudget.notice.rejected",
+                            result.rejectedInputCount + result.rejectedEntryCount))
         }
         if !result.unresolvedPoolPositions.isEmpty {
-            lines.append(poolCopy(
-                "\(result.unresolvedPoolPositions.count) 项分账待核对，池金额只含已确认份额。",
-                "\(result.unresolvedPoolPositions.count) allocations need review; pool values cover verified shares only."
-            ))
+            lines.append(PulseLocalization.localizedString("poolBudget.notice.unresolved", result.unresolvedPoolPositions.count))
         }
         if result.unsupportedShortCount > 0 {
-            lines.append(poolCopy(
-                "\(result.unsupportedShortCount) 项为空头，不做做空/回补预演。",
-                "\(result.unsupportedShortCount) positions are short; shorting and covering are not previewed."
-            ))
+            lines.append(PulseLocalization.localizedString("poolBudget.notice.short", result.unsupportedShortCount))
         }
         if !result.overSellWarnings.isEmpty {
-            lines.append(poolCopy(
-                "\(result.overSellWarnings.count) 笔卖出超过可卖份额，已警示，未生成负持仓。",
-                "\(result.overSellWarnings.count) sell plans exceed the shares available; they are flagged, not turned into shorts."
-            ))
+            lines.append(PulseLocalization.localizedString("poolBudget.notice.overSell", result.overSellWarnings.count))
         }
         return lines
     }
@@ -305,13 +291,13 @@ struct CapitalPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             header
             if currencies.isEmpty {
-                Text(poolCopy("暂无可显示的币种。", "No currency to show yet."))
+                Text(PulseLocalization.localizedString("poolBudget.empty.noCurrency"))
                     .font(PoolType.label).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 ForEach(currencies) { currency in
                     if currency.hasOverflow {
-                        Text(currency.code + " · " + poolCopy("金额异常，请核对", "Invalid amounts; review needed"))
+                        Text(currency.code + " · " + PulseLocalization.localizedString("poolBudget.currency.invalidAmounts"))
                             .font(PoolType.label).foregroundStyle(.orange)
                     } else {
                         currencyBlock(currency, blockedSells: result.overSellWarnings.filter {
@@ -338,12 +324,11 @@ struct CapitalPanel: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text(poolCopy("资金总览", "Capital overview"))
+            Text(PulseLocalization.localizedString("poolBudget.header.title"))
                 .font(PoolType.labelMedium).foregroundStyle(.secondary)
             Spacer(minLength: 4)
             if referenceQuoteCount > 0 {
-                Text(poolCopy("估值含收盘/历史参考价；到价提醒仍只用实时行情。",
-                              "Values include closing/historical quotes; price triggers use current quotes."))
+                Text(PulseLocalization.localizedString("poolBudget.header.referenceQuotes"))
                     .font(PoolType.label).foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
@@ -366,7 +351,7 @@ struct CapitalPanel: View {
             }
             if isAssumed, !afterIsReliable(currency), currency.plannedBuyAmount > 0,
                let onRequestGapPreview {
-                Button(poolCopy("只预演买入", "Preview buys only")) { onRequestGapPreview(currency.code) }
+                Button(PulseLocalization.localizedString("poolBudget.action.previewBuysOnly")) { onRequestGapPreview(currency.code) }
                     .buttonStyle(.link).font(PoolType.label)
             }
         }
@@ -388,12 +373,13 @@ struct CapitalPanel: View {
                 .font(.system(size: 10, weight: .bold, design: .rounded))
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(.primary.opacity(0.08), in: Capsule())
-            Text(poolCopy(partial ? "已计价部分市值 " : "持仓市值 ", partial ? "Quoted part value " : "Held value ")
-                 + PriceFormatter.money(currency.holdingsBefore, currencyCode: currency.code))
+            Text(PulseLocalization.localizedString(partial ? "poolBudget.holdings.quotedPartValue" : "poolBudget.holdings.value",
+                    PriceFormatter.money(currency.holdingsBefore, currencyCode: currency.code)))
                 .font(PoolType.number).lineLimit(1).minimumScaleFactor(0.85)
             if isAssumed {
                 if let projected = projectedHoldings(currency) {
-                    Text("→ " + (currency.unvaluableQuantity > 0 ? poolCopy("已计价部分 ", "Quoted part ") : "")
+                    Text("→ " + (currency.unvaluableQuantity > 0
+                              ? PulseLocalization.localizedString("poolBudget.holdings.quotedPartPrefix") : "")
                          + PoolAmountText.assumed(projected))
                         .font(PoolType.assumedNumber).lineLimit(1).minimumScaleFactor(0.85)
                     let delta = currency.holdingsAfter - currency.holdingsBefore
@@ -401,14 +387,14 @@ struct CapitalPanel: View {
                         // Direction is stated in words and in the sign; blue only,
                         // never a profit/loss red or green.
                         Text((currency.unvaluableQuantity > 0
-                             ? poolCopy("已计价变化 ", "Quoted value change ")
-                             : poolCopy("市值变化 ", "Value change "))
+                             ? PulseLocalization.localizedString("poolBudget.holdings.quotedValueChange")
+                             : PulseLocalization.localizedString("poolBudget.holdings.valueChange"))
                              + PriceFormatter.signedMoney(delta, currencyCode: currency.code))
                             .font(PoolType.labelMedium.monospacedDigit()).foregroundStyle(.blue)
                             .lineLimit(1).minimumScaleFactor(0.85)
                     }
                 } else {
-                    Text(poolCopy("完整预演缺价待定", "Full preview awaits quotes"))
+                    Text(PulseLocalization.localizedString("poolBudget.holdings.fullPreviewPending"))
                         .font(PoolType.label).foregroundStyle(.orange).lineLimit(1)
                 }
             }
@@ -421,7 +407,7 @@ struct CapitalPanel: View {
                     .frame(width: 20, height: 20).contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
-            .help(poolCopy("编辑现金与池上限", "Edit cash and pool limits"))
+            .help(PulseLocalization.localizedString("poolBudget.action.editLimits"))
         }
     }
 
@@ -436,18 +422,17 @@ struct CapitalPanel: View {
             : max(currency.holdingsBefore, heldTotal(currency))
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(poolCopy("当前分布", "Distribution now"))
+                Text(PulseLocalization.localizedString("poolBudget.distribution.current"))
                     .font(PoolType.label).foregroundStyle(.secondary)
                 Spacer(minLength: 4)
                 if isAssumed, afterIsReliable(currency) {
-                    Text(poolCopy("与成交后金额对照", "Compare with the after-trade value"))
+                    Text(PulseLocalization.localizedString("poolBudget.distribution.compare"))
                         .font(PoolType.label).foregroundStyle(.tertiary)
-                        .help(poolCopy("两根轨道共用金额刻度，长度差表示金额差。占比在图例中单独列出。",
-                                       "Both tracks use one money scale; lengths compare amounts. Shares are listed separately."))
+                        .help(PulseLocalization.localizedString("poolBudget.distribution.compareHelp"))
                 }
             }
             PoolTrackGauge(height: 10, segments: segments, scale: scale)
-                .accessibilityLabel(poolCopy("当前各池持仓金额分布", "Current holding amounts by pool"))
+                .accessibilityLabel(PulseLocalization.localizedString("poolBudget.distribution.currentLabel"))
         }
     }
 
@@ -511,7 +496,7 @@ struct CapitalPanel: View {
             }
             if entry.unvaluable > 0, entry.amount == 0 {
                 // Units are known, the price is not: a count, never a zero.
-                Text(poolCopy("缺价 \(entry.unvaluable) 项", "\(entry.unvaluable) unpriced"))
+                Text(PulseLocalization.localizedString("poolBudget.legend.unpriced", entry.unvaluable))
                     .font(PoolType.label).foregroundStyle(.orange).lineLimit(1)
             }
         }
@@ -527,7 +512,7 @@ struct CapitalPanel: View {
         let scale = max(currency.holdingsBefore, currency.holdingsAfter, heldTotal(currency))
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(poolCopy("成交后分布", "After-trade split"))
+                Text(PulseLocalization.localizedString("poolBudget.distribution.afterTitle"))
                     .font(PoolType.label).foregroundStyle(.secondary)
                 Spacer(minLength: 4)
                 if let projected = projectedHoldings(currency) {
@@ -540,8 +525,7 @@ struct CapitalPanel: View {
                     RoundedRectangle(cornerRadius: 4)
                         .stroke(.secondary.opacity(0.55), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                 }
-                .accessibilityLabel(poolCopy("成交后各池持仓金额分布（虚线，假设）",
-                                             "After-trade holding amounts by pool (dashed, hypothetical)"))
+                .accessibilityLabel(PulseLocalization.localizedString("poolBudget.distribution.afterLabel"))
         }
     }
 
@@ -574,7 +558,7 @@ struct CapitalPanel: View {
         return VStack(alignment: .leading, spacing: 3) {
             flow
             if let onRequestGapPreview, !isAssumed, currency.cashBalance == nil, currency.plannedBuyAmount > 0 {
-                Button(poolCopy("预演这些买入", "Preview these buys")) { onRequestGapPreview(currency.code) }
+                Button(PulseLocalization.localizedString("poolBudget.action.previewTheseBuys")) { onRequestGapPreview(currency.code) }
                     .buttonStyle(.link).font(PoolType.label)
             }
         }
@@ -583,8 +567,8 @@ struct CapitalPanel: View {
     private func budgetFigure(_ currency: PoolBudgetProjection.CurrencyProjection) -> some View {
         PoolLabeledValue(
             label: isAssumed
-                ? poolCopy("所选买入", "Selected buys")
-                : poolCopy("待买预算", "Planned buys"),
+                ? PulseLocalization.localizedString("poolBudget.figure.selectedBuys")
+                : PulseLocalization.localizedString("poolBudget.figure.plannedBuys"),
             value: PriceFormatter.money(currency.plannedBuyAmount, currencyCode: currency.code),
             assumed: isAssumed
         )
@@ -593,7 +577,7 @@ struct CapitalPanel: View {
 
     private func cashFigure(_ currency: PoolBudgetProjection.CurrencyProjection) -> some View {
         PoolLabeledValue(
-            label: poolCopy("手工现金", "Recorded cash"),
+            label: PulseLocalization.localizedString("poolBudget.figure.cash"),
             value: currency.cashBalance.map { PriceFormatter.money($0, currencyCode: currency.code) } ?? "—",
             valueColor: currency.cashBalance == nil ? .secondary : .primary
         )
@@ -604,7 +588,7 @@ struct CapitalPanel: View {
                                gap: Double) -> some View {
         let unknown = currency.cashBalance == nil
         return PoolLabeledValue(
-            label: gap > 0 ? poolCopy("买入缺口", "Buy budget gap") : poolCopy("买入余量", "Budget left"),
+            label: gap > 0 ? PulseLocalization.localizedString("poolBudget.figure.buyGap") : PulseLocalization.localizedString("poolBudget.figure.budgetLeft"),
             value: unknown
                 ? "—"
                 : (gap > 0 ? PriceFormatter.money(gap, currencyCode: currency.code)
@@ -620,18 +604,17 @@ struct CapitalPanel: View {
     private func compactFlow(_ currency: PoolBudgetProjection.CurrencyProjection,
                              blockedSells: [PoolBudgetProjection.OverSellWarning]) -> (text: String, isWarning: Bool)? {
         if currency.cashBalance == nil {
-            return (poolCopy("现金未录，缺口无法判断", "Cash not recorded; the gap is unknown"), true)
+            return (PulseLocalization.localizedString("poolBudget.flow.cashUnknown"), true)
         }
         if !blockedSells.isEmpty {
             // `plannedSellAmount` totals every selected sell, including ones the
             // position cannot deliver, so no money figure is derived from it.
-            return (poolCopy("卖出回收待核对（含 \(blockedSells.count) 笔超额卖出）",
-                             "Sale proceeds pending review (\(blockedSells.count) over-committed)"), true)
+            return (PulseLocalization.localizedString("poolBudget.flow.blockedSells", blockedSells.count), true)
         }
         if currency.plannedSellAmount > 0 {
-            return (poolCopy("预计卖出回收 ", "Estimated sale proceeds ")
+            return (PulseLocalization.localizedString("poolBudget.flow.estimatedProceeds")
                     + PoolAmountText.money(currency.plannedSellAmount, currency: currency.code, assumed: isAssumed)
-                    + poolCopy("（未计入现金）", " (not counted as cash)"), false)
+                    + PulseLocalization.localizedString("poolBudget.flow.notCountedAsCash"), false)
         }
         return nil
     }
@@ -643,28 +626,24 @@ struct CapitalPanel: View {
         let missingCurrent = currency.holdings.contains { $0.beforeQuantity != 0 && $0.beforePercent == nil }
         if currency.unvaluableQuantity > 0, isAssumed || missingCurrent {
             return (missingCurrent
-                    ? poolCopy("实仓缺价，市值只含已计价部分，完整占比待定。",
-                               "Held quotes are missing; only quoted values are shown, and full shares are unknown.")
-                    : poolCopy("预演缺价 \(currency.unvaluableQuantity) 项；成交后仅含已计价部分，成交后占比待定。",
-                               "\(currency.unvaluableQuantity) preview quotes missing; after-trade values are partial and after-trade shares unknown."),
+                    ? PulseLocalization.localizedString("poolBudget.note.heldMissingQuote")
+                    : PulseLocalization.localizedString("poolBudget.note.previewMissingQuote", currency.unvaluableQuantity),
                     true)
         }
         if isAssumed, !afterIsReliable(currency) {
             if unassignedSellCurrencies.contains(currency.code) {
-                return (poolCopy("卖出计划尚未指定减仓池，成交后各池占比待定；可将计划拖入对应池，或先只预演买入。",
-                                 "Sell plans need a source pool before after-trade shares can be shown; drag them to a pool or preview buys only."), true)
+                return (PulseLocalization.localizedString("poolBudget.note.unassignedSell"), true)
             }
             let text = currency.pools.contains(where: { $0.needsReconciliation })
-                ? poolCopy("成交后分布待核对，暂不预演。", "The after-trade split needs review and is not previewed.")
-                : poolCopy("成交后分布缺价待定，暂不预演。", "The after-trade split awaits quotes and is not previewed.")
+                ? PulseLocalization.localizedString("poolBudget.note.afterNeedsReview")
+                : PulseLocalization.localizedString("poolBudget.note.afterAwaitsQuotes")
             return (text, true)
         }
         if currency.cashBalance == nil {
-            return (poolCopy("现金未录，缺口无法判断。", "Cash not recorded; the gap is unknown."), true)
+            return (PulseLocalization.localizedString("poolBudget.note.cashUnknown"), true)
         }
         if !blockedSells.isEmpty {
-            return (poolCopy("卖出回收待核对（含 \(blockedSells.count) 笔超额卖出）。",
-                             "Sale proceeds pending review (\(blockedSells.count) over-committed)."), true)
+            return (PulseLocalization.localizedString("poolBudget.flow.blockedSellsPeriod", blockedSells.count), true)
         }
         return nil
     }
@@ -727,7 +706,7 @@ struct CapitalPanel: View {
         let after: String?
 
         var title: String {
-            pool?.title ?? poolCopy("分配待核对", "Allocation review")
+            pool?.title ?? PulseLocalization.localizedString("poolBudget.legend.allocationReview")
         }
 
         var id: String { pool?.rawValue ?? "rest" }
@@ -764,9 +743,9 @@ struct PoolBudgetEditSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(poolCopy("\(currency) 现金与池上限", "\(currency) cash and pool limits"))
+            Text(PulseLocalization.localizedString("poolBudget.editor.title", currency))
                 .font(.system(size: 13, weight: .semibold))
-            Picker(poolCopy("账户", "Account"), selection: $draftAccount) {
+            Picker(PulseLocalization.localizedString("poolBudget.editor.account"), selection: $draftAccount) {
                 ForEach([BrokerageAccountID.financing, .mengmeng, .unassigned]) { account in
                     Text(AccountIdentity.title(account)).tag(account)
                 }
@@ -777,10 +756,10 @@ struct PoolBudgetEditSheet: View {
             }
 
             Form {
-                TextField(poolCopy("现金余额", "Cash balance"), text: $cashText)
-                    .help(poolCopy("留空表示未知，不会当作 0。", "Leave empty for unknown; it is never read as 0."))
+                TextField(PulseLocalization.localizedString("poolBudget.editor.cashBalance"), text: $cashText)
+                    .help(PulseLocalization.localizedString("poolBudget.editor.cashHelp"))
                 ForEach(PositionPool.activeCases, id: \.self) { pool in
-                    TextField("\(pool.title) \(poolCopy("上限", "limit"))",
+                    TextField(PulseLocalization.localizedString("poolBudget.editor.poolLimit", pool.title),
                               text: Binding(
                                 get: { limitTexts[pool] ?? "" },
                                 set: { limitTexts[pool] = $0 }
@@ -794,12 +773,11 @@ struct PoolBudgetEditSheet: View {
             }
 
             HStack {
-                Text(poolCopy("按账户保存现金与预算，不改动持仓或成交。",
-                              "Saves cash and budgets for this account; positions and fills stay unchanged."))
+                Text(PulseLocalization.localizedString("poolBudget.editor.footnote"))
                     .font(PoolType.label).foregroundStyle(.secondary)
                 Spacer()
-                Button(poolCopy("取消", "Cancel")) { dismiss() }
-                Button(poolCopy("保存", "Save")) { save() }
+                Button(PulseLocalization.localizedString("poolBudget.editor.cancel")) { dismiss() }
+                Button(PulseLocalization.localizedString("poolBudget.editor.save")) { save() }
                     .keyboardShortcut(.defaultAction)
             }
         }
@@ -826,14 +804,14 @@ struct PoolBudgetEditSheet: View {
         // rather than half applied.
         let cash = parsed(cashText)
         guard !cash.invalid else {
-            error = poolCopy("现金余额必须是非负数字，或留空。", "Cash must be a non-negative number, or empty.")
+            error = PulseLocalization.localizedString("poolBudget.editor.error.cashInvalid")
             return
         }
         var limits: [PositionPool: ParsedAmount] = [:]
         for pool in PositionPool.activeCases {
             let value = parsed(limitTexts[pool] ?? "")
             guard !value.invalid else {
-                error = poolCopy("\(pool.title)上限必须是非负数字，或留空。", "\(pool.title) limit must be a non-negative number, or empty.")
+                error = PulseLocalization.localizedString("poolBudget.editor.error.limitInvalid", pool.title)
                 return
             }
             limits[pool] = value
@@ -848,7 +826,7 @@ struct PoolBudgetEditSheet: View {
             }
             guard record.cashBalances[currency] == previous.cashBalances[currency],
                   currencyLimits(record) == currencyLimits(previous) else {
-                error = poolCopy("该账户的资金记录已变化，请重新打开后保存。", "This account's cash or limits changed. Reopen the editor before saving.")
+                error = PulseLocalization.localizedString("poolBudget.editor.error.settingsChanged")
                 return
             }
             if let value = cash.value { record.cashBalances[currency] = .init(amount: value, updatedAt: .now) }
@@ -858,7 +836,7 @@ struct PoolBudgetEditSheet: View {
                 if let value = limits[pool]?.value { record.poolLimits.append(.init(currency: currency, pool: pool, amount: value)) }
             }
             guard appState.watchlist.setBrokerageSettings(record, for: draftAccount) else {
-                error = poolCopy("资金记录保存失败，请重新打开后重试。", "Could not save these financial settings. Reopen and retry.")
+                error = PulseLocalization.localizedString("poolBudget.editor.error.saveFailed")
                 return
             }
         } else {
@@ -957,22 +935,22 @@ struct PoolBudgetGauge: View {
                     editingCurrency = EditingCurrency(code: currency.code)
                 } label: {
                     Text(currency.code + " · " + (projection.limit.map {
-                        poolCopy("预算上限 ", "Budget cap ") + PriceFormatter.money($0, currencyCode: currency.code)
-                    } ?? poolCopy("未设预算上限", "No budget cap")))
+                        PulseLocalization.localizedString("poolBudget.gauge.budgetCap",
+                           PriceFormatter.money($0, currencyCode: currency.code))
+                    } ?? PulseLocalization.localizedString("poolBudget.gauge.noBudgetCap")))
                 }
                 .buttonStyle(.borderless)
-                .help(poolCopy("编辑现金与池预算上限", "Edit cash and pool budget caps"))
+                .help(PulseLocalization.localizedString("poolBudget.gauge.editHelp"))
                 Spacer(minLength: 0)
                 if projection.overLimitAmount > 0 {
-                    Text(poolCopy("预算超额 ", "Over budget ")
-                         + PriceFormatter.money(projection.overLimitAmount, currencyCode: currency.code))
+                    Text(PulseLocalization.localizedString("poolBudget.gauge.overBudget",
+                            PriceFormatter.money(projection.overLimitAmount, currencyCode: currency.code)))
                         .foregroundStyle(.orange)
                 }
                 if current == nil, projection.needsReconciliation {
-                    Text(poolCopy("待核对", "Review pending")).foregroundStyle(.orange)
+                    Text(PulseLocalization.localizedString("poolBudget.gauge.reviewPending")).foregroundStyle(.orange)
                 } else if current == nil, projection.unvaluableQuantity > 0 || currency.hasOverflow {
-                    Text(poolCopy("缺价 \(projection.unvaluableQuantity) 项",
-                                  "\(projection.unvaluableQuantity) unpriced"))
+                    Text(PulseLocalization.localizedString("poolBudget.legend.unpriced", projection.unvaluableQuantity))
                         .foregroundStyle(.orange)
                 }
             }
@@ -1004,27 +982,24 @@ struct PoolBudgetGauge: View {
                     segments: [.init(pool: pool, value: current)],
                     scale: 1
                 )
-                .accessibilityLabel(poolCopy("当前占比：\(percentLabel(current))",
-                                              "Current share: \(percentLabel(current))"))
+                .accessibilityLabel(PulseLocalization.localizedString("poolBudget.gauge.currentShareLabel", percentLabel(current)))
             }
         }
         if let preview {
             PoolTrackGauge(height: 3, tint: pool.tint,
                            segments: [.init(pool: pool, value: preview)], scale: 1)
                 .opacity(0.55)
-                .accessibilityLabel(poolCopy("预演占比：\(percentLabel(preview))",
-                                              "Preview share: \(percentLabel(preview))"))
+                .accessibilityLabel(PulseLocalization.localizedString("poolBudget.gauge.previewShareLabel", percentLabel(preview)))
         }
 
         if currency.hasOverflow {
-            Text(poolCopy("金额异常，暂不显示占比", "Invalid amount; ratio unavailable"))
+            Text(PulseLocalization.localizedString("poolBudget.gauge.invalidRatio"))
                 .font(PoolType.label).foregroundStyle(.orange)
         } else if let current, let preview {
-            Text(currency.code + " · " + poolCopy("占持仓 ", "Of holdings ") + percentLabel(current)
-                 + " → " + PoolAmountText.assumed(percentLabel(preview)))
+            Text(currency.code + " · " + PulseLocalization.localizedString("poolBudget.gauge.ofHoldingsPrefix")
+                 + percentLabel(current) + " → " + PoolAmountText.assumed(percentLabel(preview)))
                 .font(PoolType.label.monospacedDigit()).foregroundStyle(.secondary)
-                .help(poolCopy("前一个比例按当前持仓计算，后一个按假设所选计划全部成交后的持仓计算，两者分母不同。",
-                               "The first share uses today's holdings; the second uses holdings after the selected plans all fill — different denominators."))
+                .help(PulseLocalization.localizedString("poolBudget.gauge.shareHelp"))
         } else if let current {
             HStack(spacing: 6) {
                 Text(shareLabel(current, projection: projection, currency: currency))
@@ -1032,13 +1007,13 @@ struct PoolBudgetGauge: View {
                     .foregroundStyle(isFloor(projection, currency: currency) ? .orange : .secondary)
                 if isPreviewing {
                     Text(currency.unvaluableQuantity > 0
-                         ? poolCopy("预演占比缺价待定", "Preview share awaiting quotes")
-                         : poolCopy("预演占比待核对", "Preview share needs review"))
+                         ? PulseLocalization.localizedString("poolBudget.gauge.previewAwaitingQuotes")
+                         : PulseLocalization.localizedString("poolBudget.gauge.previewNeedsReview"))
                         .font(PoolType.label).foregroundStyle(.orange)
                 }
             }
         } else if let preview {
-            Text(currency.code + " · " + poolCopy("暂无实仓 → 预演 ", "No held shares → preview ")
+            Text(currency.code + " · " + PulseLocalization.localizedString("poolBudget.gauge.noHeldSharesPrefix")
                  + PoolAmountText.assumed(percentLabel(preview)))
                 .font(PoolType.label.monospacedDigit()).foregroundStyle(.secondary)
         } else if projection.unvaluableQuantity > 0 {
@@ -1046,13 +1021,13 @@ struct PoolBudgetGauge: View {
             // *preview* share is unavailable, because the after-total would be
             // missing a position. Say which one is pending.
             Text(isPreviewing
-                 ? poolCopy("缺价，占比待定 · 预演占比待核对", "Missing quote; share pending · preview share needs review")
-                 : poolCopy("缺价，占比待定", "Missing quote; share pending"))
+                 ? PulseLocalization.localizedString("poolBudget.gauge.missingQuote.preview")
+                 : PulseLocalization.localizedString("poolBudget.gauge.missingQuote.current"))
                 .font(PoolType.label).foregroundStyle(.orange)
         } else {
             // A quantity is held and nothing is missing, yet there is no
             // denominator to divide by. Never print 0% for that.
-            Text(poolCopy("暂无可计价实仓", "No valued holding to take a share of"))
+            Text(PulseLocalization.localizedString("poolBudget.gauge.noValuedHolding"))
                 .font(PoolType.label).foregroundStyle(.secondary)
         }
     }
@@ -1061,8 +1036,8 @@ struct PoolBudgetGauge: View {
                             projection: PoolBudgetProjection.PoolProjection,
                             currency: PoolBudgetProjection.CurrencyProjection) -> String {
         currency.code + " · " + (isFloor(projection, currency: currency)
-            ? poolCopy("已核对下限 ≥" + percentLabel(current), "Verified floor ≥" + percentLabel(current))
-            : poolCopy("占持仓 " + percentLabel(current), "Of holdings " + percentLabel(current)))
+            ? PulseLocalization.localizedString("poolBudget.gauge.verifiedFloor", percentLabel(current))
+            : PulseLocalization.localizedString("poolBudget.gauge.ofHoldingsValue", percentLabel(current)))
     }
 
     /// Whether the current share is only a floor: the verified pool shares sum
@@ -1086,8 +1061,8 @@ struct PoolBudgetGauge: View {
                         currency: PoolBudgetProjection.CurrencyProjection) -> some View {
         if projection.limit != nil, projection.unvaluableQuantity > 0 || currency.hasOverflow {
             Text(currency.hasOverflow
-                 ? poolCopy("金额异常，暂不显示预算比例", "Invalid amount; budget ratio unavailable")
-                 : poolCopy("缺价，暂不显示预算比例", "Missing quote; budget ratio unavailable"))
+                 ? PulseLocalization.localizedString("poolBudget.gauge.invalidBudgetRatio")
+                 : PulseLocalization.localizedString("poolBudget.gauge.missingQuoteBudgetRatio"))
                 .font(PoolType.label).foregroundStyle(.orange)
         } else if let limit = projection.limit, limit > 0,
                   !projection.needsReconciliation {
@@ -1109,13 +1084,11 @@ struct PoolBudgetGauge: View {
                         scale: limit, drawsTrack: false
                     )
                 }
-                .accessibilityLabel(poolCopy("预算上限：实色为持仓参考市值，浅色为计划买入（按计划价）",
-                                              "Budget cap: solid is holding reference value, translucent is plan-price buys"))
-                .help(poolCopy("预算上限对比的是持仓参考市值 + 按计划价计算的买入额，不是按市价重估后的持仓；卖出计划额不从预算中抵扣。",
-                               "The budget cap compares holding reference value plus plan-price buys, not a market revaluation; planned sell amounts do not offset the budget."))
+                .accessibilityLabel(PulseLocalization.localizedString("poolBudget.gauge.capLabel"))
+                .help(PulseLocalization.localizedString("poolBudget.gauge.capHelp"))
             }
         } else if projection.needsReconciliation, projection.limit != nil {
-            Text(poolCopy("待核对，暂不显示预算占比", "Pending review; budget share not shown"))
+            Text(PulseLocalization.localizedString("poolBudget.gauge.pendingBudgetShare"))
                 .font(PoolType.label).foregroundStyle(.orange)
         }
     }
@@ -1227,14 +1200,13 @@ struct PoolScenarioView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(poolCopy("多计划预演", "Multi-plan preview"))
+                    Text(PulseLocalization.localizedString("poolBudget.scenario.title"))
                         .font(.system(size: 15, weight: .semibold))
-                    Text(poolCopy("买/卖现金按全部成交估算；不会修改真实持仓。",
-                                  "Cash assumes every buy and sell fills. Real positions are not modified."))
+                    Text(PulseLocalization.localizedString("poolBudget.scenario.subtitle"))
                         .font(PoolType.label).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(poolCopy("完成", "Done")) { onApply?(selectedPlanIDs); dismiss() }
+                Button(PulseLocalization.localizedString("poolBudget.scenario.done")) { onApply?(selectedPlanIDs); dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
 
@@ -1242,18 +1214,16 @@ struct PoolScenarioView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     planPicker(visibleEntries)
                     if hiddenCount > 0 {
-                        Text(poolCopy("另有 \(hiddenCount) 个选择不在当前币种或已失效；本次未参与预演。",
-                                      "\(hiddenCount) selections are outside this currency or inactive and excluded from this preview."))
+                        Text(PulseLocalization.localizedString("poolBudget.scenario.hiddenSelections", hiddenCount))
                             .font(PoolType.label).foregroundStyle(.orange)
                     }
                     if input.referenceQuoteCount > 0 {
-                        Text(poolCopy("持仓前后按同一组收盘/历史参考价估算。",
-                                      "Before/after holdings use the same closing/historical reference quotes."))
+                        Text(PulseLocalization.localizedString("poolBudget.scenario.referenceQuotes"))
                             .font(PoolType.label).foregroundStyle(.secondary)
                     }
 
                     if selected.isEmpty {
-                        Text(poolCopy("勾选计划后显示预演结果。", "Select plans to see the projection."))
+                        Text(PulseLocalization.localizedString("poolBudget.scenario.selectPrompt"))
                             .font(PoolType.label).foregroundStyle(.secondary)
                     } else {
                         scenarioResult(result)
@@ -1280,15 +1250,15 @@ struct PoolScenarioView: View {
     private func planPicker(_ entries: [TradePlanEntry]) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Text(poolCopy("选择计划", "Plans")).font(PoolType.chip)
+                Text(PulseLocalization.localizedString("poolBudget.scenario.plans")).font(PoolType.chip)
                 Spacer()
-                Button(poolCopy("全选", "All")) { selectedPlanIDs = Set(entries.map(\.id)) }
+                Button(PulseLocalization.localizedString("poolBudget.scenario.selectAll")) { selectedPlanIDs = Set(entries.map(\.id)) }
                     .buttonStyle(.borderless).controlSize(.small)
-                Button(poolCopy("清空", "Clear")) { selectedPlanIDs.removeAll() }
+                Button(PulseLocalization.localizedString("poolBudget.scenario.clear")) { selectedPlanIDs.removeAll() }
                     .buttonStyle(.borderless).controlSize(.small)
             }
             if entries.isEmpty {
-                Text(poolCopy("当前没有待执行的计划。", "No active plans right now."))
+                Text(PulseLocalization.localizedString("poolBudget.scenario.noActivePlans"))
                     .font(PoolType.label).foregroundStyle(.secondary)
             }
             ForEach(entries) { entry in
@@ -1300,10 +1270,10 @@ struct PoolScenarioView: View {
                 )) {
                     HStack(spacing: 6) {
                         Text(entry.symbol.displayCode).font(PoolType.chip)
-                        Text(entry.plan.kind == .buy ? poolCopy("买入", "Buy") : poolCopy("卖出", "Sell"))
+                        Text(PulseLocalization.localizedString(entry.plan.kind == .buy ? "poolBudget.scenario.buy" : "poolBudget.scenario.sell"))
                             .font(PoolType.label)
                             .foregroundStyle(entry.plan.kind == .buy ? Color.blue : Color.orange)
-                        Text(poolCopy("剩余", "Remaining") + " "
+                        Text(PulseLocalization.localizedString("poolBudget.scenario.remainingPrefix")
                              + PriceFormatter.quantity(entry.remainingQuantity)
                              + " @ " + PriceFormatter.price(entry.plan.price, market: entry.symbol.market))
                             .font(PoolType.label.monospacedDigit())
@@ -1328,7 +1298,7 @@ struct PoolScenarioView: View {
 
             ForEach(result.currencies) { currency in
                 if currency.hasOverflow {
-                    Text(currency.code + " · " + poolCopy("金额溢出，无法预演", "Amount overflow; preview unavailable"))
+                    Text(currency.code + " · " + PulseLocalization.localizedString("poolBudget.scenario.overflow"))
                         .font(PoolType.label).foregroundStyle(.orange)
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
@@ -1345,35 +1315,35 @@ struct PoolScenarioView: View {
                         // for this currency.
                         let hasBlockedSells = result.overSellWarnings.contains { $0.currencyCode == currency.code }
                         HStack(spacing: 14) {
-                            figure(poolCopy("现金（前）", "Cash before"),
+                            figure(PulseLocalization.localizedString("poolBudget.scenario.cashBefore"),
                                    currency.cashBalance.map { PriceFormatter.money($0, currencyCode: currency.code) })
-                            figure(poolCopy("现金（后，假设全部成交）", "Cash after (if all fill)"),
+                            figure(PulseLocalization.localizedString("poolBudget.scenario.cashAfter"),
                                    netCash.map { PriceFormatter.money($0, currencyCode: currency.code) }, assumed: true)
                             if hasBlockedSells {
-                                figure(poolCopy("卖出回收待核对", "Sale proceeds pending review"), nil)
+                                figure(PulseLocalization.localizedString("poolBudget.scenario.proceedsPending"), nil)
                             } else {
-                                figure(poolCopy("计划价回收（未计入手头现金）", "Sale proceeds (not spendable yet)"),
+                                figure(PulseLocalization.localizedString("poolBudget.scenario.proceedsPlanned"),
                                        PriceFormatter.money(currency.plannedSellAmount, currencyCode: currency.code))
                             }
                         }
 
                         HStack(spacing: 14) {
-                            figure(poolCopy("持仓（前）", "Holdings before"),
+                            figure(PulseLocalization.localizedString("poolBudget.scenario.holdingsBefore"),
                                    PriceFormatter.money(currency.holdingsBefore, currencyCode: currency.code))
-                            figure(poolCopy("持仓（后）", "Holdings after"),
+                            figure(PulseLocalization.localizedString("poolBudget.scenario.holdingsAfter"),
                                    PriceFormatter.money(currency.holdingsAfter, currencyCode: currency.code),
                                    assumed: true)
                             // The purchase gap deliberately does not offset
                             // pending sales, so it answers "can I afford this
                             // today". With no recorded balance there is no gap
                             // to state.
-                            figure(poolCopy("购买预算缺口（不减待售）", "Purchase gap (sales not netted)"),
+                            figure(PulseLocalization.localizedString("poolBudget.scenario.purchaseGap"),
                                    currency.cashBalance == nil
                                    ? nil
                                    : PriceFormatter.money(currency.purchaseBudgetGap, currencyCode: currency.code))
                         }
 
-                        figure(poolCopy("前三集中度（前 → 后）", "Top-three concentration (before → after)"),
+                        figure(PulseLocalization.localizedString("poolBudget.scenario.topThree"),
                                String(format: "%.1f%% → %.1f%%", currency.topThreeBefore, currency.topThreeAfter))
                         ForEach(currency.holdings) { holding in
                             HStack(spacing: 8) {
@@ -1386,7 +1356,7 @@ struct PoolScenarioView: View {
                         }
 
                         if !currency.sectors.isEmpty {
-                            Text(poolCopy("板块", "Sectors")).font(PoolType.labelMedium)
+                            Text(PulseLocalization.localizedString("poolBudget.scenario.sectors")).font(PoolType.labelMedium)
                             ForEach(currency.sectors) { sector in
                                 HStack(spacing: 8) {
                                     Text(sector.name).font(PoolType.label)
@@ -1401,7 +1371,7 @@ struct PoolScenarioView: View {
                         }
 
                         if !currency.pools.isEmpty {
-                            Text(poolCopy("池", "Pools")).font(PoolType.labelMedium)
+                            Text(PulseLocalization.localizedString("poolBudget.scenario.pools")).font(PoolType.labelMedium)
                             ForEach(currency.pools) { pool in
                                 HStack(spacing: 8) {
                                     Image(systemName: pool.pool.symbolName)
@@ -1418,11 +1388,13 @@ struct PoolScenarioView: View {
                                             .font(PoolType.label.monospacedDigit()).foregroundStyle(.secondary)
                                     }
                                     if pool.overLimitAmount > 0 {
-                                        Text(poolCopy("超 ", "over ") + PriceFormatter.money(pool.overLimitAmount, currencyCode: currency.code))
+                                        Text(PulseLocalization.localizedString("poolBudget.scenario.overPrefix")
+                                             + PriceFormatter.money(pool.overLimitAmount, currencyCode: currency.code))
                                             .font(PoolType.label).foregroundStyle(.orange)
                                     }
                                     if pool.needsReconciliation {
-                                        Text(poolCopy("待核对下限", "Review floor")).font(PoolType.label).foregroundStyle(.orange)
+                                        Text(PulseLocalization.localizedString("poolBudget.scenario.reviewFloor"))
+                                            .font(PoolType.label).foregroundStyle(.orange)
                                     }
                                 }
                             }
@@ -1433,7 +1405,7 @@ struct PoolScenarioView: View {
                 }
             }
 
-            Text(poolCopy("预演不会修改真实持仓。", "The preview does not modify real positions."))
+            Text(PulseLocalization.localizedString("poolBudget.scenario.noModify"))
                 .font(PoolType.labelMedium).foregroundStyle(.secondary)
         }
     }
@@ -1445,7 +1417,7 @@ struct PoolScenarioView: View {
                 Text(assumed ? PoolAmountText.assumed(value) : value)
                     .font(assumed ? PoolType.assumedNumber : PoolType.number)
             } else {
-                Text(poolCopy("未知", "Unknown")).font(PoolType.number).foregroundStyle(.secondary)
+                Text(PulseLocalization.localizedString("poolBudget.scenario.unknown")).font(PoolType.number).foregroundStyle(.secondary)
             }
         }
     }
@@ -1453,34 +1425,31 @@ struct PoolScenarioView: View {
     @ViewBuilder
     private func savedScenarios(_ entries: [TradePlanEntry]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(poolCopy("已保存的预演", "Saved previews")).font(PoolType.chip)
+            Text(PulseLocalization.localizedString("poolBudget.scenario.saved")).font(PoolType.chip)
 
             HStack(spacing: 6) {
-                TextField(poolCopy("预演名称", "Preview name"), text: $scenarioName)
+                TextField(PulseLocalization.localizedString("poolBudget.scenario.name"), text: $scenarioName)
                     .textFieldStyle(.roundedBorder).frame(width: 200)
-                Button(poolCopy("保存选择", "Save selection")) {
+                Button(PulseLocalization.localizedString("poolBudget.scenario.saveSelection")) {
                     guard accountMatchesDraft else {
-                        message = poolCopy("当前账号已切换，预演不会保存到其他账号。请重新打开。",
-                                           "The account changed. This preview will not be saved into another account; reopen it.")
+                        message = PulseLocalization.localizedString("poolBudget.scenario.error.accountChanged")
                         return
                     }
                     guard let scenario = appState.poolBudgets.saveScenario(
                         name: scenarioName, planIDs: Array(selectedPlanIDs)
                     ) else {
-                        message = poolCopy("保存失败：请填写名称并至少勾选一个计划。",
-                                           "Save failed: enter a name and select at least one plan.")
+                        message = PulseLocalization.localizedString("poolBudget.scenario.error.saveFailed")
                         return
                     }
                     scenarioName = ""
-                    message = poolCopy("已保存「\(scenario.name)」；保存的是选择，重算时使用当前计划。",
-                                       "Saved “\(scenario.name)”. The selection is stored; the current plans are used when it is recalculated.")
+                    message = PulseLocalization.localizedString("poolBudget.scenario.savedMessage", scenario.name)
                 }
                 .disabled(selectedPlanIDs.isEmpty || !accountMatchesDraft)
                 Spacer()
             }
 
             if appState.poolBudgets.scenarios.isEmpty {
-                Text(poolCopy("尚未保存任何预演。", "No saved previews yet."))
+                Text(PulseLocalization.localizedString("poolBudget.scenario.empty"))
                     .font(PoolType.label).foregroundStyle(.secondary)
             }
 
@@ -1489,32 +1458,29 @@ struct PoolScenarioView: View {
                 let missing = scenario.planIDs.filter { !known.contains($0) }
                 HStack(spacing: 8) {
                     Text(scenario.name).font(PoolType.chip)
-                    Text(poolCopy("\(scenario.planIDs.count) 个计划", "\(scenario.planIDs.count) plans"))
+                    Text(PulseLocalization.localizedString("poolBudget.scenario.planCount", scenario.planIDs.count))
                         .font(PoolType.label).foregroundStyle(.secondary)
                     if !missing.isEmpty {
                         // A saved selection can outlive the plans it names.
                         // Say how many, rather than silently loading a subset.
-                        Text(poolCopy("\(missing.count) 个计划已失效或不存在",
-                                      "\(missing.count) plans are gone or inactive"))
+                        Text(PulseLocalization.localizedString("poolBudget.scenario.plansGone", missing.count))
                             .font(PoolType.label).foregroundStyle(.orange)
                     }
                     Spacer(minLength: 4)
-                    Button(poolCopy("载入", "Load")) {
+                    Button(PulseLocalization.localizedString("poolBudget.scenario.load")) {
                         selectedPlanIDs = Set(scenario.planIDs.filter { known.contains($0) })
                         message = missing.isEmpty
-                            ? poolCopy("已载入；使用当前计划重算。", "Loaded; recalculated from the current plans.")
-                            : poolCopy("已载入可用计划；\(missing.count) 个计划已失效或不存在。",
-                                       "Loaded the available plans; \(missing.count) are gone or inactive.")
+                            ? PulseLocalization.localizedString("poolBudget.scenario.loaded")
+                            : PulseLocalization.localizedString("poolBudget.scenario.loadedPartial", missing.count)
                     }
                     .buttonStyle(.borderless).controlSize(.small)
-                    Button(poolCopy("删除", "Delete")) {
+                    Button(PulseLocalization.localizedString("poolBudget.scenario.delete")) {
                         guard accountMatchesDraft else {
-                            message = poolCopy("当前账号已切换，不会删除其他账号的预演。",
-                                               "The account changed; another account's previews are not deleted.")
+                            message = PulseLocalization.localizedString("poolBudget.scenario.error.deleteAccountChanged")
                             return
                         }
                         if !appState.poolBudgets.deleteScenario(id: scenario.id) {
-                            message = poolCopy("删除失败。", "Delete failed.")
+                            message = PulseLocalization.localizedString("poolBudget.scenario.error.deleteFailed")
                         }
                     }
                     .buttonStyle(.borderless).controlSize(.small)
@@ -1522,8 +1488,7 @@ struct PoolScenarioView: View {
             }
 
             if message != nil {
-                Text(poolCopy("保存的是勾选结果；计划本身变化后需重新载入。",
-                              "The saved item is your selection; reload it after the plans themselves change."))
+                Text(PulseLocalization.localizedString("poolBudget.scenario.footnote"))
                     .font(PoolType.label).foregroundStyle(.secondary)
             }
         }

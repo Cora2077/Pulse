@@ -4,7 +4,18 @@ import PulseUI
 
 /// Cross-symbol trade history and post-trade notes for the main window.
 struct TradeJournalView: View {
-    enum ReviewScope: String, CaseIterable { case today = "今日", pending = "待补", all = "全部" }
+    /// The raw value is the stored/round-trip key; the UI shows `title`.
+    enum ReviewScope: String, CaseIterable {
+        case today = "今日", pending = "待补", all = "全部"
+
+        var title: String {
+            switch self {
+            case .today: PulseLocalization.localizedString("journal.scope.today")
+            case .pending: PulseLocalization.localizedString("journal.scope.pending")
+            case .all: PulseLocalization.localizedString("journal.scope.all")
+            }
+        }
+    }
     private struct TradeKey: Hashable {
         let symbol: SymbolID
         let transactionID: UUID
@@ -27,9 +38,9 @@ struct TradeJournalView: View {
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .unset: "未记录"
-            case .yes: "是"
-            case .no: "否"
+            case .unset: PulseLocalization.localizedString("journal.plan.unset")
+            case .yes: PulseLocalization.localizedString("journal.plan.yes")
+            case .no: PulseLocalization.localizedString("journal.plan.no")
             }
         }
         var value: Bool? {
@@ -234,20 +245,20 @@ struct TradeJournalView: View {
         HStack(spacing: 0) {
             VStack(spacing: 10) {
                 HStack {
-                    Text("交易复盘")
+                    Text(PulseLocalization.localizedString("journal.title"))
                         .font(.system(size: 20, weight: .semibold))
                     Spacer()
-                    Button("策略分析") { showStrategyAnalysis = true }
+                    Button(PulseLocalization.localizedString("journal.strategy.button")) { showStrategyAnalysis = true }
                         .controlSize(.small)
-                    Text("\(filteredEntries.count) 笔")
+                    Text(PulseLocalization.localizedString("journal.count", filteredEntries.count))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
                 HStack(spacing: 8) {
-                    TextField("搜索代码或名称", text: $query)
+                    TextField(PulseLocalization.localizedString("journal.search.placeholder"), text: $query)
                         .textFieldStyle(.roundedBorder)
-                    Picker("月份", selection: $selectedMonth) {
-                        Text("全部月份").tag(nil as Date?)
+                    Picker(PulseLocalization.localizedString("journal.month"), selection: $selectedMonth) {
+                        Text(PulseLocalization.localizedString("journal.month.all")).tag(nil as Date?)
                         ForEach(monthOptions, id: \.self) { month in
                             Text(PositionDateFormat.monthGroup(month)).tag(Optional(month))
                         }
@@ -257,13 +268,13 @@ struct TradeJournalView: View {
                     .fixedSize()
                 }
                 HStack(spacing: 6) {
-                    Picker("记录范围", selection: $reviewScope) {
-                        ForEach(ReviewScope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    Picker(PulseLocalization.localizedString("journal.scope"), selection: $reviewScope) {
+                        ForEach(ReviewScope.allCases, id: \.self) { Text($0.title).tag($0) }
                     }.pickerStyle(.segmented).labelsHidden()
                 }
-                Text("按记录日期（本机）").font(.caption2).foregroundStyle(.secondary)
+                Text(PulseLocalization.localizedString("journal.dateBasis")).font(.caption2).foregroundStyle(.secondary)
                 if !summaries.isEmpty {
-                    Text("月度汇总 · 按月份筛选的完整流水")
+                    Text(PulseLocalization.localizedString("journal.summary.heading"))
                         .font(.caption2).foregroundStyle(.secondary)
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 6) {
@@ -274,15 +285,26 @@ struct TradeJournalView: View {
                                         Text(summary.currencyCode).fontWeight(.semibold)
                                         Spacer(minLength: 4)
                                     }
-                                    Text("\(summaryLabel("已实现", "Realized")) \(summary.realizedPnL.map { PriceFormatter.signedMoney($0, currencyCode: summary.currencyCode) } ?? "—")")
+                                    Text(PulseLocalization.localizedString(
+                                        "journal.summary.realized",
+                                        summary.realizedPnL.map { PriceFormatter.signedMoney($0, currencyCode: summary.currencyCode) } ?? "—"
+                                    ))
                                         .foregroundStyle(summary.realizedPnL.map { appState.palette.color(isUp: $0 >= 0) } ?? Color.secondary)
                                     HStack(spacing: 8) {
-                                        Text("\(summaryLabel("已记费用", "Recorded fees")) \(summary.fees.map { PriceFormatter.money($0, currencyCode: summary.currencyCode) } ?? "—")")
-                                        Text(summaryLabel("未记/无效", "Unknown/invalid") + " \(summary.missingFeeCount)")
+                                        Text(PulseLocalization.localizedString(
+                                            "journal.summary.fees",
+                                            summary.fees.map { PriceFormatter.money($0, currencyCode: summary.currencyCode) } ?? "—"
+                                        ))
+                                        Text(PulseLocalization.localizedString("journal.summary.unknownFees", summary.missingFeeCount))
                                     }
                                     Text(summary.followedPlanPercent.map {
-                                        "\(summaryLabel("按计划", "On plan")) \(summary.followedPlanYesCount)/\(summary.reviewedCount) (\(Int($0.rounded()))%)"
-                                    } ?? summaryLabel("按计划：未填写", "On plan: not reviewed"))
+                                        PulseLocalization.localizedString(
+                                            "journal.summary.onPlan",
+                                            summary.followedPlanYesCount,
+                                            summary.reviewedCount,
+                                            Int($0.rounded())
+                                        )
+                                    } ?? PulseLocalization.localizedString("journal.summary.onPlanUnset"))
                                         .foregroundStyle(.secondary)
                                 }
                                 .font(.system(size: 10, design: .monospaced))
@@ -292,11 +314,8 @@ struct TradeJournalView: View {
                     }
                     .frame(maxHeight: summaries.count > 1 ? 168 : 90)
                     .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
-                    .accessibilityLabel(summaryLabel("月度汇总", "Monthly summaries"))
-                    .help(summaryLabel(
-                        "已实现盈亏按完整交易流水计算，包含已记录交易费用。执行率仅计明确填写是/否的交易；校准不产生已实现盈亏，也不计入费用或执行率。",
-                        "Realized P&L uses the full ledger and recorded fees. On-plan rate counts explicit yes/no answers. Adjustments realize no P&L and do not count toward fees or reviews."
-                    ))
+                    .accessibilityLabel(PulseLocalization.localizedString("journal.summary.title"))
+                    .help(PulseLocalization.localizedString("journal.summary.help"))
                 }
                 List(selection: $selection) {
                     ForEach(filteredEntries) { entry in
@@ -307,7 +326,7 @@ struct TradeJournalView: View {
                 .listStyle(.inset)
                 .overlay {
                     if filteredEntries.isEmpty {
-                        ContentUnavailableView("没有交易记录", systemImage: "book.closed")
+                        ContentUnavailableView(PulseLocalization.localizedString("journal.empty.entries"), systemImage: "book.closed")
                     }
                 }
             }
@@ -344,8 +363,8 @@ struct TradeJournalView: View {
         .sheet(isPresented: $showStrategyAnalysis) {
             TradeStrategySummaryView(query: query, selectedMonth: selectedMonth)
         }
-        .alert("这笔交易已不存在", isPresented: $saveError) {
-            Button("好", role: .cancel) { }
+        .alert(PulseLocalization.localizedString("journal.error.missing.title"), isPresented: $saveError) {
+            Button(PulseLocalization.localizedString("journal.error.ok"), role: .cancel) { }
         }
     }
 
@@ -382,7 +401,7 @@ struct TradeJournalView: View {
                 Text(reason).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
             }
             if checkpointDue(entry.transaction) {
-                Label("检查点到期", systemImage: "calendar.badge.clock").font(.caption2).foregroundStyle(.orange)
+                Label(PulseLocalization.localizedString("journal.checkpoint.due"), systemImage: "calendar.badge.clock").font(.caption2).foregroundStyle(.orange)
             }
         }
         .padding(.vertical, 3)
@@ -402,13 +421,16 @@ struct TradeJournalView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button("打开标的") { onSelect(entry.item.symbol) }
+                        Button(PulseLocalization.localizedString("journal.detail.openSymbol")) { onSelect(entry.item.symbol) }
                         // Named from the account the draft was loaded under, so
                         // the ledger this review lands in is never ambiguous.
                         let captionAccount = frozenAccount ?? appState.watchlist.activeBrokerageAccountID
                         HStack(spacing: 5) {
                             Circle().fill(AccountIdentity.dotColor(captionAccount)).frame(width: 5, height: 5)
-                            Text("复盘记入：\(AccountIdentity.title(captionAccount))")
+                            Text(PulseLocalization.localizedString(
+                                "journal.detail.accountCaption",
+                                AccountIdentity.title(captionAccount)
+                            ))
                                 .font(.system(size: 10))
                                 .foregroundStyle(accountMatchesDraft
                                     ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
@@ -418,36 +440,45 @@ struct TradeJournalView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 7) {
-                        detailLine("成交", "\(kindName(entry.transaction.kind)) · \(fullDate(entry.transaction.date))")
-                        detailLine("价格", PriceFormatter.price(entry.transaction.price, market: entry.item.symbol.market))
-                        detailLine("数量", PriceFormatter.quantity(entry.transaction.quantity))
+                        detailLine(PulseLocalization.localizedString("journal.detail.trade"),
+                                   PulseLocalization.localizedString("journal.detail.tradeValue", kindName(entry.transaction.kind), fullDate(entry.transaction.date)))
+                        detailLine(PulseLocalization.localizedString("journal.detail.price"), PriceFormatter.price(entry.transaction.price, market: entry.item.symbol.market))
+                        detailLine(PulseLocalization.localizedString("journal.detail.quantity"), PriceFormatter.quantity(entry.transaction.quantity))
                         if entry.transaction.kind == .buy {
-                            detailLine("实际资金", fundingSourceTitle(entry.transaction.fundingSource))
+                            detailLine(PulseLocalization.localizedString("journal.detail.funding"), fundingSourceTitle(entry.transaction.fundingSource))
                         }
                         if let fee = entry.transaction.fee {
-                            detailLine("费用", PriceFormatter.money(fee, currencyCode: entry.item.symbol.currencyCode))
+                            detailLine(PulseLocalization.localizedString("journal.detail.fee"), PriceFormatter.money(fee, currencyCode: entry.item.symbol.currencyCode))
                         }
                         if let realizedPnL = entry.realizedPnL {
-                            detailLine("已实现盈亏", PriceFormatter.signedMoney(realizedPnL, currencyCode: entry.item.symbol.currencyCode))
+                            detailLine(PulseLocalization.localizedString("journal.detail.realized"), PriceFormatter.signedMoney(realizedPnL, currencyCode: entry.item.symbol.currencyCode))
                         }
                     }
 
                     if let context = planContext {
                         VStack(alignment: .leading, spacing: 5) {
                             HStack(spacing: 6) {
-                                Text("关联计划").font(.system(size: 12, weight: .semibold))
+                                Text(PulseLocalization.localizedString("journal.plan.title")).font(.system(size: 12, weight: .semibold))
                                 Spacer(minLength: 0)
-                                Text(context.isSnapshot ? "成交时快照" : "当前计划")
+                                Text(PulseLocalization.localizedString(context.isSnapshot ? "journal.plan.snapshot" : "journal.plan.current"))
                                     .font(.system(size: 9))
                                     .foregroundStyle(.tertiary)
                             }
-                            Text("\(context.kind == .buy ? "买入" : "卖出") · \(PriceFormatter.price(context.price, market: entry.item.symbol.market)) × \(PriceFormatter.quantity(context.quantity))")
+                            Text(PulseLocalization.localizedString(
+                                "journal.plan.line",
+                                PulseLocalization.localizedString(context.kind == .buy ? "journal.kind.buy" : "journal.kind.sell"),
+                                PriceFormatter.price(context.price, market: entry.item.symbol.market),
+                                PriceFormatter.quantity(context.quantity)
+                            ))
                                 .font(.system(size: 11))
-                            Text("用途 \(context.positionPool?.title ?? "未分配")")
+                            Text(PulseLocalization.localizedString(
+                                "journal.plan.pool",
+                                context.positionPool?.title ?? PulseLocalization.localizedString("journal.plan.poolUnassigned")
+                            ))
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                             if context.kind == .buy {
-                                Text("拟用资金 \(fundingSourceTitle(context.fundingSource))")
+                                Text(PulseLocalization.localizedString("journal.plan.plannedFunding", fundingSourceTitle(context.fundingSource)))
                                     .font(.system(size: 11)).foregroundStyle(.secondary)
                             }
                             if let note = context.note, !note.isEmpty {
@@ -455,7 +486,7 @@ struct TradeJournalView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             if context.conditions.isEmpty {
-                                Text("计划条件：无").font(.system(size: 11)).foregroundStyle(.secondary)
+                                Text(PulseLocalization.localizedString("journal.plan.noConditions")).font(.system(size: 11)).foregroundStyle(.secondary)
                             } else {
                                 ForEach(context.conditions) { condition in
                                     HStack(spacing: 5) {
@@ -470,13 +501,13 @@ struct TradeJournalView: View {
                             }
                             if !context.isSnapshot {
                                 Text(context.revisionCount > 0
-                                    ? "原计划此后已修改 \(context.revisionCount) 次，以上为其当前配置。"
-                                    : "以上为原计划的当前配置。")
+                                    ? PulseLocalization.localizedString("journal.plan.revised", context.revisionCount)
+                                    : PulseLocalization.localizedString("journal.plan.unrevised"))
                                     .font(.system(size: 10))
                                     .foregroundStyle(.tertiary)
                                     .fixedSize(horizontal: false, vertical: true)
                             } else {
-                                Text("按成交时记录的计划快照显示；计划即使已删除，这里仍然可见。")
+                                Text(PulseLocalization.localizedString("journal.plan.snapshotNote"))
                                     .font(.system(size: 10))
                                     .foregroundStyle(.tertiary)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -490,10 +521,10 @@ struct TradeJournalView: View {
                     executionDeviationCard
 
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("执行理由").font(.system(size: 12, weight: .semibold))
+                        Text(PulseLocalization.localizedString("journal.note.title")).font(.system(size: 12, weight: .semibold))
                         TextEditor(text: $note)
                             .font(.system(size: 12))
-                            .accessibilityLabel("执行理由")
+                            .accessibilityLabel(PulseLocalization.localizedString("journal.note.title"))
                             .scrollContentBackground(.hidden)
                             .frame(minHeight: 55, maxHeight: 85)
                             .padding(5)
@@ -501,9 +532,9 @@ struct TradeJournalView: View {
                     }
 
                     HStack {
-                        Text("是否按计划执行").font(.system(size: 12, weight: .semibold))
+                        Text(PulseLocalization.localizedString("journal.followedPlan.title")).font(.system(size: 12, weight: .semibold))
                         Spacer()
-                        Picker("是否按计划执行", selection: $followedPlan) {
+                        Picker(PulseLocalization.localizedString("journal.followedPlan.title"), selection: $followedPlan) {
                             ForEach(PlanChoice.allCases) { choice in
                                 Text(choice.title).tag(choice)
                             }
@@ -514,23 +545,23 @@ struct TradeJournalView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("策略标签").font(.system(size: 12, weight: .semibold))
+                        Text(PulseLocalization.localizedString("journal.strategy.title")).font(.system(size: 12, weight: .semibold))
                         HStack {
-                            TextField("例如：突破、回踩、做 T", text: $strategy)
+                            TextField(PulseLocalization.localizedString("journal.strategy.placeholder"), text: $strategy)
                                 .textFieldStyle(.roundedBorder)
-                            Menu("常用") {
-                                ForEach(["突破", "回踩", "做 T", "趋势", "事件"], id: \.self) { label in
-                                    Button(label) { strategy = label }
+                            Menu(PulseLocalization.localizedString("journal.strategy.presets")) {
+                                ForEach(Self.strategyPresets, id: \.self) { label in
+                                    Button(Self.strategyPresetTitle(label)) { strategy = label }
                                 }
                             }.fixedSize()
                         }
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("复盘记录").font(.system(size: 12, weight: .semibold))
+                        Text(PulseLocalization.localizedString("journal.retrospective.title")).font(.system(size: 12, weight: .semibold))
                         TextEditor(text: $retrospective)
                             .font(.system(size: 12))
-                            .accessibilityLabel("复盘记录")
+                            .accessibilityLabel(PulseLocalization.localizedString("journal.retrospective.title"))
                             .scrollContentBackground(.hidden)
                             .frame(minHeight: 90, maxHeight: 220)
                             .padding(5)
@@ -538,22 +569,22 @@ struct TradeJournalView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
-                        Toggle("设置下一次检查点", isOn: $schedulesReview).toggleStyle(.checkbox)
+                        Toggle(PulseLocalization.localizedString("journal.checkpoint.schedule"), isOn: $schedulesReview).toggleStyle(.checkbox)
                         if schedulesReview {
-                            DatePicker("检查日期", selection: $nextReviewDate, displayedComponents: .date)
+                            DatePicker(PulseLocalization.localizedString("journal.checkpoint.date"), selection: $nextReviewDate, displayedComponents: .date)
                         }
-                        TextField("下次要核对什么（选填）", text: $nextReviewNote, axis: .vertical)
+                        TextField(PulseLocalization.localizedString("journal.checkpoint.notePlaceholder"), text: $nextReviewNote, axis: .vertical)
                             .textFieldStyle(.roundedBorder).lineLimit(1...3)
                     }
 
                     HStack {
                         if saved {
-                            Label("已保存", systemImage: "checkmark.circle.fill")
+                            Label(PulseLocalization.localizedString("journal.saved"), systemImage: "checkmark.circle.fill")
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button("保存复盘", action: saveReview)
+                        Button(PulseLocalization.localizedString("journal.save"), action: saveReview)
                             .buttonStyle(.borderedProminent)
                             .disabled(nextReviewNote.count > 4_000)
                     }
@@ -562,7 +593,7 @@ struct TradeJournalView: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         } else {
-            ContentUnavailableView("选择一笔交易", systemImage: "text.book.closed")
+            ContentUnavailableView(PulseLocalization.localizedString("journal.empty.selection"), systemImage: "text.book.closed")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -575,8 +606,16 @@ struct TradeJournalView: View {
         .font(.system(size: 11))
     }
 
-    private func summaryLabel(_ chinese: String, _ english: String) -> String {
-        PulseLocalization.currentLanguageIdentifier.hasPrefix("zh") ? chinese : english
+    /// The preset menu offers localized labels; picking one still writes the
+    /// original preset text into the stored review, so existing records and the
+    /// strategy summary keep reading the same values.
+    private static let strategyPresets = ["突破", "回踩", "做 T", "趋势", "事件"]
+
+    private static func strategyPresetTitle(_ preset: String) -> String {
+        let keys = ["突破": "journal.strategy.breakout", "回踩": "journal.strategy.pullback",
+                    "做 T": "journal.strategy.intraday", "趋势": "journal.strategy.trend",
+                    "事件": "journal.strategy.event"]
+        return keys[preset].map { PulseLocalization.localizedString($0) } ?? preset
     }
 
     // MARK: - Execution deviation
@@ -594,7 +633,7 @@ struct TradeJournalView: View {
     @ViewBuilder private var executionDeviationCard: some View {
         let entry = selectedEntry
         VStack(alignment: .leading, spacing: 5) {
-            Text("执行偏差").font(.system(size: 12, weight: .semibold))
+            Text(PulseLocalization.localizedString("journal.deviation.title")).font(.system(size: 12, weight: .semibold))
             if let entry {
                 deviationLine(
                     context: planContext,
@@ -615,38 +654,41 @@ struct TradeJournalView: View {
     ) -> some View {
         if let context, let deviation = context.deviation(for: transaction) {
             let money = PriceFormatter.money(deviation.amount, currencyCode: currency)
-            let label = deviation.isFavourable
-                ? (context.kind == .buy ? "本笔买入价低于原计划" : "本笔卖出价高于原计划")
-                : (context.kind == .buy ? "本笔买入价高于原计划" : "本笔卖出价低于原计划")
+            let key = deviation.isFavourable
+                ? (context.kind == .buy ? "journal.deviation.buyLower" : "journal.deviation.sellHigher")
+                : (context.kind == .buy ? "journal.deviation.buyHigher" : "journal.deviation.sellLower")
             HStack(alignment: .firstTextBaseline) {
-                Text(label).foregroundStyle(.secondary)
+                Text(PulseLocalization.localizedString(key)).foregroundStyle(.secondary)
                 Spacer(minLength: 6)
                 Text(money)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(appState.palette.color(isUp: deviation.isFavourable))
             }
             .font(.system(size: 11))
-            Text("按本笔成交数量计算的价差金额，不是已实现盈亏。")
+            Text(PulseLocalization.localizedString("journal.deviation.amountNote"))
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         } else if let context {
-            Text("本笔成交价与原计划一致。")
+            Text(PulseLocalization.localizedString("journal.deviation.equal"))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text("比较基准是\(context.isSnapshot ? "成交时记录的计划快照" : "原计划的当前配置")。")
+            Text(PulseLocalization.localizedString(
+                "journal.deviation.basis",
+                PulseLocalization.localizedString(context.isSnapshot ? "journal.deviation.basis.snapshot" : "journal.deviation.basis.current")
+            ))
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
         } else {
-            Text("这笔成交没有关联计划，无法比较执行价格。")
+            Text(PulseLocalization.localizedString("journal.deviation.noPlan"))
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if let context, !context.isSnapshot {
             Text(context.revisionCount > 0
-                ? "当前计划相对最早配置已修改 \(context.revisionCount) 次。"
-                : "当前计划自创建以来未再修改。")
+                ? PulseLocalization.localizedString("journal.deviation.revised", context.revisionCount)
+                : PulseLocalization.localizedString("journal.deviation.unrevised"))
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -714,9 +756,9 @@ struct TradeJournalView: View {
 
     private func kindName(_ kind: PositionTransaction.Kind) -> String {
         switch kind {
-        case .buy: "买入"
-        case .sell: "卖出"
-        case .adjustment: "校准"
+        case .buy: PulseLocalization.localizedString("journal.kind.buy")
+        case .sell: PulseLocalization.localizedString("journal.kind.sell")
+        case .adjustment: PulseLocalization.localizedString("journal.kind.adjustment")
         }
     }
 
@@ -733,11 +775,6 @@ extension TradePlanCondition {
     /// the journal so the two-word vocabulary stays with the surface that
     /// shows it.
     var stateTitle: String {
-        switch state {
-        case .pending: "待确认"
-        case .confirmed: "已确认"
-        case .needsReview: "需复核"
-        case .invalidated: "已失效"
-        }
+        PulseLocalization.localizedString("journal.condition.state.\(state.rawValue)")
     }
 }

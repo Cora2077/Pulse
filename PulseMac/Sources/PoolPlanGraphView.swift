@@ -67,9 +67,7 @@ struct PoolPlanCardFace: View {
     private var sideColor: Color { PlanSideStyle.color(for: entry.plan.kind) }
     private var isUnassignedPool: Bool { entry.plan.positionPool == nil }
     private var kindTitle: String {
-        entry.plan.kind == .buy
-            ? poolCopy("计划买入", "Planned buy")
-            : poolCopy("计划卖出", "Planned sell")
+        PulseLocalization.localizedString(entry.plan.kind == .buy ? "poolPlan.kind.buy" : "poolPlan.kind.sell")
     }
     /// What this card says about where the plan's shares come from or go.
     ///
@@ -80,16 +78,16 @@ struct PoolPlanCardFace: View {
     /// from any pool, so the label must not imply one.
     private var poolLabel: String {
         guard let pool = entry.plan.positionPool else {
-            return entry.plan.kind == .buy
-                ? poolCopy("待归池", "No pool yet")
-                : poolCopy("整标的卖出 · 来源池未指定", "Whole-position sale · source pool unset")
+            return PulseLocalization.localizedString(entry.plan.kind == .buy
+                      ? "poolPlan.pool.none.buy"
+                      : "poolPlan.pool.none.sell")
         }
         return pool.title
     }
     private var planAmountTitle: String {
-        entry.plan.kind == .buy ? poolCopy("待投入", "To spend") : poolCopy("拟回收", "To raise")
+        PulseLocalization.localizedString(entry.plan.kind == .buy ? "poolPlan.amount.toSpend" : "poolPlan.amount.toRaise")
     }
-    private var writeBlockHelp: String { poolCopy("切回当前后可操作", "Switch back to Current to act") }
+    private var writeBlockHelp: String { PulseLocalization.localizedString("poolPlan.writeBlocked.help") }
 
     var body: some View {
         HStack(alignment: .top, spacing: 7) {
@@ -97,7 +95,7 @@ struct PoolPlanCardFace: View {
             VStack(alignment: .leading, spacing: 5) {
                 titleRow
                 if isPreviewExcluded {
-                    Text(poolCopy("未参与预演", "Not in rehearsal"))
+                    Text(PulseLocalization.localizedString("poolPlan.excluded"))
                         .font(PoolType.badge)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
@@ -128,11 +126,11 @@ struct PoolPlanCardFace: View {
             including: (isDraggable && !isWriteBlocked) ? .all : .none
         )
         .accessibilityElement(children: .contain)
-        .accessibilityAction(named: Text(poolCopy("选中计划", "Select plan")), onSelect)
-        .accessibilityAction(named: Text(poolCopy("编辑计划", "Edit plan"))) { if !isWriteBlocked { onEdit() } }
-        .accessibilityAction(named: Text(poolCopy("记录已成交", "Record fill"))) { if !isWriteBlocked { onRecord() } }
-        .accessibilityAction(named: Text(poolCopy("逻辑与修改记录", "Thesis and history"))) { if !isWriteBlocked { onInspect() } }
-        .accessibilityAction(named: Text(poolCopy("清除用途关联", "Clear pool link"))) { if !isWriteBlocked { onAssign(nil) } }
+        .accessibilityAction(named: Text(PulseLocalization.localizedString("poolPlan.action.select")), onSelect)
+        .accessibilityAction(named: Text(PulseLocalization.localizedString("poolPlan.action.edit"))) { if !isWriteBlocked { onEdit() } }
+        .accessibilityAction(named: Text(PulseLocalization.localizedString("poolPlan.action.recordFill"))) { if !isWriteBlocked { onRecord() } }
+        .accessibilityAction(named: Text(PulseLocalization.localizedString("poolPlan.action.inspect"))) { if !isWriteBlocked { onInspect() } }
+        .accessibilityAction(named: Text(PulseLocalization.localizedString("poolPlan.action.clearPool"))) { if !isWriteBlocked { onAssign(nil) } }
         .background {
             if tracksFrame {
                 GeometryReader { proxy in
@@ -158,7 +156,7 @@ struct PoolPlanCardFace: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(poolCopy("纳入预演", "Include in preview"))
+        .accessibilityLabel(PulseLocalization.localizedString("poolPlan.action.include"))
         .accessibilityAddTraits(isChecked ? [.isSelected] : [])
     }
 
@@ -186,8 +184,8 @@ struct PoolPlanCardFace: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .disabled(isWriteBlocked)
-            .help(isWriteBlocked ? writeBlockHelp : poolCopy("计划操作", "Plan actions"))
-            .accessibilityLabel(poolCopy("计划操作", "Plan actions"))
+            .help(isWriteBlocked ? writeBlockHelp : PulseLocalization.localizedString("poolPlan.action.menu"))
+            .accessibilityLabel(PulseLocalization.localizedString("poolPlan.action.menu"))
         }
     }
 
@@ -203,9 +201,9 @@ struct PoolPlanCardFace: View {
                 .padding(.horizontal, 5).padding(.vertical, 2)
                 .background(sideColor.opacity(0.1), in: Capsule())
                 .fixedSize(horizontal: true, vertical: false)
-                .accessibilityLabel(entry.plan.kind == .buy
-                                    ? poolCopy("计划买入", "Planned buy")
-                                    : poolCopy("计划卖出", "Planned sell"))
+                .accessibilityLabel(PulseLocalization.localizedString(entry.plan.kind == .buy
+                                       ? "poolPlan.kind.buy"
+                                       : "poolPlan.kind.sell"))
             Text(PriceFormatter.price(entry.plan.price, market: entry.symbol.market))
                 .font(PoolType.number)
             Text("× \(PriceFormatter.quantity(entry.remainingQuantity))")
@@ -216,7 +214,7 @@ struct PoolPlanCardFace: View {
             PlannedFundingTag(source: entry.plan.fundingSource)
             Spacer(minLength: 0)
             if reached {
-                PoolStatusPill(systemImage: "target", text: poolCopy("到价", "At price"), tint: .orange)
+                PoolStatusPill(systemImage: "target", text: PulseLocalization.localizedString("poolPlan.status.atPrice"), tint: .orange)
             }
         }
     }
@@ -251,14 +249,12 @@ struct PoolPlanCardFace: View {
                 // Requested vs actually available, in shares, within the scope
                 // the calculator checked. A global banner cannot say which plan
                 // is short or by how much.
-                Text(poolCopy("可卖 ", "Available ")
-                     + PriceFormatter.quantity(overSell.available)
-                     + poolCopy(" / 计划卖 ", " of ")
-                     + PriceFormatter.quantity(overSell.requested)
-                     + " · "
-                     + (overSell.scope == .position
-                        ? poolCopy("整个持仓不足", "position is short")
-                        : poolCopy("该用途份额不足", "pool share is short")))
+                Text(PulseLocalization.localizedString("poolPlan.overSell.shares",
+                        PriceFormatter.quantity(overSell.available),
+                        PriceFormatter.quantity(overSell.requested),
+                        PulseLocalization.localizedString(overSell.scope == .position
+                           ? "poolPlan.overSell.scopePosition"
+                           : "poolPlan.overSell.scopePool")))
                     .font(PoolType.label.monospacedDigit())
                     .foregroundStyle(.orange)
             }
@@ -270,7 +266,7 @@ struct PoolPlanCardFace: View {
     private func overSellLabel(_ warning: PoolBudgetProjection.OverSellWarning) -> String {
         _ = warning
         let amount = PriceFormatter.money(entry.remainingEstimatedAmount, currencyCode: currencyCode)
-        return poolCopy("卖出计划额（超额，未预演） ", "Planned sale (over-committed, not rehearsed) ") + amount
+        return PulseLocalization.localizedString("poolPlan.overSell.amount", amount)
     }
 
     /// One badge, not a row of state dots.
@@ -286,15 +282,15 @@ struct PoolPlanCardFace: View {
         if entry.filledQuantity > 0 || !(entry.plan.conditions ?? []).isEmpty {
             HStack(spacing: 5) {
                 if entry.filledQuantity > 0 {
-                    Text(poolCopy("已成交 ", "Filled ")
-                         + PriceFormatter.quantity(entry.filledQuantity)
-                         + poolCopy(" · 待执行 ", " · Remaining ")
-                         + PriceFormatter.quantity(entry.remainingQuantity))
+                    Text(PulseLocalization.localizedString("poolPlan.progress.filledRemaining",
+                            PriceFormatter.quantity(entry.filledQuantity),
+                            PriceFormatter.quantity(entry.remainingQuantity)))
                         .font(PoolType.label.monospacedDigit())
                 }
                 Spacer(minLength: 0)
                 if let conditions = entry.plan.conditions, !conditions.isEmpty {
-                    Text(poolCopy("条件 ", "Cond ") + "\(confirmedCount(conditions))/\(conditions.count)")
+                    Text(PulseLocalization.localizedString("poolPlan.progress.conditions",
+                            "\(confirmedCount(conditions))/\(conditions.count)"))
                         .font(PoolType.label.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -315,34 +311,35 @@ struct PoolPlanCardFace: View {
 
     private var actionRow: some View {
         HStack(spacing: 8) {
-            Button(poolCopy("记录成交", "Record fill"), action: onRecord)
-            Button(poolCopy("逻辑 / 历史", "Thesis / history"), action: onInspect).disabled(isWriteBlocked)
+            Button(PulseLocalization.localizedString("poolPlan.action.recordShort"), action: onRecord)
+            Button(PulseLocalization.localizedString("poolPlan.action.thesisShort"), action: onInspect)
+                .disabled(isWriteBlocked)
         }
         .font(PoolType.label).controlSize(.mini)
     }
 
     @ViewBuilder private var menuItems: some View {
-        Button(poolCopy("记录已成交", "Record fill"), action: onRecord)
+        Button(PulseLocalization.localizedString("poolPlan.action.recordFill"), action: onRecord)
         // The workflow sheet edits conditions and writes them back, so it is a
         // write path and is refused in preview like the others.
-        Button(poolCopy("逻辑与修改记录", "Thesis and history"), action: onInspect).disabled(isWriteBlocked)
-        Button(poolCopy("编辑计划", "Edit plan"), action: onEdit)
+        Button(PulseLocalization.localizedString("poolPlan.action.inspect"), action: onInspect).disabled(isWriteBlocked)
+        Button(PulseLocalization.localizedString("poolPlan.action.edit"), action: onEdit)
         Divider()
         ForEach(PositionPool.activeCases, id: \.self) { pool in
-            Button(poolCopy("关联", "Link ") + pool.title) { onAssign(pool) }
+            Button(PulseLocalization.localizedString("poolPlan.action.link", pool.title)) { onAssign(pool) }
         }
-        Button(poolCopy("清除用途关联", "Clear pool link")) { onAssign(nil) }
+        Button(PulseLocalization.localizedString("poolPlan.action.clearPool")) { onAssign(nil) }
     }
 
     @ViewBuilder private var contextMenu: some View {
-        Button(poolCopy("记录已成交", "Record fill"), action: onRecord).disabled(isWriteBlocked)
-        Button(poolCopy("逻辑与修改记录", "Thesis and history"), action: onInspect).disabled(isWriteBlocked)
-        Button(poolCopy("编辑计划", "Edit plan"), action: onEdit).disabled(isWriteBlocked)
+        Button(PulseLocalization.localizedString("poolPlan.action.recordFill"), action: onRecord).disabled(isWriteBlocked)
+        Button(PulseLocalization.localizedString("poolPlan.action.inspect"), action: onInspect).disabled(isWriteBlocked)
+        Button(PulseLocalization.localizedString("poolPlan.action.edit"), action: onEdit).disabled(isWriteBlocked)
         Divider()
         ForEach(PositionPool.activeCases, id: \.self) { pool in
-            Button(poolCopy("关联", "Link ") + pool.title) { onAssign(pool) }.disabled(isWriteBlocked)
+            Button(PulseLocalization.localizedString("poolPlan.action.link", pool.title)) { onAssign(pool) }.disabled(isWriteBlocked)
         }
-        Button(poolCopy("清除用途关联", "Clear pool link")) { onAssign(nil) }.disabled(isWriteBlocked)
+        Button(PulseLocalization.localizedString("poolPlan.action.clearPool")) { onAssign(nil) }.disabled(isWriteBlocked)
     }
 
     private func confirmedCount(_ conditions: [TradePlanCondition]) -> Int {
@@ -413,8 +410,7 @@ struct PoolPlanLineageView: View {
                 Button {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) { showsAllFills = true }
                 } label: {
-                    Text(poolCopy("展开其余 \(fills.count - visibleFills.count) 笔",
-                                  "Show \(fills.count - visibleFills.count) more"))
+                    Text(PulseLocalization.localizedString("poolPlan.lineage.showMore", fills.count - visibleFills.count))
                         .font(PoolType.label)
                 }
                 .buttonStyle(.link)
@@ -428,18 +424,20 @@ struct PoolPlanLineageView: View {
             RoundedRectangle(cornerRadius: 8).stroke(tint.opacity(0.3), lineWidth: 1)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(poolCopy("计划脉络", "Plan lineage"))
+        .accessibilityLabel(PulseLocalization.localizedString("poolPlan.lineage.label"))
     }
 
     private var nodeOne: some View {
         PoolLineageNode(tint: tint) {
             HStack(spacing: 6) {
-                Text(poolCopy("条件", "Conditions")).font(PoolType.labelMedium)
+                Text(PulseLocalization.localizedString("poolPlan.lineage.conditions")).font(PoolType.labelMedium)
                 if conditions.isEmpty {
-                    Text(poolCopy("未设条件", "No conditions")).font(PoolType.label).foregroundStyle(.secondary)
+                    Text(PulseLocalization.localizedString("poolPlan.lineage.noConditions"))
+                        .font(PoolType.label).foregroundStyle(.secondary)
                 } else {
                     Text("\(confirmed)/\(conditions.count)").font(PoolType.label.monospacedDigit())
-                    Text(poolCopy("已确认", "confirmed")).font(PoolType.label).foregroundStyle(.secondary)
+                    Text(PulseLocalization.localizedString("poolPlan.lineage.confirmed"))
+                        .font(PoolType.label).foregroundStyle(.secondary)
                 }
             }
         }
@@ -448,7 +446,9 @@ struct PoolPlanLineageView: View {
     private var nodeTwo: some View {
         PoolLineageNode(tint: tint) {
             HStack(spacing: 6) {
-                Text(entry.plan.kind == .buy ? poolCopy("买入计划", "Buy plan") : poolCopy("卖出计划", "Sell plan"))
+                Text(PulseLocalization.localizedString(entry.plan.kind == .buy
+                       ? "poolPlan.lineage.buyPlan"
+                       : "poolPlan.lineage.sellPlan"))
                     .font(PoolType.labelMedium)
                     .foregroundStyle(sideColor)
                 Text(PriceFormatter.price(entry.plan.price, market: entry.symbol.market))
@@ -458,7 +458,8 @@ struct PoolPlanLineageView: View {
                 if let pool = entry.plan.positionPool {
                     Text("→ \(pool.title)").font(PoolType.label).foregroundStyle(tint)
                 } else {
-                    Text(poolCopy("→ 未指定用途", "→ No pool")).font(PoolType.label).foregroundStyle(.secondary)
+                    Text(PulseLocalization.localizedString("poolPlan.lineage.noPool"))
+                        .font(PoolType.label).foregroundStyle(.secondary)
                 }
             }
         }
@@ -468,7 +469,8 @@ struct PoolPlanLineageView: View {
         PoolLineageNode(tint: tint) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(poolCopy("已成 ", "Filled ") + PriceFormatter.quantity(fill.transaction.quantity))
+                    Text(PulseLocalization.localizedString("poolPlan.lineage.filled",
+                            PriceFormatter.quantity(fill.transaction.quantity)))
                         .font(PoolType.labelMedium.monospacedDigit())
                     Text(fill.transaction.date.formatted(date: .abbreviated, time: .omitted))
                         .font(PoolType.label).foregroundStyle(.secondary)
@@ -476,10 +478,10 @@ struct PoolPlanLineageView: View {
                         .font(PoolType.label.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 if fill.poolTotals.isEmpty {
-                    Text(poolCopy("快照或未分账", "Snapshot or unallocated"))
+                    Text(PulseLocalization.localizedString("poolPlan.lineage.snapshot"))
                         .font(PoolType.label).foregroundStyle(.secondary)
                 } else {
-                    Text(poolCopy("现分布 ", "Now ")
+                    Text(PulseLocalization.localizedString("poolPlan.lineage.nowPrefix")
                          + fill.poolTotals.map { "\($0.pool.title) \(PriceFormatter.quantity($0.quantity))" }
                             .joined(separator: " / "))
                         .font(PoolType.label).foregroundStyle(.secondary)
@@ -490,8 +492,8 @@ struct PoolPlanLineageView: View {
 
     private var unattributedNode: some View {
         PoolLineageNode(tint: tint) {
-            Text(poolCopy("另有快照份额 \(PriceFormatter.quantity(unattributedQuantity)) · 来源未记录，需核对",
-                          "\(PriceFormatter.quantity(unattributedQuantity)) snapshot shares with no recorded origin"))
+            Text(PulseLocalization.localizedString("poolPlan.lineage.unattributed",
+                    PriceFormatter.quantity(unattributedQuantity)))
                 .font(PoolType.label).foregroundStyle(.secondary)
         }
     }
@@ -504,18 +506,18 @@ struct PoolPlanLineageView: View {
                     // estimate: in current mode it is exact and carries no "≈".
                     // The sign is added only when the node itself is
                     // hypothetical, matching the amount line below it.
-                    Text(poolCopy("剩余 ", "Remaining ")
+                    Text(PulseLocalization.localizedString("poolPlan.lineage.remainingPrefix")
                          + (isAssumed
                             ? PoolAmountText.assumed(PriceFormatter.quantity(entry.remainingQuantity))
                             : PriceFormatter.quantity(entry.remainingQuantity))
-                         + poolCopy(" → 目标 ", " → target ")
-                         + (entry.plan.positionPool?.title ?? poolCopy("未指定", "unset")))
+                         + PulseLocalization.localizedString("poolPlan.lineage.targetPrefix")
+                         + (entry.plan.positionPool?.title ?? PulseLocalization.localizedString("poolPlan.lineage.unset")))
                         .font(isAssumed ? PoolType.assumedNumber : PoolType.labelMedium.monospacedDigit())
                     Text(PoolAmountText.money(entry.remainingEstimatedAmount,
                                               currency: entry.symbol.currencyCode, assumed: isAssumed))
                         .font(PoolType.label.monospacedDigit()).foregroundStyle(.secondary)
                 } else {
-                    Text(poolCopy("计划已全部成交", "Plan fully filled"))
+                    Text(PulseLocalization.localizedString("poolPlan.lineage.fullyFilled"))
                         .font(PoolType.labelMedium).foregroundStyle(.secondary)
                 }
             }

@@ -15,16 +15,16 @@ struct TradeStrategySummaryView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("策略分析").font(.system(size: 23, weight: .semibold))
-                    Text("完整开仓 → 平仓为一轮，分批卖出仍算一个样本")
+                    Text(PulseLocalization.localizedString("strategy.title")).font(.system(size: 23, weight: .semibold))
+                    Text(PulseLocalization.localizedString("strategy.subtitle"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(PulseLocalization.localizedString("strategy.done")) { dismiss() }.keyboardShortcut(.cancelAction)
             }
             if summaries.isEmpty {
-                ContentUnavailableView("还没有完整交易轮次", systemImage: "chart.bar.xaxis",
-                    description: Text("在复盘中填写策略标签；完整平仓后即可比较。校准和未平仓记录不计入样本。"))
+                ContentUnavailableView(PulseLocalization.localizedString("strategy.empty.title"), systemImage: "chart.bar.xaxis",
+                    description: Text(PulseLocalization.localizedString("strategy.empty.body")))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -35,19 +35,19 @@ struct TradeStrategySummaryView: View {
                                     Text(row.strategy).font(.headline)
                                     Text(row.currencyCode).font(.caption).foregroundStyle(.secondary)
                                     Spacer()
-                                    Text("\(row.sampleCount) 轮").font(.caption).foregroundStyle(.secondary)
+                                    Text(PulseLocalization.localizedString("strategy.sampleCount", row.sampleCount)).font(.caption).foregroundStyle(.secondary)
                                 }
                                 HStack(alignment: .top, spacing: 24) {
-                                    metric("已实现盈亏", row.realizedPnL.map {
+                                    metric(PulseLocalization.localizedString("strategy.metric.realized"), row.realizedPnL.map {
                                         PriceFormatter.signedMoney($0, currencyCode: row.currencyCode)
                                     } ?? "—", color: row.realizedPnL.map { appState.palette.color(isUp: $0 >= 0) } ?? .secondary)
-                                    metric("胜率", percent(row.winPercent))
-                                    metric("平均盈利 / 平均亏损", row.payoffRatio.map { String(format: "%.2f", $0) } ?? "—")
-                                    metric("按计划执行", percent(row.followedPlanPercent))
+                                    metric(PulseLocalization.localizedString("strategy.metric.winRate"), percent(row.winPercent))
+                                    metric(PulseLocalization.localizedString("strategy.metric.payoff"), row.payoffRatio.map { String(format: "%.2f", $0) } ?? "—")
+                                    metric(PulseLocalization.localizedString("strategy.metric.onPlan"), percent(row.followedPlanPercent))
                                     Spacer(minLength: 0)
                                 }
                                 if row.missingFeeCount > 0 {
-                                    Text("\(row.missingFeeCount) 笔费用未记或无效，盈亏可能不完整")
+                                    Text(PulseLocalization.localizedString("strategy.missingFees", row.missingFeeCount))
                                         .font(.caption2).foregroundStyle(.orange)
                                 }
                             }
@@ -58,7 +58,7 @@ struct TradeStrategySummaryView: View {
                     }
                 }
             }
-            Text("沿用账本已记费用，不重复扣费；按平仓月份筛选、分币种统计。轮次内多个标签归入混合策略，未填归入未分类。样本少时结果参考价值有限。")
+            Text(PulseLocalization.localizedString("strategy.footnote"))
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(24).frame(minWidth: 680, idealWidth: 760, minHeight: 420, idealHeight: 560)

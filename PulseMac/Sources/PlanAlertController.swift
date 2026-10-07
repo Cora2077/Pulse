@@ -16,7 +16,7 @@ struct BrokerageAlertTarget: Equatable {
 final class PlanAlertController: NSObject, UNUserNotificationCenterDelegate {
     private(set) var enabled: Bool
     private(set) var sectorEnabled: Bool
-    private(set) var status = "关闭"
+    private(set) var status = PulseLocalization.localizedString("alerts.status.off")
     private(set) var lastError: String?
     @ObservationIgnored private let store: WatchlistStore
     @ObservationIgnored private let market: MarketStore
@@ -71,7 +71,8 @@ final class PlanAlertController: NSObject, UNUserNotificationCenterDelegate {
         center.delegate = self
         center.setNotificationCategories([UNNotificationCategory(
             identifier: Self.category,
-            actions: [UNNotificationAction(identifier: Self.snoozeAction, title: "15 分钟后提醒", options: [])],
+            actions: [UNNotificationAction(identifier: Self.snoozeAction,
+                                           title: PulseLocalization.localizedString("alerts.snooze.title"), options: [])],
             intentIdentifiers: [], options: []
         )])
         task = Task { [weak self] in
@@ -83,12 +84,12 @@ final class PlanAlertController: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func setEnabled(_ value: Bool) async {
-        guard !isOffline else { status = "演示模式不发送通知"; return }
+        guard !isOffline else { status = PulseLocalization.localizedString("alerts.status.demo"); return }
         lastError = nil
         if value {
             do {
                 guard try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) else {
-                    status = "未获通知权限，请在系统设置中允许 Pulse 通知"
+                    status = PulseLocalization.localizedString("alerts.status.permissionDenied")
                     return
                 }
             } catch {
@@ -109,11 +110,11 @@ final class PlanAlertController: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func setSectorEnabled(_ value: Bool) async {
-        guard !isOffline else { status = "演示模式不发送通知"; return }
+        guard !isOffline else { status = PulseLocalization.localizedString("alerts.status.demo"); return }
         do {
             if value {
                 guard try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) else {
-                    status = "未获通知权限，请在系统设置中允许 Pulse 通知"; return
+                    status = PulseLocalization.localizedString("alerts.status.permissionDenied"); return
                 }
             }
             sectorEnabled = value
@@ -124,15 +125,15 @@ final class PlanAlertController: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func evaluate() async {
-        guard enabled || sectorEnabled else { status = "关闭"; return }
+        guard enabled || sectorEnabled else { status = PulseLocalization.localizedString("alerts.status.off"); return }
         let center = UNUserNotificationCenter.current()
         let permission = await center.notificationSettings()
         guard enabled || sectorEnabled else { return }
         guard permission.authorizationStatus == .authorized || permission.authorizationStatus == .provisional else {
-            status = "未获通知权限，请在系统设置中允许 Pulse 通知"
+            status = PulseLocalization.localizedString("alerts.status.permissionDenied")
             return
         }
-        status = "已开启 · 全部证券账号 · 当前 Mac"
+        status = PulseLocalization.localizedString("alerts.status.on")
         for account in accountIDs {
             let entries = entries(in: account)
             ledgers[account.rawValue, default: PlanAlertLedger()].prune(keeping: Set(entries.map(\.id)))
@@ -143,11 +144,15 @@ final class PlanAlertController: NSObject, UNUserNotificationCenterDelegate {
                       pending.insert(requestID).inserted else { continue }
                 let content = UNMutableNotificationContent()
                 let item = items(in: account).first { $0.symbol == entry.symbol }
-                content.title = "\(AccountIdentity.title(account)) · \(item?.resolvedDisplayName ?? entry.symbol.displayCode) · 计划到价"
-                let side = entry.plan.kind == .buy ? "买入" : "卖出"
+                content.title = PulseLocalization.localizedString("alerts.plan.title",
+                                    AccountIdentity.title(account),
+                                    item?.resolvedDisplayName ?? entry.symbol.displayCode)
+                let side = entry.plan.kind == .buy
+                    ? PulseLocalization.localizedString("plan.kind.buy")
+                    : PulseLocalization.localizedString("plan.kind.sell")
                 let price = PriceFormatter.price(entry.plan.price, market: entry.symbol.market)
                 let current = PriceFormatter.price(quote.price, market: entry.symbol.market)
-                content.body = "\(side)计划价 \(price)，现价 \(current)。点击查看计划。"
+                content.body = PulseLocalization.localizedString("alerts.plan.body", side, price, current)
                 content.categoryIdentifier = Self.category
                 content.userInfo = ["account_id": account.rawValue]
                 content.sound = .default
@@ -228,8 +233,12 @@ final class PlanAlertController: NSObject, UNUserNotificationCenterDelegate {
                   pendingSectors.insert(deliveryKey).inserted else { continue }
             defer { pendingSectors.remove(deliveryKey) }
             let content = UNMutableNotificationContent()
-            content.title = "\(AccountIdentity.title(account)) · \(sector.name) · 板块暴露超限"
-            content.body = "\(sector.currencyCode) 持仓敞口占比 \(String(format: "%.1f", sector.percent))%，超过你设置的 \(String(format: "%g", limit))%。不含现金。"
+            content.title = PulseLocalization.localizedString("alerts.sector.title",
+                                AccountIdentity.title(account), sector.name)
+            content.body = PulseLocalization.localizedString("alerts.sector.body",
+                              sector.currencyCode,
+                              String(format: "%.1f", sector.percent),
+                              String(format: "%g", limit))
             content.sound = .default
             if let symbol = sector.holdings.first?.symbol, let data = try? JSONEncoder().encode(symbol) {
                 content.userInfo = ["symbol": data.base64EncodedString(), "account_id": account.rawValue]

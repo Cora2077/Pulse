@@ -19,14 +19,10 @@ struct MainPlanListView: View {
         var title: String {
             switch self {
             case .all: PulseLocalization.localizedString("main.planList.filter.all")
-            case .waiting: copy("待执行", "Pending")
+            case .waiting: PulseLocalization.localizedString("plans.filter.waiting")
             case .done: PulseLocalization.localizedString("main.planList.filter.done")
             case .dropped: PulseLocalization.localizedString("main.planList.filter.dropped")
             }
-        }
-
-        private func copy(_ chinese: String, _ english: String) -> String {
-            PulseLocalization.currentLanguageIdentifier.hasPrefix("zh") ? chinese : english
         }
     }
 
@@ -191,15 +187,16 @@ struct MainPlanListView: View {
             Image(systemName: appState.planAlerts.enabled ? "bell.badge" : "bell.slash")
                 .font(.system(size: 11))
                 .foregroundStyle(appState.planAlerts.enabled ? Color.accentColor : Color.secondary)
-            Text(copy(
-                "到价提醒 \(onOff(appState.planAlerts.enabled)) · 板块提醒 \(onOff(appState.planAlerts.sectorEnabled))",
-                "Price alerts \(onOff(appState.planAlerts.enabled)) · Sector alerts \(onOff(appState.planAlerts.sectorEnabled))"
+            Text(PulseLocalization.localizedString(
+                "plans.alertSummary",
+                onOff(appState.planAlerts.enabled),
+                onOff(appState.planAlerts.sectorEnabled)
             ))
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .lineLimit(1)
             Spacer(minLength: 4)
-            Button(copy("设置", "Settings")) {
+            Button(PulseLocalization.localizedString("plans.alertSettings")) {
                 showsAlertSettings = true
             }
             .controlSize(.small)
@@ -220,11 +217,7 @@ struct MainPlanListView: View {
     }
 
     private func onOff(_ enabled: Bool) -> String {
-        copy(enabled ? "开" : "关", enabled ? "on" : "off")
-    }
-
-    private func copy(_ chinese: String, _ english: String) -> String {
-        PulseLocalization.currentLanguageIdentifier.hasPrefix("zh") ? chinese : english
+        PulseLocalization.localizedString(enabled ? "plans.on" : "plans.off")
     }
 
     private var header: some View {
@@ -414,9 +407,11 @@ struct MainPlanListView: View {
         }
         .monospacedDigit()
         .frame(width: Self.quantityColumnWidth, alignment: .trailing)
-        .help(copy(
-            "待执行 \(PriceFormatter.quantity(entry.remainingQuantity)) · 计划 \(PriceFormatter.quantity(entry.plan.quantity)) · 已成 \(PriceFormatter.quantity(entry.filledQuantity))",
-            "Open \(PriceFormatter.quantity(entry.remainingQuantity)) · planned \(PriceFormatter.quantity(entry.plan.quantity)) · filled \(PriceFormatter.quantity(entry.filledQuantity))"
+        .help(PulseLocalization.localizedString(
+            "plans.quantity.help",
+            PriceFormatter.quantity(entry.remainingQuantity),
+            PriceFormatter.quantity(entry.plan.quantity),
+            PriceFormatter.quantity(entry.filledQuantity)
         ))
     }
 
@@ -486,9 +481,10 @@ struct MainPlanListView: View {
                 .minimumScaleFactor(0.85)
             HStack(spacing: 4) {
                 if entry.filledQuantity > 0 {
-                    Text(copy(
-                        "已成 \(PriceFormatter.quantity(entry.filledQuantity))/待执行 \(PriceFormatter.quantity(entry.remainingQuantity))",
-                        "Filled \(PriceFormatter.quantity(entry.filledQuantity))/open \(PriceFormatter.quantity(entry.remainingQuantity))"
+                    Text(PulseLocalization.localizedString(
+                        "plans.status.progress",
+                        PriceFormatter.quantity(entry.filledQuantity),
+                        PriceFormatter.quantity(entry.remainingQuantity)
                     ))
                     .font(.system(size: 8.5, design: .monospaced))
                     .foregroundStyle(.tertiary)
@@ -501,7 +497,7 @@ struct MainPlanListView: View {
                         .foregroundStyle(PlanSideStyle.color(for: entry.plan.kind))
                         .lineLimit(1)
                 } else if entry.plan.status == .active && !hasQuote {
-                    Text(copy("无有效报价", "No live quote"))
+                    Text(PulseLocalization.localizedString("plans.noQuote"))
                         .font(.system(size: 8.5))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
@@ -524,15 +520,16 @@ struct MainPlanListView: View {
             }
             .buttonStyle(.borderless)
             .help(PulseLocalization.localizedString("main.planList.action.edit"))
+            .accessibilityLabel(PulseLocalization.localizedString("main.planList.action.edit"))
 
             Menu {
                 if entry.plan.status == .active, entry.remainingQuantity > 0 {
-                    Button("记录已成交") { executionEntry = entry }
+                    Button(PulseLocalization.localizedString("plans.action.recordFill")) { executionEntry = entry }
                 }
-                Button("逻辑与修改记录") { workflowEntry = entry }
+                Button(PulseLocalization.localizedString("plans.action.logicHistory")) { workflowEntry = entry }
                 Divider()
                 if entry.plan.status == .active {
-                    Button("暂缓到价提醒 15 分钟") { appState.planAlerts.snooze(entry.plan) }
+                    Button(PulseLocalization.localizedString("plans.action.snooze")) { appState.planAlerts.snooze(entry.plan) }
                     Divider()
                 }
                 Button(PulseLocalization.localizedString("main.planList.action.markWaiting")) {
@@ -558,6 +555,7 @@ struct MainPlanListView: View {
             }
             .menuStyle(.borderlessButton)
             .help(PulseLocalization.localizedString("main.planList.action.changeStatus"))
+            .accessibilityLabel(PulseLocalization.localizedString("main.planList.action.changeStatus"))
         }
         .frame(width: 48, alignment: .leading)
     }

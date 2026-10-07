@@ -92,9 +92,11 @@ struct TradingEventsView: View {
             } else {
               ScrollView {
                 if visibleItems.isEmpty {
-                    emptyState("当前关注范围内没有持仓标的", detail: "切换到“当前关注”查看关注列表事件。")
+                    emptyState(PulseLocalization.localizedString("events.scope.holdingsEmpty.title"),
+                               detail: PulseLocalization.localizedString("events.scope.holdingsEmpty.detail"))
                 } else if entries.isEmpty {
-                    emptyState("无可用自动事件，仍可手动添加", detail: "自动事件目前覆盖沪深 A 股；可以手动记录其他市场的日期。")
+                    emptyState(PulseLocalization.localizedString("events.automatic.empty.title"),
+                               detail: PulseLocalization.localizedString("events.automatic.empty.detail"))
                 } else {
                     LazyVStack(alignment: .leading, spacing: 18) {
                         ForEach(dateGroups, id: \.0) { date, dayEntries in
@@ -154,15 +156,15 @@ struct TradingEventsView: View {
             .environment(appState)
         }
         .confirmationDialog(
-            "删除这条手动事件？",
+            PulseLocalization.localizedString("events.delete.confirmTitle"),
             isPresented: Binding(
                 get: { pendingDelete != nil },
                 set: { if !$0 { pendingDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("删除", role: .destructive) { deletePendingEvent() }
-            Button("取消", role: .cancel) { pendingDelete = nil }
+            Button(PulseLocalization.localizedString("events.delete"), role: .destructive) { deletePendingEvent() }
+            Button(PulseLocalization.localizedString("events.editor.cancel"), role: .cancel) { pendingDelete = nil }
         }
     }
 
@@ -170,9 +172,9 @@ struct TradingEventsView: View {
       VStack(alignment: .leading, spacing: 12) {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("事件日历").font(.title2.weight(.semibold))
+                Text(PulseLocalization.localizedString("events.title")).font(.title2.weight(.semibold))
                 HStack(spacing: 5) {
-                    Text("东方财富 · 预约日期标为预告 · 日期按北京时间")
+                    Text(PulseLocalization.localizedString("events.subtitle"))
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -182,29 +184,29 @@ struct TradingEventsView: View {
                 guard let symbol = (visibleItems.first ?? appState.watchlist.allItems.first)?.symbol else { return }
                 editor = currentEditorState(symbol: symbol)
             } label: {
-                Label("添加事件", systemImage: "plus")
+                Label(PulseLocalization.localizedString("events.add"), systemImage: "plus")
             }
             .disabled(appState.watchlist.allItems.isEmpty)
         }
         HStack(spacing: 12) {
-            Picker("显示", selection: $showsTimeline) {
-                Text("时间轴").tag(true)
-                Text("列表").tag(false)
+            Picker(PulseLocalization.localizedString("events.display"), selection: $showsTimeline) {
+                Text(PulseLocalization.localizedString("events.display.timeline")).tag(true)
+                Text(PulseLocalization.localizedString("events.display.list")).tag(false)
             }.pickerStyle(.segmented).frame(width: 150)
-            Picker("范围", selection: $scope) {
-                Text("持仓").tag(Scope.holdings)
-                Text("当前关注").tag(Scope.focus)
+            Picker(PulseLocalization.localizedString("events.scope"), selection: $scope) {
+                Text(PulseLocalization.localizedString("events.scope.holdings")).tag(Scope.holdings)
+                Text(PulseLocalization.localizedString("events.scope.focus")).tag(Scope.focus)
             }
             .pickerStyle(.segmented)
             .frame(width: 170)
             Button {
                 Task { await appState.tradingEvents.refresh(items: itemsToRefresh, force: true) }
             } label: {
-                Label("刷新", systemImage: "arrow.clockwise")
+                Label(PulseLocalization.localizedString("events.refresh"), systemImage: "arrow.clockwise")
             }
             .disabled(appState.tradingEvents.isRefreshing || appState.isMainWindowDemo)
             Spacer()
-            Text("单日节点 · 多日横条 · 点击查看详情")
+            Text(PulseLocalization.localizedString("events.legend"))
                 .font(.caption).foregroundStyle(.secondary)
         }
       }
@@ -229,7 +231,7 @@ struct TradingEventsView: View {
                         .padding(.vertical, 3)
                         .background(.quaternary, in: Capsule())
                     if entry.isForecast {
-                        Text("预约 · 预告")
+                        Text(PulseLocalization.localizedString("events.forecast"))
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(.orange)
                     }
@@ -242,28 +244,32 @@ struct TradingEventsView: View {
                     Text(note).font(.caption).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 8) {
-                    Text("来源：\(entry.sourceName)").font(.caption).foregroundStyle(.secondary)
+                    Text(PulseLocalization.localizedString("events.source", entry.sourceName))
+                        .font(.caption).foregroundStyle(.secondary)
                     if entry.isAutomatic {
-                        Text("获取于 \(entry.event.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                        Text(PulseLocalization.localizedString("events.fetchedAt", entry.event.updatedAt.formatted(
+                            date: .abbreviated, time: .shortened)))
                             .font(.caption2).foregroundStyle(.secondary)
                         if Date.now.timeIntervalSince(entry.event.updatedAt) >= 6 * 60 * 60 {
-                            Text("旧缓存 · 待更新").font(.caption2).foregroundStyle(.orange)
+                            Text(PulseLocalization.localizedString("events.staleCache"))
+                                .font(.caption2).foregroundStyle(.orange)
                         }
                     }
                     if let rawURL = entry.event.sourceURL, let url = URL(string: rawURL) {
-                        Link("打开来源", destination: url).font(.caption)
+                        Link(PulseLocalization.localizedString("events.openSource"), destination: url).font(.caption)
                     }
                 }
             }
             Spacer(minLength: 4)
             if !entry.isAutomatic {
                 Menu {
-                    Button("编辑") { editEvent(entry) }
-                    Button("删除", role: .destructive) { requestDelete(entry) }
+                    Button(PulseLocalization.localizedString("events.edit")) { editEvent(entry) }
+                    Button(PulseLocalization.localizedString("events.delete"), role: .destructive) { requestDelete(entry) }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
                 .menuStyle(.borderlessButton)
+                .accessibilityLabel(PulseLocalization.localizedString("events.actions.label"))
             }
         }
         .padding(14)
@@ -293,11 +299,11 @@ struct TradingEventsView: View {
             Text(title).font(.headline)
             Text(detail).font(.callout).foregroundStyle(.secondary)
             if appState.watchlist.allItems.isEmpty {
-                Text("请先添加标的到关注列表。")
+                Text(PulseLocalization.localizedString("events.empty.addSymbol"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Button("手动添加事件") {
+                Button(PulseLocalization.localizedString("events.empty.addManual")) {
                     if let symbol = appState.watchlist.allItems.first?.symbol {
                         editor = currentEditorState(symbol: symbol)
                     }
@@ -311,10 +317,10 @@ struct TradingEventsView: View {
 
     private func kindTitle(_ kind: InstrumentEvent.Kind) -> String {
         switch kind {
-        case .earnings: "财报"
-        case .dividend: "分红"
-        case .unlock: "解禁"
-        case .other: "其他"
+        case .earnings: PulseLocalization.localizedString("events.kind.earnings")
+        case .dividend: PulseLocalization.localizedString("events.kind.dividend")
+        case .unlock: PulseLocalization.localizedString("events.kind.unlock")
+        case .other: PulseLocalization.localizedString("events.kind.other")
         }
     }
 
@@ -337,7 +343,7 @@ struct TradingEventsView: View {
         guard pendingDeleteAccount == appState.watchlist.activeBrokerageAccountID,
               let entry = pendingDelete,
               appState.watchlist.deleteInstrumentEvent(entry.event.id, for: entry.symbol) else {
-            actionError = "事件删除失败，请重试。"
+            actionError = PulseLocalization.localizedString("events.error.deleteFailed")
             pendingDelete = nil
             pendingDeleteAccount = nil
             return
@@ -457,9 +463,9 @@ struct TradingEventDetailSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("事件详情").font(.title2.weight(.semibold))
+                Text(PulseLocalization.localizedString("events.detail.title")).font(.title2.weight(.semibold))
                 Spacer()
-                Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(PulseLocalization.localizedString("events.close")) { dismiss() }.keyboardShortcut(.cancelAction)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -467,8 +473,8 @@ struct TradingEventDetailSheet: View {
                     linkedPlansSection
                     if !entry.isAutomatic {
                         HStack(spacing: 8) {
-                            Button("编辑事件", action: onEdit)
-                            Button("删除", role: .destructive, action: onDelete)
+                            Button(PulseLocalization.localizedString("events.detail.edit"), action: onEdit)
+                            Button(PulseLocalization.localizedString("events.delete"), role: .destructive, action: onDelete)
                             Spacer()
                         }
                     }
@@ -483,9 +489,10 @@ struct TradingEventDetailSheet: View {
         .sheet(item: $linkedPlanDetail) { plan in
             VStack(spacing: 0) {
                 HStack {
-                    Text("关联计划").font(.headline)
+                    Text(PulseLocalization.localizedString("events.detail.linkedPlan")).font(.headline)
                     Spacer()
-                    Button("关闭") { linkedPlanDetail = nil }.keyboardShortcut(.cancelAction)
+                    Button(PulseLocalization.localizedString("events.close")) { linkedPlanDetail = nil }
+                        .keyboardShortcut(.cancelAction)
                 }.padding()
                 Divider()
                 PlanWorkflowDetailView(symbol: entry.symbol, planID: plan.id,
@@ -512,7 +519,7 @@ struct TradingEventDetailSheet: View {
                     .padding(.vertical, 3)
                     .background(.quaternary, in: Capsule())
                 if entry.isForecast {
-                    Text("预约 · 预告").font(.caption2.weight(.medium)).foregroundStyle(.orange)
+                    Text(PulseLocalization.localizedString("events.forecast")).font(.caption2.weight(.medium)).foregroundStyle(.orange)
                 }
             }
             HStack(spacing: 8) {
@@ -523,7 +530,8 @@ struct TradingEventDetailSheet: View {
                         .font(.caption)
                 }
                 .buttonStyle(.plain)
-                Text("来源：\(entry.sourceName)").font(.caption).foregroundStyle(.secondary)
+                Text(PulseLocalization.localizedString("events.source", entry.sourceName))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if let note = entry.event.note, !note.isEmpty {
                 Text(note).font(.caption).foregroundStyle(.secondary)
@@ -547,15 +555,15 @@ struct TradingEventDetailSheet: View {
     private var linkedPlansSection: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
-                Text("关联事件与计划").font(.system(size: 12, weight: .semibold))
+                Text(PulseLocalization.localizedString("events.links.title")).font(.system(size: 12, weight: .semibold))
                 Spacer(minLength: 0)
-                Text("\(links.count) 条")
+                Text(PulseLocalization.localizedString("events.links.count", links.count))
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(.tertiary)
             }
 
             if links.isEmpty {
-                Text("这条事件还没有关联任何计划条件。")
+                Text(PulseLocalization.localizedString("events.links.empty"))
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             } else {
@@ -565,7 +573,7 @@ struct TradingEventDetailSheet: View {
             }
 
             if activePlans.isEmpty {
-                Text("该标的当前没有进行中的计划，无法关联。请先在计划中新建一条。")
+                Text(PulseLocalization.localizedString("events.links.noActivePlans"))
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -619,14 +627,14 @@ struct TradingEventDetailSheet: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 if changed {
-                    Text("条件中记录的事件已与本事件不同（标题、日期或类型），待核对。")
+                    Text(PulseLocalization.localizedString("events.links.changed"))
                         .font(.system(size: 9))
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 0)
-            Button("打开计划") {
+            Button(PulseLocalization.localizedString("events.links.openPlan")) {
                 linkedPlanDetail = plan
             }
             .controlSize(.small)
@@ -643,11 +651,11 @@ struct TradingEventDetailSheet: View {
 
     @ViewBuilder private var linkEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("关联到计划条件")
+            Text(PulseLocalization.localizedString("events.link.title"))
                 .font(.system(size: 11, weight: .medium))
             HStack(spacing: 8) {
-                Picker("计划", selection: $selectedPlanID) {
-                    Text("选择计划").tag(nil as UUID?)
+                Picker(PulseLocalization.localizedString("events.link.plan"), selection: $selectedPlanID) {
+                    Text(PulseLocalization.localizedString("events.link.choosePlan")).tag(nil as UUID?)
                     ForEach(activePlans) { plan in
                         Text(planSummary(plan)).tag(Optional(plan.id))
                     }
@@ -661,12 +669,12 @@ struct TradingEventDetailSheet: View {
             if let plan = selectedPlan {
                 let conditions = plan.conditions ?? []
                 HStack(spacing: 8) {
-                    Picker("条件", selection: $selectedConditionID) {
+                    Picker(PulseLocalization.localizedString("events.link.condition"), selection: $selectedConditionID) {
                         ForEach(conditions) { condition in
                             Text("\(condition.title) · \(PulseLocalization.localizedString("plan.condition.state.\(condition.state.rawValue)"))")
                                 .tag(Optional(condition.id))
                         }
-                        Text("新建事件条件").tag(nil as UUID?)
+                        Text(PulseLocalization.localizedString("events.link.newCondition")).tag(nil as UUID?)
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
@@ -678,15 +686,15 @@ struct TradingEventDetailSheet: View {
                     Spacer(minLength: 0)
                 }
                 if selectedConditionID == nil {
-                    TextField("新条件的名称", text: $newConditionTitle)
+                    TextField(PulseLocalization.localizedString("events.link.newConditionName"), text: $newConditionTitle)
                         .textFieldStyle(.roundedBorder)
                         .controlSize(.small)
                 }
                 HStack(spacing: 8) {
-                    Button("保存关联", action: saveLink)
+                    Button(PulseLocalization.localizedString("events.link.save"), action: saveLink)
                         .controlSize(.small)
                         .disabled(!canSaveLink)
-                    Text("关联后条件状态标为“待复核”，不会自动确认，也不会产生成交。")
+                    Text(PulseLocalization.localizedString("events.link.note"))
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -716,7 +724,7 @@ struct TradingEventDetailSheet: View {
         // exists in the new account too would otherwise take a copy of this
         // event recorded for the old one.
         guard appState.watchlist.activeBrokerageAccountID == account else {
-            errorMessage = "当前账号已切换，关联不会写入其他账号。请关闭后重新打开。"
+            errorMessage = PulseLocalization.localizedString("events.link.error.accountChanged")
             statusMessage = nil
             return
         }
@@ -724,7 +732,7 @@ struct TradingEventDetailSheet: View {
               let selectedPlanID,
               var plan = appState.watchlist.item(for: symbol)?.plans.first(where: { $0.id == selectedPlanID }),
               activePlans.contains(where: { $0.id == plan.id }) else {
-            errorMessage = "找不到这条计划，可能已被删除。请重新选择。"
+            errorMessage = PulseLocalization.localizedString("events.link.error.planMissing")
             statusMessage = nil
             return
         }
@@ -732,29 +740,29 @@ struct TradingEventDetailSheet: View {
         let linkage: (title: String, note: String)?
         if let selectedConditionID {
             guard let index = conditions.firstIndex(where: { $0.id == selectedConditionID }) else {
-                errorMessage = "这条条件已被删除，请重新选择。"
+                errorMessage = PulseLocalization.localizedString("events.link.error.conditionMissing")
                 statusMessage = nil
                 return
             }
             conditions[index].eventReference = entry.event
             conditions[index].state = .needsReview
-            linkage = (conditions[index].title, "已关联事件，待核对。")
+            linkage = (conditions[index].title, PulseLocalization.localizedString("events.link.status.linked"))
         } else {
             let title = newConditionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty, title.count <= 240 else {
-                errorMessage = "请填写不超过 240 个字的条件名称。"
+                errorMessage = PulseLocalization.localizedString("events.link.error.conditionTitleLength")
                 statusMessage = nil
                 return
             }
             conditions.append(TradePlanCondition(
                 title: title, kind: .event, state: .needsReview, eventReference: entry.event
             ))
-            linkage = (title, "已新建事件条件并关联，待核对。")
+            linkage = (title, PulseLocalization.localizedString("events.link.status.created"))
         }
         guard let linkage else { return }
         plan.conditions = conditions
         guard appState.watchlist.setTradePlan(plan, for: symbol) else {
-            errorMessage = "关联保存失败，请重试。"
+            errorMessage = PulseLocalization.localizedString("events.link.error.saveFailed")
             statusMessage = nil
             return
         }
@@ -765,11 +773,11 @@ struct TradingEventDetailSheet: View {
             .plans.first { $0.id == selectedPlanID }?
             .conditions?.contains { $0.eventReference?.id == entry.event.id && $0.title == linkage.title } ?? false
         guard persisted else {
-            errorMessage = "关联未保存，请重试。"
+            errorMessage = PulseLocalization.localizedString("events.link.error.notSaved")
             statusMessage = nil
             return
         }
-        statusMessage = "“\(linkage.title)”\(linkage.note)"
+        statusMessage = PulseLocalization.localizedString("events.link.status.prefix", linkage.title, linkage.note)
         errorMessage = nil
         newConditionTitle = ""
         selectedConditionID = nil
@@ -799,10 +807,10 @@ struct TradingEventDetailSheet: View {
 
     private var kindTitle: String {
         switch entry.event.kind {
-        case .earnings: "财报"
-        case .dividend: "分红"
-        case .unlock: "解禁"
-        case .other: "其他"
+        case .earnings: PulseLocalization.localizedString("events.kind.earnings")
+        case .dividend: PulseLocalization.localizedString("events.kind.dividend")
+        case .unlock: PulseLocalization.localizedString("events.kind.unlock")
+        case .other: PulseLocalization.localizedString("events.kind.other")
         }
     }
 
@@ -868,17 +876,21 @@ private struct TradingEventEditor: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(existing == nil ? "添加日历事件" : "编辑日历事件").font(.title2.weight(.semibold))
+                Text(existing == nil
+                     ? PulseLocalization.localizedString("events.editor.addTitle")
+                     : PulseLocalization.localizedString("events.editor.editTitle"))
+                    .font(.title2.weight(.semibold))
                 Spacer()
-                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("保存", action: save).keyboardShortcut(.defaultAction).disabled(items.isEmpty || !accountMatchesDraft)
+                Button(PulseLocalization.localizedString("events.editor.cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(PulseLocalization.localizedString("events.editor.save"), action: save).keyboardShortcut(.defaultAction)
+                    .disabled(items.isEmpty || !accountMatchesDraft)
             }
             .padding()
             // The account this event is written into. It turns orange once the
             // ledger underneath has changed, matching the refusal at save.
             HStack(spacing: 5) {
                 Circle().fill(AccountIdentity.dotColor(account)).frame(width: 5, height: 5)
-                Text("事件记入：\(AccountIdentity.title(account))")
+                Text(PulseLocalization.localizedString("events.editor.account", AccountIdentity.title(account)))
                     .font(.caption)
                     .foregroundStyle(accountMatchesDraft
                         ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
@@ -887,30 +899,30 @@ private struct TradingEventEditor: View {
             .padding(.horizontal)
             .padding(.bottom, 6)
             Form {
-                Picker("标的", selection: $symbol) {
+                Picker(PulseLocalization.localizedString("events.editor.symbol"), selection: $symbol) {
                     ForEach(items) { item in
                         Text("\(item.symbol.displayCode) · \(item.resolvedDisplayName)").tag(item.symbol)
                     }
                 }
                 .disabled(existing != nil)
-                Picker("类型", selection: $kind) {
-                    Text("财报").tag(InstrumentEvent.Kind.earnings)
-                    Text("分红").tag(InstrumentEvent.Kind.dividend)
-                    Text("解禁").tag(InstrumentEvent.Kind.unlock)
-                    Text("其他").tag(InstrumentEvent.Kind.other)
+                Picker(PulseLocalization.localizedString("events.editor.kind"), selection: $kind) {
+                    Text(PulseLocalization.localizedString("events.kind.earnings")).tag(InstrumentEvent.Kind.earnings)
+                    Text(PulseLocalization.localizedString("events.kind.dividend")).tag(InstrumentEvent.Kind.dividend)
+                    Text(PulseLocalization.localizedString("events.kind.unlock")).tag(InstrumentEvent.Kind.unlock)
+                    Text(PulseLocalization.localizedString("events.kind.other")).tag(InstrumentEvent.Kind.other)
                 }
-                DatePicker("日期（北京时间）", selection: $date, displayedComponents: .date)
+                DatePicker(PulseLocalization.localizedString("events.editor.date"), selection: $date, displayedComponents: .date)
                     .environment(\.timeZone, EastmoneyTradingEvents.dateCalendar.timeZone)
                     .environment(\.calendar, EastmoneyTradingEvents.dateCalendar)
-                Toggle("持续多天", isOn: $isRange)
+                Toggle(PulseLocalization.localizedString("events.editor.multiDay"), isOn: $isRange)
                 if isRange {
-                    DatePicker("结束日期", selection: $endDate, displayedComponents: .date)
+                    DatePicker(PulseLocalization.localizedString("events.editor.endDate"), selection: $endDate, displayedComponents: .date)
                         .environment(\.timeZone, EastmoneyTradingEvents.dateCalendar.timeZone)
                         .environment(\.calendar, EastmoneyTradingEvents.dateCalendar)
                 }
-                TextField("标题", text: $title)
-                TextField("来源链接（可选）", text: $sourceURL)
-                TextField("备注（可选）", text: $note, axis: .vertical)
+                TextField(PulseLocalization.localizedString("events.editor.title"), text: $title)
+                TextField(PulseLocalization.localizedString("events.editor.sourceURL"), text: $sourceURL)
+                TextField(PulseLocalization.localizedString("events.editor.note"), text: $note, axis: .vertical)
                     .lineLimit(2...4)
                 if let error {
                     Text(error).foregroundStyle(.red).font(.caption)
@@ -924,25 +936,25 @@ private struct TradingEventEditor: View {
 
     private func save() {
         guard accountMatchesDraft else {
-            error = "当前账号已切换，事件不会写入其他账号。请重新打开后再保存。"
+            error = PulseLocalization.localizedString("events.editor.error.accountChanged")
             return
         }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanURL = sourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanTitle.isEmpty, cleanTitle.count <= 120 else {
-            error = "请填写不超过 120 个字的标题。"
+            error = PulseLocalization.localizedString("events.editor.error.titleLength")
             return
         }
         guard cleanNote.count <= 1_000 else {
-            error = "备注不能超过 1000 个字。"
+            error = PulseLocalization.localizedString("events.editor.error.noteLength")
             return
         }
         let calendar = EastmoneyTradingEvents.dateCalendar
         let start = calendar.startOfDay(for: date)
         let end = isRange ? calendar.startOfDay(for: endDate) : nil
         guard end.map({ $0 >= start }) ?? true else {
-            error = "结束日期不能早于开始日期。"
+            error = PulseLocalization.localizedString("events.editor.error.endBeforeStart")
             return
         }
         if !cleanURL.isEmpty {
@@ -950,7 +962,7 @@ private struct TradingEventEditor: View {
                   let scheme = components.scheme?.lowercased(), ["https", "http"].contains(scheme),
                   let host = components.host, !host.isEmpty, components.url != nil,
                   components.port.map({ (1...65_535).contains($0) }) ?? true else {
-                error = "来源链接需要是有效的 HTTP 或 HTTPS 地址。"
+                error = PulseLocalization.localizedString("events.editor.error.invalidSourceURL")
                 return
             }
         }
@@ -962,7 +974,7 @@ private struct TradingEventEditor: View {
             updatedAt: .now
         )
         guard appState.watchlist.setInstrumentEvent(event, for: symbol) else {
-            error = "事件保存失败，请重试。"
+            error = PulseLocalization.localizedString("events.editor.error.saveFailed")
             return
         }
         dismiss()

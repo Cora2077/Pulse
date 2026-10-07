@@ -38,7 +38,7 @@ private func accountCopy(_ chinese: String, _ english: String) -> String {
 enum AccountIdentity {
     static func title(_ account: BrokerageAccountID) -> String {
         switch account {
-        case .unassigned: "未归属"
+        case .unassigned: PulseLocalization.localizedString("account.unassigned")
         case .financing: "融资账号"
         case .mengmeng: "萌萌账号"
         }

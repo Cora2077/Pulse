@@ -59,6 +59,10 @@ enum TacticalBoardSelfTest {
             return finish()
         }
         let symbols = seedFixture(into: appState)
+        if CommandLine.arguments.contains("--audit-ui-only") {
+            renderAuditArtifacts(appState: appState, symbols: symbols, into: outputDirectory)
+            return finish()
+        }
         if CommandLine.arguments.contains("--account-cards-only") {
             renderAccountTags(appState: appState, into: outputDirectory)
             return finish()
@@ -918,6 +922,42 @@ enum TacticalBoardSelfTest {
     }
 
     // MARK: - Renders
+
+    private static func renderAuditArtifacts(appState: AppState, symbols: Fixture, into directory: URL) {
+        let language = PulseLocalization.currentLanguageIdentifier
+        for page in [MainWorkspacePage.workbench, .events, .holdings, .positionPools] {
+            let view = MainWindowView(initialPage: page)
+                .environment(appState).environment(\.locale, PulseLocalization.currentLocale)
+                .environment(\.colorScheme, .dark)
+                .frame(width: 1200, height: 820)
+            do {
+                try renderInOffscreenWindow(view: view, width: 1200, height: 820,
+                    to: directory.appendingPathComponent("audit-\(language)-\(page.rawValue).png"),
+                    scheme: .dark, requiresBoardBand: false)
+                print("AUDIT_UI_RENDER \(language) \(page.rawValue)")
+            } catch { report("audit-render", "\(language) \(page.rawValue): \(error)") }
+        }
+        _ = appState.watchlist.enableBrokerageAccounts()
+        _ = appState.selectBrokerageAccount(.financing)
+        let route = Binding<PopoverRoute>(get: { .trade(symbols.tactical, .buy, .list) }, set: { _ in })
+        let forms: [(String, AnyView)] = [
+            ("trade-notice", AnyView(TradeEntryView(symbol: symbols.tactical, side: .buy,
+                returnRoute: .list, route: route, account: .unassigned))),
+            ("plan-notice", AnyView(PlanEditorView(symbol: symbols.tactical,
+                planID: appState.watchlist.draftItem(for: symbols.tactical, account: .unassigned)?.plans.first?.id,
+                returnRoute: .list, route: route, account: .unassigned)))
+        ]
+        for (name, form) in forms {
+            let view = form.environment(appState).environment(\.locale, PulseLocalization.currentLocale)
+                .environment(\.colorScheme, .dark).frame(width: 340, height: 470)
+            do {
+                try renderInOffscreenWindow(view: view, width: 340, height: 470,
+                    to: directory.appendingPathComponent("audit-\(language)-\(name).png"),
+                    scheme: .dark, requiresBoardBand: false)
+                print("AUDIT_UI_RENDER \(language) \(name)")
+            } catch { report("audit-render", "\(language) \(name): \(error)") }
+        }
+    }
 
     private static func renderSystemArtifacts(appState: AppState, symbols: Fixture, into directory: URL) {
         guard let renderDefaults = UserDefaults(suiteName: MainWindowDemo.userDefaultsSuite) else {

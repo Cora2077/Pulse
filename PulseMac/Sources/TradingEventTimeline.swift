@@ -64,9 +64,9 @@ struct TradingEventTimeline: View {
                 }
             }
             HStack(spacing: 14) {
-                Label("单日事件", systemImage: "diamond.fill")
-                Label("持续事件", systemImage: "rectangle.fill")
-                Text("点击空白日期添加 · 自动事件仅供查看")
+                Label(PulseLocalization.localizedString("timeline.legend.singleDay"), systemImage: "diamond.fill")
+                Label(PulseLocalization.localizedString("timeline.legend.ranged"), systemImage: "rectangle.fill")
+                Text(PulseLocalization.localizedString("timeline.legend.hint"))
                 Spacer()
             }
             .font(.caption2).foregroundStyle(.secondary)
@@ -76,15 +76,19 @@ struct TradingEventTimeline: View {
 
     private var controls: some View {
         HStack(spacing: 10) {
-            Button { shift(-1) } label: { Image(systemName: "chevron.left") }.help("上一时间段")
-            Button("今天") { cursor = .now }
-            Button { shift(1) } label: { Image(systemName: "chevron.right") }.help("下一时间段")
+            Button { shift(-1) } label: { Image(systemName: "chevron.left") }
+                .help(PulseLocalization.localizedString("timeline.previousHelp"))
+                .accessibilityLabel(PulseLocalization.localizedString("timeline.previousLabel"))
+            Button(PulseLocalization.localizedString("timeline.today")) { cursor = .now }
+            Button { shift(1) } label: { Image(systemName: "chevron.right") }
+                .help(PulseLocalization.localizedString("timeline.nextHelp"))
+                .accessibilityLabel(PulseLocalization.localizedString("timeline.nextLabel"))
             Text(rangeTitle).font(.headline).monospacedDigit()
-            Text("\(visibleCount) 个事件").font(.caption).foregroundStyle(.secondary)
+            Text(PulseLocalization.localizedString("timeline.eventCount", visibleCount)).font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Picker("时间跨度", selection: $isMonth) {
-                Text("周").tag(false)
-                Text("月").tag(true)
+            Picker(PulseLocalization.localizedString("timeline.span.label"), selection: $isMonth) {
+                Text(PulseLocalization.localizedString("timeline.span.week")).tag(false)
+                Text(PulseLocalization.localizedString("timeline.span.month")).tag(true)
             }.pickerStyle(.segmented).labelsHidden().frame(width: 100)
         }
         .controlSize(.small).padding(.horizontal, 20).padding(.vertical, 12)
@@ -92,7 +96,7 @@ struct TradingEventTimeline: View {
 
     private func dateHeader(columnWidth: Double) -> some View {
         HStack(spacing: 0) {
-            Text("标的 / 观察事件")
+            Text(PulseLocalization.localizedString("timeline.column.header"))
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 .frame(width: 176, height: 54, alignment: .leading).padding(.leading, 20)
             HStack(spacing: 0) {
@@ -138,8 +142,12 @@ struct TradingEventTimeline: View {
                                 }
                         }
                         .buttonStyle(.plain).frame(width: columnWidth, height: height)
-                        .help("在 \(shortDate(day)) 添加事件")
-                        .accessibilityLabel("\(item.resolvedDisplayName)，\(shortDate(day))，添加事件")
+                        .help(PulseLocalization.localizedString("timeline.day.addHelp", shortDate(day)))
+                        .accessibilityLabel(PulseLocalization.localizedString(
+                            "timeline.day.addLabel",
+                            item.resolvedDisplayName,
+                            shortDate(day)
+                        ))
                     }
                 }
                 ForEach(placed) { event in
@@ -147,7 +155,7 @@ struct TradingEventTimeline: View {
                         .offset(x: Double(event.span.lowerBound) * columnWidth + 5, y: Double(event.lane) * 38 + 10)
                 }
                 if placed.isEmpty {
-                    Text("点击日期添加事件").font(.caption2).foregroundStyle(.tertiary)
+                    Text(PulseLocalization.localizedString("timeline.row.emptyHint")).font(.caption2).foregroundStyle(.tertiary)
                         .padding(.leading, 10).padding(.top, 20).allowsHitTesting(false)
                 }
             }
@@ -160,11 +168,13 @@ struct TradingEventTimeline: View {
         let entry = placed.entry
         let ranged = entry.event.endDate.map { !calendar.isDate(entry.event.date, inSameDayAs: $0) } ?? false
         let color = eventColor(entry.event.kind)
+        let dateRange = shortDate(entry.event.date)
+            + (entry.event.endDate.map { " — " + shortDate($0) } ?? "")
         return Button { onOpen(entry) } label: {
             HStack(spacing: 5) {
                 Image(systemName: ranged ? "rectangle.fill" : "diamond.fill").font(.system(size: 8))
                 Text(entry.event.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                if entry.isForecast { Text("预告").font(.system(size: 8)).opacity(0.8) }
+                if entry.isForecast { Text(PulseLocalization.localizedString("timeline.forecast")).font(.system(size: 8)).opacity(0.8) }
             }
             .foregroundStyle(color)
             .padding(.horizontal, 8).frame(width: max(20, width), height: 28, alignment: .leading)
@@ -173,8 +183,16 @@ struct TradingEventTimeline: View {
             .clipped()
         }
         .buttonStyle(.plain)
-        .help("\(entry.event.title)\n\(shortDate(entry.event.date))\(entry.event.endDate.map { " — " + shortDate($0) } ?? "")\n\(entry.sourceName)\(entry.isForecast ? " · 预约预告" : "")")
-        .accessibilityLabel("\(entry.event.title)，\(entry.sourceName)，查看详情")
+        // Event title, date range, and source are model data; only the two
+        // labels around them are localized.
+        .help(entry.isForecast
+            ? PulseLocalization.localizedString("timeline.event.help.forecast", entry.event.title, dateRange, entry.sourceName)
+            : PulseLocalization.localizedString("timeline.event.help", entry.event.title, dateRange, entry.sourceName))
+        .accessibilityLabel(PulseLocalization.localizedString(
+            "timeline.event.openLabel",
+            entry.event.title,
+            entry.sourceName
+        ))
     }
 
     private func placeEvents(for symbol: SymbolID, columnWidth: Double) -> [PlacedEvent] {

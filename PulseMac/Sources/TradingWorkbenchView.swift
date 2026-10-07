@@ -177,11 +177,12 @@ struct TradingWorkbenchView: View {
     }
 
     private var title: some View {
-        Text("今日工作台").font(.system(size: 20, weight: .semibold))
+        Text(PulseLocalization.localizedString("workbench.title"))
+            .font(.system(size: 20, weight: .semibold))
     }
 
     private var scopePicker: some View {
-        Picker("市场范围", selection: $scope) {
+        Picker(PulseLocalization.localizedString("workbench.scope.title"), selection: $scope) {
             ForEach(WorkbenchScope.allCases, id: \.self) { option in
                 Text(option.title).tag(option)
             }
@@ -189,11 +190,11 @@ struct TradingWorkbenchView: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .fixedSize()
-        .help("只看所选市场的自选、历史标的与计划。币种不是市场，所以范围按交易所划分。")
+        .help(PulseLocalization.localizedString("workbench.scope.help"))
     }
 
     private var phasePicker: some View {
-        Picker("今日视角", selection: $phase) {
+        Picker(PulseLocalization.localizedString("workbench.phase.title"), selection: $phase) {
             ForEach(WorkbenchPhase.allCases, id: \.self) { option in
                 Text(option.title).tag(option)
             }
@@ -201,7 +202,7 @@ struct TradingWorkbenchView: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .fixedSize()
-        .help("只改变今天的侧重顺序；不改变数据、计数或到价判断。")
+        .help(PulseLocalization.localizedString("workbench.phase.help"))
     }
 
     /// One compact metadata line. Session semantics live behind the help
@@ -232,7 +233,8 @@ struct TradingWorkbenchView: View {
 
     @ViewBuilder
     private func metadataText(dayText: String, stateText: String, phaseNote: String, singleLine: Bool) -> some View {
-        let line = "\(phase.title)侧重 · 市场本地日期 \(dayText) · \(stateText)"
+        let line = PulseLocalization.localizedString(
+            "workbench.meta.line", phase.title, dayText, stateText)
             + (phaseNote.isEmpty ? "" : " · \(phaseNote)")
         Text(line)
             .font(.caption).foregroundStyle(.secondary)
@@ -242,23 +244,19 @@ struct TradingWorkbenchView: View {
     private func metadataHelp(states: [SessionState], zoneText: String) -> some View {
         Image(systemName: "info.circle")
             .font(.caption2).foregroundStyle(.tertiary)
-            .help("""
-            市场本地日期按各交易所时区：\(zoneText)。
-            时段按周一至周五的常规交易时间判断；未接入节假日日历，周中休市日仍会显示为交易时段。
-            这只是报价与事件的参考时钟；成交的今天按本机记录日期。
-            """)
-            .accessibilityLabel("时段与日期的判断口径")
+            .help(PulseLocalization.localizedString("workbench.meta.zoneHelp", zoneText))
+            .accessibilityLabel(PulseLocalization.localizedString("workbench.meta.label"))
             .accessibilityValue(states.map(Self.sessionLabel).joined(separator: "、"))
     }
 
     static func sessionLabel(_ state: SessionState) -> String {
         switch state {
-        case .preMarket: "盘前"
-        case .regular: "交易时段"
-        case .lunchBreak: "午间休市"
-        case .postMarket: "盘后"
-        case .overnight: "夜盘"
-        case .closed: "休市"
+        case .preMarket: PulseLocalization.localizedString("workbench.session.preMarket")
+        case .regular: PulseLocalization.localizedString("workbench.session.regular")
+        case .lunchBreak: PulseLocalization.localizedString("workbench.session.lunchBreak")
+        case .postMarket: PulseLocalization.localizedString("workbench.session.postMarket")
+        case .overnight: PulseLocalization.localizedString("workbench.session.overnight")
+        case .closed: PulseLocalization.localizedString("workbench.session.closed")
         }
     }
 
@@ -281,9 +279,12 @@ struct TradingWorkbenchView: View {
 
     @ViewBuilder
     private func countChips(_ board: WorkbenchBoard) -> some View {
-        countChip("\(board.reachedSymbolCount) 个标的到价", icon: "target", tint: board.reachedSymbolCount > 0 ? .orange : .secondary)
-        countChip("\(board.plansToReviewCount) 条计划条件待核对", icon: "checklist", tint: board.plansToReviewCount > 0 ? .orange : .secondary)
-        countChip("\(board.todayReviewCount) 笔今日成交待复盘", icon: "square.and.pencil", tint: board.todayReviewCount > 0 ? .orange : .secondary)
+        countChip(PulseLocalization.localizedString("workbench.count.reachedSymbols", board.reachedSymbolCount),
+                  icon: "target", tint: board.reachedSymbolCount > 0 ? .orange : .secondary)
+        countChip(PulseLocalization.localizedString("workbench.count.plansToReview", board.plansToReviewCount),
+                  icon: "checklist", tint: board.plansToReviewCount > 0 ? .orange : .secondary)
+        countChip(PulseLocalization.localizedString("workbench.count.todayReviews", board.todayReviewCount),
+                  icon: "square.and.pencil", tint: board.todayReviewCount > 0 ? .orange : .secondary)
     }
 
     @ViewBuilder
@@ -298,7 +299,8 @@ struct TradingWorkbenchView: View {
             Button {
                 onShowJournal()
             } label: {
-                Label("补齐历史 \(backlog.count) 笔复盘", systemImage: "clock.arrow.circlepath")
+                Label(PulseLocalization.localizedString("workbench.backlog.link", backlog.count),
+                      systemImage: "clock.arrow.circlepath")
                     .font(.caption)
             }
             .buttonStyle(.link)
@@ -317,16 +319,18 @@ struct TradingWorkbenchView: View {
     private func taskColumn(_ board: WorkbenchBoard) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Label("今日需要关注", systemImage: "checklist").font(.system(size: 13, weight: .semibold))
+                Label(PulseLocalization.localizedString("workbench.tasks.title"), systemImage: "checklist")
+                    .font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 4)
                 Image(systemName: "questionmark.circle")
                     .font(.caption2).foregroundStyle(.tertiary)
-                    .help("到价按当前有效行情判断，不代表成交。核对条件不阻止记录已经发生的成交；计划动作只在该行展开时显示。")
-                    .accessibilityLabel("任务口径说明")
-                Button("打开仓位池", action: onShowPools).font(.caption)
+                    .help(PulseLocalization.localizedString("workbench.tasks.help"))
+                    .accessibilityLabel(PulseLocalization.localizedString("workbench.tasks.label"))
+                Button(PulseLocalization.localizedString("workbench.tasks.openPools"), action: onShowPools)
+                    .font(.caption)
             }
             if board.tasks.isEmpty {
-                singleLine("今天没有到价、待核对条件或临近事件。", icon: "checkmark.circle")
+                singleLine(PulseLocalization.localizedString("workbench.tasks.empty"), icon: "checkmark.circle")
             }
             ForEach(board.tasks) { task in
                 taskRow(task)
@@ -364,7 +368,7 @@ struct TradingWorkbenchView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("选中后只在下方摘要显示，不会立即跳页。")
+            .help(PulseLocalization.localizedString("workbench.tasks.selectHelp"))
 
             // Only the expanded row spends vertical space on individual plans.
             // Every plan keeps its own identity and its own actions; the
@@ -376,8 +380,10 @@ struct TradingWorkbenchView: View {
                             Text(entry.detail)
                                 .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            Button("核对") { workflowEntry = entry.entry }.controlSize(.small)
-                            Button("记录成交") { executionEntry = entry.entry }.controlSize(.small)
+                            Button(PulseLocalization.localizedString("workbench.task.review")) { workflowEntry = entry.entry }
+                                .controlSize(.small)
+                            Button(PulseLocalization.localizedString("workbench.task.recordFill")) { executionEntry = entry.entry }
+                                .controlSize(.small)
                         }
                         .padding(.leading, 18)
                     }
@@ -388,19 +394,19 @@ struct TradingWorkbenchView: View {
                         Text(row.title + " · " + row.detail)
                             .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        Button("核对持仓") {
+                        Button(PulseLocalization.localizedString("workbench.task.reviewPosition")) {
                             verificationPortion = .init(symbol: task.symbol, portionID: row.id)
                         }.controlSize(.small)
                     }.padding(.leading, 18)
                 }
                 if task.plans.isEmpty == false {
-                    Button("全部计划") { onShowPlans() }
+                    Button(PulseLocalization.localizedString("workbench.task.allPlans")) { onShowPlans() }
                         .buttonStyle(.link).font(.caption2).padding(.leading, 18)
                 }
             } else if task.plans.isEmpty == false {
                 Text(task.plans.count == 1
                      ? task.plans[0].detail
-                     : "\(task.plans.count) 条计划，展开查看每一条")
+                     : PulseLocalization.localizedString("workbench.task.planCount", task.plans.count))
                     .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
                     .padding(.leading, 18)
             }
@@ -417,16 +423,16 @@ struct TradingWorkbenchView: View {
     @ViewBuilder
     private func reviewActions(_ task: WorkbenchTask) -> some View {
         if let count = task.reviewCount, let first = task.reviewTransactionIDs.first {
-            Button("去复盘 \(count) 笔成交") {
+            Button(PulseLocalization.localizedString("workbench.task.reviewFills", count)) {
                 appState.pendingJournalTransactionID = first
                 onShowJournal()
             }
             .buttonStyle(.link).font(.caption2)
             .padding(.leading, 18)
-            .help("按记录日期（本机）属于今天的成交；打开交易日志逐笔补写复盘。")
+            .help(PulseLocalization.localizedString("workbench.task.reviewFills.help"))
         }
         if let checkpointID = task.checkpointID {
-            Button("复核检查点") {
+            Button(PulseLocalization.localizedString("workbench.task.reviewCheckpoint")) {
                 appState.pendingJournalTransactionID = checkpointID
                 onShowJournal()
             }.buttonStyle(.link).font(.caption2).padding(.leading, 18)
@@ -442,13 +448,14 @@ struct TradingWorkbenchView: View {
     private func summaryColumn(_ board: WorkbenchBoard) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Label("选中标的摘要", systemImage: "sidebar.right").font(.system(size: 13, weight: .semibold))
+                Label(PulseLocalization.localizedString("workbench.summary.title"), systemImage: "sidebar.right")
+                    .font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 4)
             }
             if let symbol = selectedSymbol, let summary = board.summary(for: symbol) {
                 summaryContent(summary, verifications: board.tasks.first { $0.symbol == symbol }?.verifications ?? [])
             } else {
-                singleLine("在上方选择一行标的，这里显示它的报价时点、相关计划与事件。", icon: "cursorarrow.click")
+                singleLine(PulseLocalization.localizedString("workbench.summary.empty"), icon: "cursorarrow.click")
             }
         }
         .padding(12)
@@ -467,27 +474,28 @@ struct TradingWorkbenchView: View {
             }
             quoteLine(summary)
             if summary.plans.isEmpty == false {
-                detailBlock("相关计划", rows: summary.plans.map {
+                detailBlock(PulseLocalization.localizedString("workbench.summary.plans"), rows: summary.plans.map {
                     WorkbenchDetailRow(id: $0.id.uuidString, title: $0.title, detail: $0.detail)
                 })
             }
             if summary.events.isEmpty == false {
-                detailBlock("未来 7 日事件（北京时间）", rows: summary.events)
+                detailBlock(PulseLocalization.localizedString("workbench.summary.events"), rows: summary.events)
             }
             if !verifications.isEmpty {
-                detailBlock("持仓判断", rows: verifications.map {
+                detailBlock(PulseLocalization.localizedString("workbench.summary.verifications"), rows: verifications.map {
                     WorkbenchDetailRow(id: $0.id.uuidString, title: $0.title, detail: $0.detail)
                 })
             }
             if summary.plans.isEmpty && summary.events.isEmpty && verifications.isEmpty {
-                singleLine("该标的没有活动计划或临近事件。", icon: "minus")
+                singleLine(PulseLocalization.localizedString("workbench.summary.inactive"), icon: "minus")
             }
             // One detail action only: this callback opens the summary
             // inspector, so the old duplicate "打开完整标的" pair is gone.
             HStack(spacing: 8) {
-                Button("标的详情") { onSelect(summary.symbol) }.controlSize(.small)
+                Button(PulseLocalization.localizedString("workbench.summary.openDetail")) { onSelect(summary.symbol) }
+                    .controlSize(.small)
                 if let planID = summary.pendingPoolPlanID {
-                    Button("定位池内计划") {
+                    Button(PulseLocalization.localizedString("workbench.summary.locatePlan")) {
                         appState.pendingPoolPlanID = planID
                         onShowPools()
                     }
@@ -553,7 +561,8 @@ struct TradingWorkbenchView: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
                     capitalTitle
-                    Text("按币种 · 持仓市值与待买预算按计划价").font(.caption2).foregroundStyle(.tertiary)
+                    Text(PulseLocalization.localizedString("workbench.capital.subtitle"))
+                        .font(.caption2).foregroundStyle(.tertiary)
                     Spacer(minLength: 4)
                     capitalActions
                 }
@@ -563,7 +572,7 @@ struct TradingWorkbenchView: View {
                 }
             }
             if board.capitals.isEmpty {
-                singleLine("所选市场暂无持仓或计划；账户现金按币种独立记录。", icon: "minus")
+                singleLine(PulseLocalization.localizedString("workbench.capital.empty"), icon: "minus")
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 10)], alignment: .leading, spacing: 8) {
                     ForEach(board.capitals) { capital in
@@ -572,11 +581,11 @@ struct TradingWorkbenchView: View {
                 }
             }
             if board.unvaluableCount > 0 {
-                Text("有 \(board.unvaluableCount) 项持仓缺可用报价，持仓市值只计已计价部分。")
+                Text(PulseLocalization.localizedString("workbench.capital.unpriced", board.unvaluableCount))
                     .font(.caption2).foregroundStyle(.orange)
             }
             if board.reconciliationCount > 0 {
-                Text("有 \(board.reconciliationCount) 项持仓分账未核对，池内份额按已核对部分计。")
+                Text(PulseLocalization.localizedString("workbench.capital.unreconciled", board.reconciliationCount))
                     .font(.caption2).foregroundStyle(.orange)
             }
         }
@@ -587,13 +596,17 @@ struct TradingWorkbenchView: View {
     }
 
     private var capitalTitle: some View {
-        Label("资金摘要", systemImage: "banknote").font(.system(size: 13, weight: .semibold))
+        Label(PulseLocalization.localizedString("workbench.capital.title"), systemImage: "banknote")
+            .font(.system(size: 13, weight: .semibold))
     }
 
     private var capitalActions: some View {
         HStack(spacing: 8) {
-            Button(showCapitalDetail ? "收起用途条" : "展开用途条") { showCapitalDetail.toggle() }.font(.caption)
-            Button("仓位池", action: onShowPools).font(.caption)
+            Button(showCapitalDetail
+                   ? PulseLocalization.localizedString("workbench.capital.collapse")
+                   : PulseLocalization.localizedString("workbench.capital.expand")) { showCapitalDetail.toggle() }
+                .font(.caption)
+            Button(PulseLocalization.localizedString("workbench.capital.pools"), action: onShowPools).font(.caption)
         }
     }
 
@@ -615,7 +628,8 @@ struct TradingWorkbenchView: View {
                 }
             }
             if capital.hasOverflow {
-                Text("金额超出可表示范围，暂不显示比例").font(.caption2).foregroundStyle(.orange)
+                Text(PulseLocalization.localizedString("workbench.capital.overflow"))
+                    .font(.caption2).foregroundStyle(.orange)
             }
             // A valid mini gauge is always drawn: hiding it behind the toggle
             // made the row look like it had no pool structure at all.
@@ -623,11 +637,12 @@ struct TradingWorkbenchView: View {
                 PoolTrackGauge(height: 8,
                                segments: capital.segments.map { .init(pool: $0.pool, value: $0.value) },
                                scale: capital.trackScale)
-                    .accessibilityLabel("\(capital.code) 用途分布")
+                    .accessibilityLabel(PulseLocalization.localizedString("workbench.capital.shareLabel", capital.code))
                 if showCapitalDetail {
                     Text(capital.segmentText).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                 } else {
-                    Text("已计价部分 \(PriceFormatter.money(capital.segmentTotal, currencyCode: capital.code))")
+                    Text(PulseLocalization.localizedString("workbench.capital.pricedPart",
+                             PriceFormatter.money(capital.segmentTotal, currencyCode: capital.code)))
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
@@ -639,11 +654,13 @@ struct TradingWorkbenchView: View {
             }
             HStack(spacing: 6) {
                 if capital.plannedBuy > 0 {
-                    Text("待买预算 \(PriceFormatter.money(capital.plannedBuy, currencyCode: capital.code))")
+                    Text(PulseLocalization.localizedString("workbench.capital.plannedBuy",
+                             PriceFormatter.money(capital.plannedBuy, currencyCode: capital.code)))
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 if capital.budgetGap > 0 {
-                    Text("预算缺口 \(PriceFormatter.money(capital.budgetGap, currencyCode: capital.code))")
+                    Text(PulseLocalization.localizedString("workbench.capital.budgetGap",
+                             PriceFormatter.money(capital.budgetGap, currencyCode: capital.code)))
                         .font(.caption2.monospacedDigit()).foregroundStyle(.orange)
                 }
             }
@@ -671,12 +688,13 @@ struct TradingWorkbenchView: View {
     private func riskSummary(now: Date, board: WorkbenchBoard) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
-                Label("风险防守", systemImage: "shield.lefthalf.filled").font(.system(size: 13, weight: .semibold))
+                Label(PulseLocalization.localizedString("workbench.risk.title"), systemImage: "shield.lefthalf.filled")
+                    .font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 4)
-                Button("风险计算") { showRisk = true }.font(.caption)
+                Button(PulseLocalization.localizedString("workbench.risk.calculator")) { showRisk = true }.font(.caption)
             }
             if board.defenses.isEmpty {
-                singleLine("没有已保存的防守价与持仓组合。", icon: "minus")
+                singleLine(PulseLocalization.localizedString("workbench.risk.empty"), icon: "minus")
             }
             ForEach(board.defenses) { item in
                 Button { selectedSymbol = item.symbol } label: {
@@ -703,16 +721,17 @@ struct TradingWorkbenchView: View {
     private func sectorSummary(_ board: WorkbenchBoard) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
-                Label("板块暴露", systemImage: "chart.pie").font(.system(size: 13, weight: .semibold))
+                Label(PulseLocalization.localizedString("workbench.sector.title"), systemImage: "chart.pie")
+                    .font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 4)
                 Image(systemName: "questionmark.circle")
                     .font(.caption2).foregroundStyle(.tertiary)
-                    .help("按币种绝对市值计算，不含现金。缺可用报价的持仓不计入比例，所以百分比是「已计价部分」。某一币种只要有缺价持仓，该币种的超上限标记就不再给出。")
-                    .accessibilityLabel("板块暴露口径")
-                Button("分类与上限") { showSectors = true }.font(.caption)
+                    .help(PulseLocalization.localizedString("workbench.sector.help"))
+                    .accessibilityLabel(PulseLocalization.localizedString("workbench.sector.label"))
+                Button(PulseLocalization.localizedString("workbench.sector.configure")) { showSectors = true }.font(.caption)
             }
             if board.sectorRows.isEmpty {
-                singleLine("所选市场暂无可计价持仓。", icon: "minus")
+                singleLine(PulseLocalization.localizedString("workbench.sector.empty"), icon: "minus")
             }
             ForEach(board.sectorRows) { row in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -720,14 +739,15 @@ struct TradingWorkbenchView: View {
                     Spacer(minLength: 4)
                     Text(String(format: "%.1f%%", row.percent)).font(.caption.monospacedDigit())
                     if row.overLimit {
-                        Text("超上限").font(.caption2).foregroundStyle(.orange)
+                        Text(PulseLocalization.localizedString("workbench.sector.overLimit")).font(.caption2).foregroundStyle(.orange)
                     }
                     if row.hasMissingQuote {
-                        Text("有缺价").font(.caption2).foregroundStyle(.orange)
+                        Text(PulseLocalization.localizedString("workbench.sector.missingQuote")).font(.caption2).foregroundStyle(.orange)
                     }
                 }
             }
-            Text("按币种绝对市值 · 不含现金 · 已计价部分\(board.sectorMissingQuoteCount > 0 ? "（有缺价持仓）" : "")")
+            Text(PulseLocalization.localizedString("workbench.sector.footer")
+                 + (board.sectorMissingQuoteCount > 0 ? PulseLocalization.localizedString("workbench.sector.footerMissing") : ""))
                 .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
         }
         .padding(12)
@@ -856,7 +876,8 @@ struct WorkbenchBoard {
         let todayReviewCount = todayReviewBySymbol.values.reduce(0) { $0 + $1.count }
         self.todayReviewCount = todayReviewCount
         self.historyBacklog = backlog > 0
-            ? (backlog, "按本机记录日期统计的较早未补记录" + (backlogIsFutureFree ? "" : "；未来日期的记录不计入"))
+            ? (backlog, PulseLocalization.localizedString(
+                backlogIsFutureFree ? "workbench.backlog.detail" : "workbench.backlog.detailFuture"))
             : nil
 
         // MARK: Tasks, grouped by symbol
@@ -898,11 +919,12 @@ struct WorkbenchBoard {
             guard reached || conditions > 0 || hasEvent else { continue }
             if reached {
                 reachedSymbols.insert(entry.symbol)
-                reasonsBySymbol[entry.symbol, default: []].append("到价")
+                reasonsBySymbol[entry.symbol, default: []].append(PulseLocalization.localizedString("workbench.reason.atPrice"))
             }
             if conditions > 0 {
                 reviewPlans += 1
-                reasonsBySymbol[entry.symbol, default: []].append("\(conditions) 条条件待核对")
+                reasonsBySymbol[entry.symbol, default: []].append(
+                    PulseLocalization.localizedString("workbench.reason.conditionsToReview", conditions))
             }
             reachedBySymbol[entry.symbol] = (reachedBySymbol[entry.symbol] ?? false) || reached
             conditionsBySymbol[entry.symbol, default: 0] += conditions
@@ -916,7 +938,7 @@ struct WorkbenchBoard {
         // needs a row: the event is the reason.
         for symbol in windowEventCounts.keys
         where plansBySymbol[symbol] == nil && items.contains(where: { $0.symbol == symbol }) {
-            reasonsBySymbol[symbol] = ["事件临近"]
+            reasonsBySymbol[symbol] = [PulseLocalization.localizedString("workbench.reason.eventApproaching")]
         }
         var verificationsBySymbol: [SymbolID: [WorkbenchTask.VerificationRow]] = [:]
         for item in items where item.positionQuantity > 0 && !item.positionAllocationNeedsReconciliation {
@@ -925,20 +947,23 @@ struct WorkbenchBoard {
                     $0.requiresReview(at: now, currentEvents: liveEvents(item.symbol))
                 }
                 guard !conditions.isEmpty else { continue }
-                let stage = conditions.contains { $0.state == .invalidated } ? "持仓判断已失效"
-                    : conditions.contains { $0.state == .needsReview || $0.state == .confirmed } ? "持仓判断需复查"
-                    : "持仓判断待验证"
+                let stage = conditions.contains { $0.state == .invalidated }
+                    ? PulseLocalization.localizedString("workbench.verification.invalidated")
+                    : conditions.contains { $0.state == .needsReview || $0.state == .confirmed }
+                        ? PulseLocalization.localizedString("workbench.verification.needsReview")
+                        : PulseLocalization.localizedString("workbench.verification.pending")
                 reasonsBySymbol[item.symbol, default: []].append(stage)
                 verificationsBySymbol[item.symbol, default: []].append(.init(id: portion.id,
-                    title: portion.pool.effectivePurpose.title + " · " + PriceFormatter.quantity(portion.quantity) + " 份额",
-                    detail: stage + " · " + conditions.map(\.title).joined(separator: "、")))
-            }
+                    title: PulseLocalization.localizedString("workbench.verification.shares", portion.pool.effectivePurpose.title,
+                                 PriceFormatter.quantity(portion.quantity)),
+                    detail: stage + " · " + conditions.map(\.title).joined(
+                        separator: PulseLocalization.localizedString("workbench.verification.conditionSeparator"))))            }
         }
         var tasks = Set(plansBySymbol.keys).union(reasonsBySymbol.keys).map { symbol in
             var reasons = reasonsBySymbol[symbol] ?? []
-            if windowEventCounts[symbol] ?? 0 > 0 { reasons.append("事件临近") }
+            if windowEventCounts[symbol] ?? 0 > 0 { reasons.append(PulseLocalization.localizedString("workbench.reason.eventApproaching")) }
             let reviewIDs = todayReviewBySymbol[symbol] ?? []
-            if reviewIDs.isEmpty == false { reasons.append("今日成交待复盘") }
+            if reviewIDs.isEmpty == false { reasons.append(PulseLocalization.localizedString("workbench.reason.todayReview")) }
             return WorkbenchTask(
                 symbol: symbol, name: name(symbol),
                 reached: reachedBySymbol[symbol] ?? false,
@@ -956,7 +981,7 @@ struct WorkbenchBoard {
             tasks.append(WorkbenchTask(
                 symbol: symbol, name: name(symbol),
                 reached: false, conditionCount: 0, eventCount: 0,
-                reasons: ["今日成交待复盘"], plans: [],
+                reasons: [PulseLocalization.localizedString("workbench.reason.todayReview")], plans: [],
                 reviewTransactionIDs: todayReviewBySymbol[symbol] ?? [],
                 dueReviewText: WorkbenchBoard.dueReviewText(
                     symbol, items: items + historyItems, today: Calendar.current.startOfDay(for: now), calendar: .current)
@@ -975,7 +1000,7 @@ struct WorkbenchBoard {
                 tasks[index].checkpointID = checkpoint.id
             } else {
                 tasks.append(.init(symbol: item.symbol, name: name(item.symbol), reached: false,
-                    conditionCount: 0, eventCount: 0, reasons: ["检查点到期"], plans: [],
+                    conditionCount: 0, eventCount: 0, reasons: [PulseLocalization.localizedString("workbench.reason.checkpointDue")], plans: [],
                     reviewTransactionIDs: [], dueReviewText: Self.dueReviewText(item.symbol,
                         items: [item], today: recordedToday, calendar: .current), checkpointID: checkpoint.id))
             }
@@ -992,15 +1017,19 @@ struct WorkbenchBoard {
         for currency in buyGroups.keys.sorted() {
             let amount = (buyGroups[currency] ?? []).reduce(0) { $0 + $1.remainingEstimatedAmount }
             guard amount.isFinite else {
-                cashNotes.append(CashNote(id: "\(currency)-invalid", title: "\(currency) 计划预算无法计算", detail: "请检查计划价与数量"))
+                cashNotes.append(CashNote(id: "\(currency)-invalid",
+                                          title: PulseLocalization.localizedString("workbench.cash.planBudgetInvalid", currency),
+                                          detail: PulseLocalization.localizedString("workbench.cash.planBudgetInvalidDetail")))
                 continue
             }
             let balance = cash.balance(currency: currency)
             if balance == nil {
-                cashNotes.append(CashNote(id: "\(currency)-missing", title: "补录 \(currency) 账户现金",
-                                          detail: "待买入 \(PriceFormatter.money(amount, currencyCode: currency))"))
+                cashNotes.append(CashNote(id: "\(currency)-missing",
+                                          title: PulseLocalization.localizedString("workbench.cash.recordBalance", currency),
+                                          detail: PulseLocalization.localizedString("workbench.cash.toBuy",
+                                                     PriceFormatter.money(amount, currencyCode: currency))))
             } else if let balance, amount > balance {
-                cashNotes.append(CashNote(id: "\(currency)-gap", title: "\(currency) 买入预算缺口",
+                cashNotes.append(CashNote(id: "\(currency)-gap", title: PulseLocalization.localizedString("workbench.cash.budgetGap", currency),
                                           detail: PriceFormatter.money(amount - balance, currencyCode: currency)))
             }
         }
@@ -1129,10 +1158,12 @@ struct WorkbenchBoard {
         // checkpoint, so its absence must not discard the row.
         guard let nearest = due.map(\.days).min() else { return nil }
         let note = due.first(where: { $0.days == nearest })?.note
-        let when = nearest == 0 ? "今日" : "已逾期 \(-nearest) 天"
-        let checkpoint = "复盘检查点\(when)"
+        let when = nearest == 0
+            ? PulseLocalization.localizedString("workbench.review.today")
+            : PulseLocalization.localizedString("workbench.review.overdue", -nearest)
+        let checkpoint = PulseLocalization.localizedString("workbench.review.checkpoint", when)
         guard let note, note.isEmpty == false else { return checkpoint }
-        return "\(checkpoint)：\(note)"
+        return PulseLocalization.localizedString("workbench.review.checkpointWithNote", checkpoint, note)
     }
 
     /// Condition states are preserved exactly as stored; this only counts what
@@ -1154,21 +1185,24 @@ struct WorkbenchBoard {
     }
 
     static func planSummary(_ entry: TradePlanEntry, price: Double?, conditions: Int) -> String {
-        var parts = ["\(entry.plan.kind == .buy ? "买入" : "卖出") "
-            + PriceFormatter.price(entry.plan.price, market: entry.symbol.market)
-            + " × " + PriceFormatter.quantity(entry.remainingQuantity)]
+        let side = entry.plan.kind == .buy
+            ? PulseLocalization.localizedString("plan.kind.buy")
+            : PulseLocalization.localizedString("plan.kind.sell")
+        var parts = [PulseLocalization.localizedString("workbench.plan.summary", side,
+                        PriceFormatter.price(entry.plan.price, market: entry.symbol.market),
+                        PriceFormatter.quantity(entry.remainingQuantity))]
         if let price {
             parts.append(entry.plan.isReached(at: price)
-                ? "已到价（不代表成交）"
-                : String(format: "距触发 %.1f%%", entry.plan.gapPercent(from: price)))
+                ? PulseLocalization.localizedString("workbench.plan.reached")
+                : PulseLocalization.localizedString("workbench.plan.gapToTrigger", entry.plan.gapPercent(from: price)))
         } else {
             // Covers both a missing quote and a closed/stale one: neither is an
             // intraday signal, so neither may read as "waiting at a distance".
-            parts.append("无有效盘中行情（不计到价）")
+            parts.append(PulseLocalization.localizedString("workbench.plan.noIntraday"))
         }
-        if conditions > 0 { parts.append("\(conditions) 条条件待核对") }
+        if conditions > 0 { parts.append(PulseLocalization.localizedString("workbench.plan.conditionsToReview", conditions)) }
         if entry.filledQuantity > 0 {
-            parts.append("已成 \(PriceFormatter.quantity(entry.filledQuantity))")
+            parts.append(PulseLocalization.localizedString("workbench.plan.filled", PriceFormatter.quantity(entry.filledQuantity)))
         }
         return parts.joined(separator: " · ")
     }
@@ -1177,9 +1211,12 @@ struct WorkbenchBoard {
     /// kind, price, size, pool and note tell two plans apart; the id is only a
     /// fallback for two otherwise identical rows.
     static func planIdentity(_ entry: TradePlanEntry) -> String {
-        var parts = ["\(entry.plan.kind == .buy ? "买入" : "卖出") "
-            + PriceFormatter.price(entry.plan.price, market: entry.symbol.market)
-            + " × " + PriceFormatter.quantity(entry.plan.quantity)]
+        let side = entry.plan.kind == .buy
+            ? PulseLocalization.localizedString("plan.kind.buy")
+            : PulseLocalization.localizedString("plan.kind.sell")
+        var parts = [PulseLocalization.localizedString("workbench.plan.summary", side,
+                        PriceFormatter.price(entry.plan.price, market: entry.symbol.market),
+                        PriceFormatter.quantity(entry.plan.quantity))]
         if let pool = entry.plan.positionPool { parts.append(pool.title) }
         if let note = entry.plan.note?.trimmingCharacters(in: .whitespacesAndNewlines), note.isEmpty == false {
             parts.append(note)
@@ -1230,11 +1267,15 @@ struct WorkbenchBoard {
     static func phaseNote(phase: WorkbenchPhase, reached: Int, backlog: Int) -> String {
         switch phase {
         case .preMarket:
-            return "盘前侧重待观察计划、临近事件与资金准备。"
+            return PulseLocalization.localizedString("workbench.phaseNote.preMarket")
         case .intraday:
-            return reached > 0 ? "盘中侧重有效行情下的到价与待核对条件。" : "当前无有效盘中行情到价。"
+            return reached > 0
+                ? PulseLocalization.localizedString("workbench.phaseNote.intradayReached")
+                : PulseLocalization.localizedString("workbench.phaseNote.intradayQuiet")
         case .postMarket:
-            return backlog > 0 ? "盘后侧重今日成交复盘；较早记录在历史入口。" : "盘后侧重今日成交复盘。"
+            return backlog > 0
+                ? PulseLocalization.localizedString("workbench.phaseNote.postMarketBacklog")
+                : PulseLocalization.localizedString("workbench.phaseNote.postMarket")
         }
     }
 
@@ -1252,19 +1293,23 @@ struct WorkbenchBoard {
         if let price {
             quoteText = "\(PriceFormatter.price(price, market: symbol.market)) \(symbol.currencyCode)"
         } else {
-            quoteText = "无可用报价"
+            quoteText = PulseLocalization.localizedString("workbench.quote.unavailable")
         }
-        let statusText = isCurrent ? "盘中有效行情" : (quote == nil ? "缺报价" : "收盘/历史参考价")
+        let statusText = isCurrent
+            ? PulseLocalization.localizedString("workbench.quote.statusCurrent")
+            : (quote == nil ? PulseLocalization.localizedString("workbench.quote.statusMissing") : PulseLocalization.localizedString("workbench.quote.statusReference"))
         let timestampText = quote.map {
-            "报价时点 \(formatter.string(from: $0.timestamp))（\(symbol.market.timeZoneDisplayName)）"
-                + (isCurrent ? "" : " · 参考价不参与到价")
-        } ?? "尚未取到报价"
+            PulseLocalization.localizedString("workbench.quote.timestamp", formatter.string(from: $0.timestamp),
+               symbol.market.timeZoneDisplayName)
+                + (isCurrent ? "" : PulseLocalization.localizedString("workbench.quote.referenceNotTrigger"))
+        } ?? PulseLocalization.localizedString("workbench.quote.none")
 
         let planRows = entries.map { entry -> WorkbenchSymbolSummary.PlanRow in
             let conditions = conditionsToReview(entry, now: now, currentEvents: liveEvents)
-            var detail = "已成 \(PriceFormatter.quantity(entry.filledQuantity))"
-                + " · 待执行 \(PriceFormatter.quantity(entry.remainingQuantity))"
-            if conditions > 0 { detail += " · \(conditions) 条条件待核对" }
+            var detail = PulseLocalization.localizedString("workbench.plan.progress",
+                            PriceFormatter.quantity(entry.filledQuantity),
+                            PriceFormatter.quantity(entry.remainingQuantity))
+            if conditions > 0 { detail += " · " + PulseLocalization.localizedString("workbench.plan.conditionsToReview", conditions) }
             return .init(id: entry.id, title: planIdentity(entry), detail: detail)
         }
         // Event dates are civil days in the calendar's zone, not quote instants.
@@ -1278,7 +1323,7 @@ struct WorkbenchBoard {
             return WorkbenchDetailRow(
                 id: entry.id,
                 title: "\(period) · \(entry.event.title)",
-                detail: entry.isForecast ? "预约" : entry.sourceName
+                detail: entry.isForecast ? PulseLocalization.localizedString("workbench.plan.eventForecast") : entry.sourceName
             )
         }
         return WorkbenchSymbolSummary(
@@ -1308,11 +1353,14 @@ struct WorkbenchBoard {
         .map { item, q, stop in
             let isCurrent = TradingQuoteHealth.isCurrent(q, now: now)
             let value = q.price <= stop
-                ? "低于防守价"
-                : String(format: "距防守 %.1f%%", (q.price - stop) / q.price * 100)
+                ? PulseLocalization.localizedString("workbench.defense.belowStop")
+                : PulseLocalization.localizedString("workbench.defense.distance", (q.price - stop) / q.price * 100)
             return WorkbenchDefense(
                 symbol: item.symbol, name: name(item.symbol),
-                detail: "防守 \(PriceFormatter.price(stop, market: item.symbol.market)) · \(isCurrent ? "盘中报价" : "收盘/历史参考")",
+                detail: PulseLocalization.localizedString("workbench.defense.detail",
+                            PriceFormatter.price(stop, market: item.symbol.market),
+                            isCurrent ? PulseLocalization.localizedString("workbench.defense.currentQuote")
+                                      : PulseLocalization.localizedString("workbench.defense.referenceQuote")),
                 valueText: value, isWarning: isCurrent && q.price <= stop
             )
         }
@@ -1374,10 +1422,12 @@ struct WorkbenchTask: Identifiable {
 
     var countText: String {
         var parts: [String] = []
-        if plans.isEmpty == false { parts.append("\(plans.count) 条计划") }
-        if eventCount > 0 { parts.append("\(eventCount) 个事件") }
-        if let reviewCount { parts.append("\(reviewCount) 笔待复盘") }
-        if !verifications.isEmpty { parts.append("\(verifications.count) 份持仓判断") }
+        if plans.isEmpty == false { parts.append(PulseLocalization.localizedString("workbench.count.plans", plans.count)) }
+        if eventCount > 0 { parts.append(PulseLocalization.localizedString("workbench.count.events", eventCount)) }
+        if let reviewCount { parts.append(PulseLocalization.localizedString("workbench.count.reviews", reviewCount)) }
+        if !verifications.isEmpty {
+            parts.append(PulseLocalization.localizedString("workbench.count.verifications", verifications.count))
+        }
         return parts.joined(separator: " · ")
     }
 }
@@ -1439,23 +1489,25 @@ struct WorkbenchCapital: Identifiable {
     /// The label names the account, because the recorded balance is global per
     /// currency and is deliberately not scoped to the selected market.
     var cashText: String {
-        guard let cash else { return "账户现金 未录" }
-        return "账户现金 \(PriceFormatter.money(cash, currencyCode: code))"
+        guard let cash else { return PulseLocalization.localizedString("workbench.cash.unrecorded") }
+        return PulseLocalization.localizedString("workbench.cash.cash") + " "
+            + PriceFormatter.money(cash, currencyCode: code)
     }
 
     /// A holdings figure that could not be fully priced says so in place: it is
     /// the priced part, not the position's value.
     var holdingsText: String {
         let money = PriceFormatter.money(holdings, currencyCode: code)
-        return hasMissingQuote ? "持仓 \(money)（部分缺价）" : "持仓 \(money)"
+        return PulseLocalization.localizedString(hasMissingQuote ? "workbench.cash.holdingsPartial" : "workbench.cash.holdings",
+                  money)
     }
 
     var missingQuoteText: String {
-        "该币种有持仓缺可用报价，市值只计已计价部分；超上限判断不作数。"
+        PulseLocalization.localizedString("workbench.cash.missingQuoteNote")
     }
 
     var unverifiedText: String {
-        "该币种有持仓分账未核对，池内金额只含已核对份额，不代表全部持仓。"
+        PulseLocalization.localizedString("workbench.cash.unverifiedNote")
     }
 
     var segmentText: String {
@@ -1519,9 +1571,9 @@ enum WorkbenchPhase: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .preMarket: "盘前"
-        case .intraday: "盘中"
-        case .postMarket: "盘后"
+        case .preMarket: PulseLocalization.localizedString("workbench.phase.preMarket")
+        case .intraday: PulseLocalization.localizedString("workbench.phase.intraday")
+        case .postMarket: PulseLocalization.localizedString("workbench.phase.postMarket")
         }
     }
 }
@@ -1536,10 +1588,10 @@ enum WorkbenchScope: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .all: "全部"
-        case .chinaA: "A股"
-        case .hongKong: "港股"
-        case .unitedStates: "美股"
+        case .all: PulseLocalization.localizedString("workbench.scope.all")
+        case .chinaA: PulseLocalization.localizedString("workbench.scope.chinaA")
+        case .hongKong: PulseLocalization.localizedString("workbench.scope.hongKong")
+        case .unitedStates: PulseLocalization.localizedString("workbench.scope.unitedStates")
         }
     }
 

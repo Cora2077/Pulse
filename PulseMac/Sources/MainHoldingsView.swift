@@ -219,7 +219,7 @@ struct MainHoldingsView: View {
     private func holdingsTable(_ rows: [DisplayRow]) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Text("持仓明细")
+                Text(PulseLocalization.localizedString("main.holdings.detail.title"))
                     .font(.system(size: 12, weight: .semibold))
                     .fixedSize()
                 Spacer(minLength: 12)
@@ -234,7 +234,8 @@ struct MainHoldingsView: View {
                         .font(.system(size: 9).monospacedDigit())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .help("\(summary) · 本机时区：\(TimeZone.current.identifier)")
+                        .help(PulseLocalization.localizedString("main.holdings.quoteSummary.help", summary,
+                                 TimeZone.current.identifier))
                 }
             }
             .padding(.horizontal, 16).padding(.vertical, 11)
@@ -314,8 +315,11 @@ struct MainHoldingsView: View {
         } else {
             timeText = "\(formatter.string(from: first))–\(formatter.string(from: last))"
         }
-        let sources = Set(quotes.map { $0.sourceName ?? $0.sourceID ?? "来源未知" }).sorted()
-        return "行情时刻 \(timeText)（本机时间） · \(sources.joined(separator: "、"))"
+        let sources = Set(quotes.map {
+            $0.sourceName ?? $0.sourceID ?? PulseLocalization.localizedString("main.holdings.source.unknown")
+        }).sorted()
+        return PulseLocalization.localizedString("main.holdings.quoteSummary", timeText,
+                  sources.joined(separator: PulseLocalization.localizedString("workbench.verification.conditionSeparator")))
     }
 
     private func setColumnWidth(_ field: SortField, to proposedWidth: CGFloat, persist: Bool) {
@@ -414,11 +418,11 @@ struct MainHoldingsView: View {
                         Toggle(PulseLocalization.localizedString(column.field.titleKey), isOn: columnVisibilityBinding(column.field))
                     }
                     Divider()
-                    Button("重置列布局", action: resetTableLayout)
+                    Button(PulseLocalization.localizedString("main.holdings.columns.reset"), action: resetTableLayout)
                 } label: {
-                    Label("列", systemImage: "tablecells")
+                    Label(PulseLocalization.localizedString("main.holdings.columns.menu"), systemImage: "tablecells")
                 }
-                .help("显示或隐藏列，并重置列宽")
+                .help(PulseLocalization.localizedString("main.holdings.columns.help"))
             }
             .font(.system(size: 11))
             .controlSize(.small)
@@ -569,55 +573,56 @@ struct MainHoldingsView: View {
                         allocationDistribution(currency)
                     } else if allocationScenario == .afterBuy, result != nil,
                               result?.excludedUnrepresentableCurrencyCodes.contains(currencyCode) == true {
-                        Text("计划后 \(currencyCode) 总敞口超出可表示范围")
+                        Text(PulseLocalization.localizedString("main.holdings.afterBuy.overflow", currencyCode))
                             .font(.system(size: 11)).foregroundStyle(.orange)
                     } else if allocationScenario == .afterBuy, result != nil,
                               allocationCurrentResult.currencies.contains(where: { $0.code == currencyCode }) {
-                        Text("计划后 \(currencyCode) 无剩余持仓，总敞口为 0")
+                        Text(PulseLocalization.localizedString("main.holdings.afterBuy.zero", currencyCode))
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                     } else if allocationScenario == .afterBuy, result == nil {
-                        Text("所选计划缺少有效现价或币种，无法预览")
+                        Text(PulseLocalization.localizedString("main.holdings.afterBuy.unavailable"))
                             .font(.system(size: 11)).foregroundStyle(.orange)
                     } else {
-                        Text("此币种当前没有可计入的持仓")
+                        Text(PulseLocalization.localizedString("main.holdings.afterBuy.emptyCurrency"))
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     if allocationScenario == .afterBuy {
-                        Text("计划情景按当前行情现价估算。")
+                        Text(PulseLocalization.localizedString("main.holdings.afterBuy.estimate"))
                             .font(.system(size: 10)).foregroundStyle(.tertiary)
                     }
                 } else {
-                    Text("没有可用的持仓报价")
+                    Text(PulseLocalization.localizedString("main.holdings.noQuote"))
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
 
                 if displayed.excludedMissingQuoteCount > 0 {
-                    Text("\(displayed.excludedMissingQuoteCount) 个持仓因缺少有效报价或币种未计入；各币种分别统计，不跨币种相加")
+                    Text(PulseLocalization.localizedString("main.holdings.excluded", displayed.excludedMissingQuoteCount))
                         .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
                 }
                 if !displayed.excludedUnrepresentableCurrencyCodes.isEmpty {
-                    Text("币种总敞口超出可表示范围，已跳过：\(displayed.excludedUnrepresentableCurrencyCodes.joined(separator: ", "))")
+                    Text(PulseLocalization.localizedString("main.holdings.excludedCurrencies",
+                             displayed.excludedUnrepresentableCurrencyCodes.joined(separator: ", ")))
                         .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
                 }
                 if !allocationPlans.isEmpty {
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 8) {
-                            Text("计划买入").font(.system(size: 11, weight: .medium))
+                            Text(PulseLocalization.localizedString("main.holdings.plannedBuy")).font(.system(size: 11, weight: .medium))
                             allocationPlanPicker.frame(width: 220)
                             allocationPlanSummary(current, preview: allocationPreviewResult)
                         }
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 8) {
-                                Text("计划买入").font(.system(size: 11, weight: .medium))
+                                Text(PulseLocalization.localizedString("main.holdings.plannedBuy")).font(.system(size: 11, weight: .medium))
                                 allocationPlanPicker.frame(width: 220)
                             }
                             allocationPlanSummary(current, preview: allocationPreviewResult)
                         }
                     }
                 }
-                Text("不含现金 · 各币种分别统计")
+                Text(PulseLocalization.localizedString("main.holdings.allocation.footer"))
                     .font(.system(size: 10)).foregroundStyle(.tertiary)
-                    .help("按币种分别统计持仓绝对市值，不含现金；计划仅作现价估算。")
+                    .help(PulseLocalization.localizedString("main.holdings.allocation.footerHelp"))
             }
 
             ViewThatFits(in: .vertical) {
@@ -630,11 +635,11 @@ struct MainHoldingsView: View {
             HStack(spacing: 7) {
                 Image(systemName: "chart.pie.fill")
                     .font(.system(size: 11, weight: .medium))
-                Text("持仓配置")
+                Text(PulseLocalization.localizedString("main.holdings.allocation.title"))
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
                 if displayed.excludedMissingQuoteCount > 0 {
-                    Text("报价缺失 \(displayed.excludedMissingQuoteCount)")
+                    Text(PulseLocalization.localizedString("main.holdings.allocation.missingQuotes", displayed.excludedMissingQuoteCount))
                         .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
                 }
             }
@@ -686,7 +691,8 @@ struct MainHoldingsView: View {
     private func allocationMetrics(_ currency: PortfolioAllocation.Currency) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("总敞口").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(PulseLocalization.localizedString("main.holdings.allocation.totalExposure"))
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(PriceFormatter.money(currency.totalExposure, currencyCode: currency.code))
                         .font(.system(size: 22, weight: .semibold).monospacedDigit())
@@ -696,8 +702,10 @@ struct MainHoldingsView: View {
                 }
             }
             HStack(alignment: .top, spacing: 12) {
-                allocationMetric("最大", percentText(currency.holdings.first?.percent ?? 0))
-                allocationMetric("前三", percentText(currency.topThreeConcentration))
+                allocationMetric(PulseLocalization.localizedString("main.holdings.allocation.largest"),
+                                percentText(currency.holdings.first?.percent ?? 0))
+                allocationMetric(PulseLocalization.localizedString("main.holdings.allocation.topThree"),
+                                percentText(currency.topThreeConcentration))
             }
         }
         .frame(width: 150, alignment: .leading)
@@ -722,7 +730,7 @@ struct MainHoldingsView: View {
     }
 
     private func signedPercentText(_ value: Double) -> String {
-        String(format: "%+.1f 个百分点", value)
+        PulseLocalization.localizedString("main.holdings.allocation.percentagePoints", value)
     }
 
     private var allocationCurrencySelection: Binding<String> {
@@ -735,15 +743,15 @@ struct MainHoldingsView: View {
     private var allocationScenarioPicker: some View {
         Group {
             if selectedAllocationPlan != nil {
-                Picker("配置情景", selection: $allocationScenario) {
-                    Text("当前").tag(AllocationScenario.current)
-                    Text("计划后").tag(AllocationScenario.afterBuy)
+                Picker(PulseLocalization.localizedString("main.holdings.allocation.scenario"), selection: $allocationScenario) {
+                    Text(PulseLocalization.localizedString("main.holdings.allocation.current")).tag(AllocationScenario.current)
+                    Text(PulseLocalization.localizedString("main.holdings.allocation.afterBuy")).tag(AllocationScenario.afterBuy)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .controlSize(.small)
                 .fixedSize(horizontal: false, vertical: true)
-                .accessibilityLabel("持仓配置情景")
+                .accessibilityLabel(PulseLocalization.localizedString("main.holdings.allocation.scenarioLabel"))
             }
         }
     }
@@ -751,7 +759,7 @@ struct MainHoldingsView: View {
     private var allocationCurrencyPicker: some View {
         Group {
             if allocationCurrencyCodes.count > 1 {
-                Picker("币种", selection: allocationCurrencySelection) {
+                Picker(PulseLocalization.localizedString("main.holdings.allocation.currency"), selection: allocationCurrencySelection) {
                     ForEach(allocationCurrencyCodes, id: \.self) { code in
                         Text(code).tag(code)
                     }
@@ -760,16 +768,17 @@ struct MainHoldingsView: View {
                 .labelsHidden()
                 .controlSize(.small)
                 .fixedSize(horizontal: false, vertical: true)
-                .accessibilityLabel("持仓配置币种")
+                .accessibilityLabel(PulseLocalization.localizedString("main.holdings.allocation.currencyLabel"))
             }
         }
     }
 
     private var allocationPlanPicker: some View {
-        Picker("计划买入情景", selection: $selectedAllocationPlanID) {
-            Text("不应用计划").tag(UUID?.none)
+        Picker(PulseLocalization.localizedString("main.holdings.allocation.planLabel"), selection: $selectedAllocationPlanID) {
+            Text(PulseLocalization.localizedString("main.holdings.allocation.noPlan")).tag(UUID?.none)
             ForEach(allocationPlans) { choice in
-                Text("\(choice.item.resolvedDisplayName) · 买入 \(PriceFormatter.quantity(choice.plan.quantity))")
+                Text(PulseLocalization.localizedString("main.holdings.allocation.planChoice", choice.item.resolvedDisplayName,
+                        PriceFormatter.quantity(choice.plan.quantity)))
                     .tag(Optional(choice.id))
             }
         }
@@ -789,7 +798,7 @@ struct MainHoldingsView: View {
                 Text("\(planned.currencyCode) · \(percentText(before)) → \(percentText(after))（\(signedPercentText(after - before))）")
                     .font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
             } else if selectedAllocationPlan != nil {
-                Text("计划预览不可用，请检查报价、币种与数量")
+                Text(PulseLocalization.localizedString("main.holdings.allocation.previewUnavailable"))
                     .font(.system(size: 10)).foregroundStyle(.orange)
             }
         }
@@ -800,11 +809,12 @@ struct MainHoldingsView: View {
         return Chart(currency.holdings) { holding in
             let isHighlighted = hoveredAllocationSymbol == nil || hoveredAllocationSymbol == holding.symbol
             SectorMark(
-                angle: .value("敞口", holding.exposure),
+                angle: .value(PulseLocalization.localizedString("main.holdings.allocation.exposureValue"), holding.exposure),
                 innerRadius: .ratio(0.76),
                 angularInset: 1.5
             )
-            .foregroundStyle(by: .value("标的", allocationColorKey(holding.symbol)))
+            .foregroundStyle(by: .value(PulseLocalization.localizedString("main.holdings.allocation.instrumentValue"),
+                                        allocationColorKey(holding.symbol)))
             .opacity(isHighlighted ? 1 : 0.3)
         }
         .chartForegroundStyleScale(
@@ -819,11 +829,13 @@ struct MainHoldingsView: View {
         .chartBackground { _ in
             VStack(spacing: 2) {
                 Text(currency.code).font(.system(size: 12, weight: .semibold))
-                Text("\(currency.holdings.count) 项").font(.system(size: 9)).foregroundStyle(.secondary)
+                Text(PulseLocalization.localizedString("main.holdings.allocation.itemCount", currency.holdings.count))
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
             }
         }
         .frame(width: 124, height: 124)
-        .accessibilityLabel("\(currency.code) 持仓敞口分布，共 \(currency.holdings.count) 个持仓")
+        .accessibilityLabel(PulseLocalization.localizedString("main.holdings.allocation.donutLabel", currency.code,
+                               currency.holdings.count))
     }
 
     private func allocationSymbol(at angle: Double?, in currency: PortfolioAllocation.Currency) -> SymbolID? {
@@ -840,10 +852,11 @@ struct MainHoldingsView: View {
         let colors = allocationColorMap
         return VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline) {
-                Text("持仓分布").font(.system(size: 11, weight: .semibold))
+                Text(PulseLocalization.localizedString("main.holdings.allocation.distribution"))
+                    .font(.system(size: 11, weight: .semibold))
                 Spacer()
                 if currency.holdings.count > 3 {
-                    Text("\(currency.holdings.count) 项 · 滚动查看")
+                    Text(PulseLocalization.localizedString("main.holdings.allocation.scrollHint", currency.holdings.count))
                         .font(.system(size: 9)).foregroundStyle(.secondary)
                 }
             }
@@ -857,7 +870,9 @@ struct MainHoldingsView: View {
                                 Text(holding.name).lineLimit(1)
                                     .layoutPriority(1)
                                 if holding.isShort {
-                                    Text("空头").font(.system(size: 9, weight: .medium)).foregroundStyle(.orange)
+                                    Text(PulseLocalization.localizedString("main.holdings.allocation.short"))
+                                        .font(.system(size: 9, weight: .medium))
+                                        .foregroundStyle(.orange)
                                 }
                                 Spacer(minLength: 3)
                                 Text(percentText(holding.percent))
@@ -898,7 +913,15 @@ struct MainHoldingsView: View {
                             hoveredRankingSymbol = nil
                         }
                     }
-                    .accessibilityLabel("\(holding.name)，\(holding.symbol.displayCode)，\(PriceFormatter.money(holding.exposure, currencyCode: currency.code))，占比 \(percentText(holding.percent))\(holding.isShort ? "，空头" : "")。打开标的")
+                    .accessibilityLabel(PulseLocalization.localizedString("main.holdings.allocation.rowLabel",
+                                           holding.name,
+                                           holding.symbol.displayCode,
+                                           PriceFormatter.money(holding.exposure,
+                                                                currencyCode: currency.code),
+                                           percentText(holding.percent),
+                                           holding.isShort
+                                               ? PulseLocalization.localizedString("main.holdings.allocation.rowLabelShort")
+                                               : ""))
                 }
             }
                 .padding(.bottom, 8)
@@ -1047,10 +1070,11 @@ struct MainHoldingsView: View {
                         activeColumnResize = nil
                     }
             )
-            .help("拖动调整列宽")
+            .help(PulseLocalization.localizedString("main.holdings.resize.help"))
             .accessibilityElement()
-            .accessibilityLabel("调整\(PulseLocalization.localizedString(column.field.titleKey))列宽")
-            .accessibilityValue("\(Int(startWidth)) 点")
+            .accessibilityLabel(PulseLocalization.localizedString("main.holdings.resize.label",
+                                   PulseLocalization.localizedString(column.field.titleKey)))
+            .accessibilityValue(PulseLocalization.localizedString("main.holdings.resize.value", Int(startWidth)))
             .accessibilityAddTraits(.isButton)
             .accessibilityAdjustableAction { direction in
                 let delta: CGFloat
@@ -1109,8 +1133,12 @@ struct MainHoldingsView: View {
                         .frame(width: 12)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("\(expandedSymbol == row.item.symbol ? "收起" : "展开")\(row.item.resolvedDisplayName)成本记录")
-                .accessibilityHint("显示逐笔交易和成本变化")
+                .accessibilityLabel(PulseLocalization.localizedString("main.holdings.costToggle.label",
+                                       PulseLocalization.localizedString(expandedSymbol == row.item.symbol
+                                          ? "main.holdings.costToggle.collapse"
+                                          : "main.holdings.costToggle.expand"),
+                                       row.item.resolvedDisplayName))
+                .accessibilityHint(PulseLocalization.localizedString("main.holdings.costToggle.hint"))
                 Button { onSelect(row.item.symbol) } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(row.item.resolvedDisplayName).font(.system(size: 12, weight: .medium)).lineLimit(1)
@@ -1173,7 +1201,7 @@ struct MainHoldingsView: View {
     }
 
     private func quoteProvenanceText(_ quote: Quote) -> String {
-        let source = quote.sourceName ?? quote.sourceID ?? "来源未知"
+        let source = quote.sourceName ?? quote.sourceID ?? PulseLocalization.localizedString("main.holdings.source.unknown")
         let state: String? = switch quote.marketState {
         case .preMarket: PulseLocalization.localizedString("quote.price.preMarket")
         case .postMarket: PulseLocalization.localizedString("quote.price.postMarket")

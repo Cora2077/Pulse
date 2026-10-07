@@ -42,6 +42,16 @@ public enum PulseLocalization {
     public static let languagePreferenceKey = "pulse.language.v1"
 
     public static var currentPreference: PulseLanguagePreference {
+        #if DEBUG
+        // Offline native previews can exercise a shipped language without
+        // changing the user's daily language preference.
+        if CommandLine.arguments.contains("--main-window-demo"),
+           let index = CommandLine.arguments.firstIndex(of: "--preview-language"),
+           CommandLine.arguments.indices.contains(index + 1),
+           let preference = PulseLanguagePreference(rawValue: CommandLine.arguments[index + 1]) {
+            return preference
+        }
+        #endif
         let rawValue = UserDefaults.standard.string(forKey: languagePreferenceKey)
         return rawValue.flatMap(PulseLanguagePreference.init(rawValue:)) ?? .system
     }

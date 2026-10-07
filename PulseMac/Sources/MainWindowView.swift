@@ -213,8 +213,8 @@ struct MainWindowView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { showRiskCalculator = true } label: {
-                    Label("风险计算", systemImage: "shield.lefthalf.filled")
-                }.help("买入风险计算")
+                    Label(PulseLocalization.localizedString("workspace.risk"), systemImage: "shield.lefthalf.filled")
+                }.help(PulseLocalization.localizedString("workspace.risk.help"))
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -441,7 +441,7 @@ struct MainWindowView: View {
                     HStack {
                         Label(error, systemImage: "exclamationmark.triangle")
                         Spacer()
-                        Button("重试", action: preparePositionPools)
+                        Button(PulseLocalization.localizedString("workspace.retry"), action: preparePositionPools)
                     }
                     .font(.caption).foregroundStyle(.orange).padding(12)
                 }
@@ -522,7 +522,7 @@ struct MainWindowView: View {
 
     private func preparePositionPools() {
         if !appState.preparePositionAllocations() {
-            positionPoolsPreparationError = "归类前备份未完成，请先处理本地备份。"
+            positionPoolsPreparationError = PulseLocalization.localizedString("workspace.backupRequired")
             return
         }
         positionPoolsPreparationError = nil
