@@ -88,7 +88,7 @@ private struct PulseShareCardFooter: View {
                 )
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Pulse")
+                Text(AppBrand.name)
                     .font(.system(size: 15, weight: .bold))
                 Text("Your market, at a glance.")
                     .font(.system(size: 10.5))

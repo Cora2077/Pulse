@@ -140,18 +140,18 @@ actor LongbridgeLoopbackServer {
         if language.hasPrefix("zh") {
             lang = "zh-Hans"
             title = denied ? "授权未完成" : "授权成功"
-            body = denied ? "你取消了授权,可以关闭此页面。" : "可以关闭此页面并返回 Pulse。"
+            body = denied ? "你取消了授权,可以关闭此页面。" : "可以关闭此页面并返回 FFF。"
         } else if language.hasPrefix("ja") {
             lang = "ja"
             title = denied ? "認証は完了しませんでした" : "認証が完了しました"
-            body = denied ? "認証をキャンセルしました。このページを閉じてください。" : "このページを閉じて Pulse に戻ってください。"
+            body = denied ? "認証をキャンセルしました。このページを閉じてください。" : "このページを閉じて FFF に戻ってください。"
         } else {
             lang = "en"
             title = denied ? "Authorization cancelled" : "Authorized"
-            body = denied ? "You cancelled the authorization — you can close this tab." : "You can close this tab and return to Pulse."
+            body = denied ? "You cancelled the authorization — you can close this tab." : "You can close this tab and return to FFF."
         }
         return """
-        <!doctype html><html lang="\(lang)"><head><meta charset="utf-8"><title>Pulse</title><style>
+        <!doctype html><html lang="\(lang)"><head><meta charset="utf-8"><title>FFF</title><style>
         body { font-family: -apple-system, "PingFang SC", sans-serif; display: flex; min-height: 92vh;
                align-items: center; justify-content: center; background: #ffffff; color: #1d1d1f; }
         @media (prefers-color-scheme: dark) { body { background: #1c1c1e; color: #f5f5f7; } }

@@ -297,7 +297,7 @@ private final class LongbridgeSDKDynamicLibrary: @unchecked Sendable {
     #if os(macOS)
     init() throws {
         guard let pluginsURL = Bundle.main.builtInPlugInsURL else {
-            throw LongbridgeError.socket("Pulse has no built-in PlugIns directory")
+            throw LongbridgeError.socket("The app has no built-in PlugIns directory")
         }
         let executableURL = pluginsURL
             .appendingPathComponent("PulseLongbridgePlugin.bundle", isDirectory: true)

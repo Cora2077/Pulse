@@ -312,8 +312,8 @@ struct DataSettingsView: View {
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
-                    ? "先确认同步文件夹可访问、云端文件已下载，且其他 Mac 已更新 Pulse；然后重试。若目录权限失效，可重新选择原文件夹。"
-                    : "Check folder access, download cloud files, and update Pulse on your other Macs, then retry. Reselect the same folder if its permission expired.")
+                    ? "先确认同步文件夹可访问、云端文件已下载，且其他 Mac 已更新 FFF；然后重试。若目录权限失效，可重新选择原文件夹。"
+                    : "Check folder access, download cloud files, and update FFF on your other Macs, then retry. Reselect the same folder if its permission expired.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -695,7 +695,7 @@ struct DataSettingsView: View {
 
     private var appVersion: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        return version.map { "Pulse \($0)" } ?? "Pulse"
+        return version.map { "\(AppBrand.displayName) \($0)" } ?? AppBrand.displayName
     }
 
     /// `US · NVDA` for a plain security, plus the resolved identity when Pulse read the

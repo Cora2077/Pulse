@@ -116,7 +116,7 @@ struct PulseMacApp: App {
         // group: macOS collapses the whole toolbar into a `»` overflow button, burying
         // four one-click actions in a submenu. The actions win; the app's identity is
         // already carried by the Dock icon and the menu bar item.
-        Window("Pulse", id: PinnedWindow.id) {
+        Window(AppBrand.name, id: PinnedWindow.id) {
             PinnedWindowHost(settings: appState.settings) {
                 PopoverRootView()
                     .environment(appState)
@@ -169,7 +169,7 @@ struct MenuBarLabel: View {
         guard let source = NSImage(named: "PulseMenuBarIcon") else {
             let fallback = NSImage(
                 systemSymbolName: "waveform.path.ecg",
-                accessibilityDescription: "Pulse"
+                accessibilityDescription: AppBrand.name
             ) ?? NSImage(size: canvasSize)
             fallback.size = canvasSize
             fallback.isTemplate = true
@@ -201,7 +201,7 @@ struct MenuBarLabel: View {
             // Icon only by default; price text appears only after the user enables "show quotes in menu bar" in settings
             if !appState.settings.showPriceInMenuBar || appState.watchlist.isEmpty {
                 Image(nsImage: templateIcon)
-                    .accessibilityLabel("Pulse")
+                    .accessibilityLabel(AppBrand.name)
             } else {
                 Text(appState.menuBarText)
                     .font(.system(size: 12).monospacedDigit())

@@ -113,7 +113,7 @@ struct LongbridgeOAuthTests {
         let (data, response) = try await URLSession.shared.data(from: callbackURL)
         #expect((response as? HTTPURLResponse)?.statusCode == 200)
         let html = String(decoding: data, as: UTF8.self)
-        #expect(html.contains("Pulse")) // page language follows the app setting; content itself is asserted below
+        #expect(html.contains("FFF")) // page language follows the app setting; content itself is asserted below
 
         let delivered = try #require(received.get())
         #expect(LongbridgeOAuthAuthenticator.queryValue("code", in: delivered) == "abc123")

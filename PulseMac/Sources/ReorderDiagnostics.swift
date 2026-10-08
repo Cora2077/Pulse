@@ -195,7 +195,7 @@ final class ReorderDiagnostics {
             feature: "watchlist.reorder",
             privacyNotice: "Contains app/device metadata and bounded interaction events only. No symbols, watchlists, positions, searches, credentials, or raw system logs are included.",
             app: .init(
-                name: bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Pulse Dev",
+                name: bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? AppBrand.displayName,
                 version: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
                 build: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
                 bundleIdentifier: bundle.bundleIdentifier ?? "unknown"

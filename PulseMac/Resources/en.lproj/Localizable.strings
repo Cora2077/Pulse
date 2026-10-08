@@ -14,7 +14,7 @@
 "action.pinWindow" = "Pin as Window";
 "action.unpinWindow" = "Unpin Window";
 "action.pinToMenuBar" = "Show in Menu Bar";
-"action.quitPulse" = "Quit Pulse";
+"action.quitPulse" = "Quit FFF";
 "action.refreshNow" = "Refresh";
 "action.retry" = "Retry";
 "action.save" = "Save";
@@ -51,8 +51,8 @@
 "onboarding.tour.back" = "Back";
 "onboarding.tour.gotIt" = "Got It";
 "onboarding.tour.next" = "Next";
-"onboarding.tour.pin.panel" = "Click the pin to keep Pulse as a floating window.";
-"onboarding.tour.pin.window" = "Click the pin to tuck Pulse into the menu bar — the menu bar icon brings it back anytime.";
+"onboarding.tour.pin.panel" = "Click the pin to keep FFF as a floating window.";
+"onboarding.tour.pin.window" = "Click the pin to tuck FFF into the menu bar — the menu bar icon brings it back anytime.";
 "onboarding.tour.detail" = "Click a row to see the intraday chart, candles, and more.";
 "onboarding.tour.search" = "Search for a ticker or company here, then click + on a result to add it.";
 "onboarding.tour.kline" = "Click Daily for the longer-term trend — Weekly and Monthly live here too.";
@@ -170,7 +170,7 @@
 "provider.status.fallback" = "Fallback";
 "provider.detail.capabilities" = "Capabilities";
 "provider.binance" = "Binance";
-"provider.composite" = "Pulse Composite";
+"provider.composite" = "FFF Composite";
 "provider.delay.delayed" = "Delayed";
 "provider.delay.partial" = "Partially real-time";
 "provider.delay.realtime" = "Real-time";
@@ -186,7 +186,7 @@
 "longbridge.oauth.reauthorize" = "Re-authorize Longbridge";
 "longbridge.client.label" = "Authorized client ID";
 "longbridge.access.delayed" = "Longbridge returned delayed access for this session. Your account entitlement may still be active; refresh authorization to renegotiate this app’s quote packages.";
-"longbridge.access.downgraded" = "Longbridge returned lower access than the real-time package this app previously negotiated. Refresh authorization; Pulse will never sign you out automatically.";
+"longbridge.access.downgraded" = "Longbridge returned lower access than the real-time package this app previously negotiated. Refresh authorization; FFF will never sign you out automatically.";
 "longbridge.account" = "Account";
 "longbridge.credentials.manual" = "Enter API keys manually";
 "longbridge.status.oauth" = "Verified (browser auth)";
@@ -198,12 +198,12 @@
 "longbridge.connection.connected" = "Market data connected";
 "longbridge.connection.fallback" = "Using fallback";
 "longbridge.connection.retry" = "Reconnect Market Data";
-"longbridge.connection.fallback.help" = "Longbridge is unavailable. Pulse is temporarily using a fallback market-data source.";
+"longbridge.connection.fallback.help" = "Longbridge is unavailable. FFF is temporarily using a fallback market-data source.";
 "longbridge.connection.error.limit" = "Longbridge rejected the connection because the account's live-connection limit is full. Close other OpenAPI sessions, then reconnect.";
-"longbridge.connection.error.authentication" = "Longbridge rejected the market-data session — the authorization may have expired or been revoked. Re-authorize below; Pulse never signs you out automatically.";
+"longbridge.connection.error.authentication" = "Longbridge rejected the market-data session — the authorization may have expired or been revoked. Re-authorize below; FFF never signs you out automatically.";
 "longbridge.connection.error.rateLimit" = "Longbridge is rate-limiting connection attempts. Wait briefly, then reconnect.";
-"longbridge.connection.error.network" = "The Longbridge market-data connection was interrupted. Pulse is temporarily using a fallback source.";
-"longbridge.connection.error.server" = "Longbridge returned a server error. Pulse is temporarily using a fallback source.";
+"longbridge.connection.error.network" = "The Longbridge market-data connection was interrupted. FFF is temporarily using a fallback source.";
+"longbridge.connection.error.server" = "Longbridge returned a server error. FFF is temporarily using a fallback source.";
 "longbridge.credentials.title" = "OpenAPI Credentials";
 "longbridge.credentials.status.configured" = "Configured";
 "longbridge.credentials.status.missing" = "Not configured";
@@ -265,7 +265,7 @@
 "settings.general.language" = "Language";
 "settings.general.launchAtLogin" = "Launch at Login";
 "settings.general.anonymousAnalytics" = "Share Anonymous Usage Data";
-"settings.general.anonymousAnalyticsHelp" = "Helps improve Pulse by sharing app usage and technical metadata. Symbols, watchlists, positions, searches, and credentials are never sent.";
+"settings.general.anonymousAnalyticsHelp" = "Helps improve FFF by sharing app usage and technical metadata. Symbols, watchlists, positions, searches, and credentials are never sent.";
 "settings.market.colorRule" = "Gain Color";
 "settings.market.greenUp" = "Green for Gains";
 "settings.market.redUp" = "Red for Gains";
@@ -275,12 +275,12 @@
 "settings.menuBar.displayMode" = "Display Mode";
 "settings.menuBar.firstWatchlistItem" = "First in Watchlist";
 "settings.menuBar.fixedSymbol" = "Symbol";
-"settings.menuBar.iconOnlyHelp" = "Only the Pulse icon appears in the menu bar.";
+"settings.menuBar.iconOnlyHelp" = "Only the FFF icon appears in the menu bar.";
 "settings.menuBar.rotateInterval" = "Switch Every";
 "settings.menuBar.rotateGroup" = "Cycle List";
 "settings.menuBar.showQuote" = "Show Prices in Menu Bar";
 "settings.providers.allDisabled" = "All data sources are disabled. Quotes and search will be unavailable.";
-"settings.providers.help" = "Pulse automatically chooses the best available source and switches if one fails.";
+"settings.providers.help" = "FFF automatically chooses the best available source and switches if one fails.";
 "settings.section.general" = "General";
 "settings.section.market" = "Market";
 "settings.section.menuBar" = "Menu Bar";
@@ -369,7 +369,7 @@
 "position.quickEditTitle" = "Set Position Directly";
 "position.calibrationNotice" = "Saving overwrites your position with this quantity and cost, recorded as an “adjustment” — no realized P&L.";
 "position.empty.title" = "No Position Yet";
-"position.empty.subtitle" = "Record buys and sells — Pulse tracks cost and P&L for you";
+"position.empty.subtitle" = "Record buys and sells — FFF tracks cost and P&L for you";
 "position.historyTrades" = "Past Trades";
 "position.tradeCount" = "%d trades";
 "transaction.logTitle" = "Trade Log";
@@ -394,7 +394,7 @@
 "data.import.newList" = "new list";
 "data.import.willAdd" = "Will add %d symbols and %d lists";
 "data.import.someUnreadable" = "%d entries can’t be read and will be skipped";
-"data.import.unchanged" = "Everything here is already in Pulse";
+"data.import.unchanged" = "Everything here is already in FFF";
 "data.import.done" = "Added %d symbols and %d lists";
 "data.import.status.add" = "add";
 "data.import.status.present" = "already here";
@@ -402,15 +402,15 @@
 "data.import.status.unknownMarket" = "unknown market";
 "data.import.status.unreadable" = "can’t read";
 "data.error.emptyClipboard" = "The clipboard is empty. Copy an export first, or start from the example.";
-"data.error.notArchive" = "The clipboard doesn’t hold a Pulse export. Copy the example format to see what one looks like.";
-"data.error.newerVersion" = "That export came from a newer version of Pulse. Update and try again.";
+"data.error.notArchive" = "The clipboard doesn’t hold a FFF export. Copy the example format to see what one looks like.";
+"data.error.newerVersion" = "That export came from a newer version of FFF. Update and try again.";
 "data.error.noLists" = "That export has no lists in it.";
 "settings.data.row" = "Data & Sync";
 "settings.data.rowStatus.on" = "On";
 "settings.data.rowStatus.off" = "Off";
 "settings.data.rowStatus.attention" = "Needs Attention";
 "data.export.subtitle" = "Copy every list, order, pin, and trade as text";
-"data.import.subtitle" = "Read a Pulse export and review it before it lands";
+"data.import.subtitle" = "Read a FFF export and review it before it lands";
 "data.format.title" = "Format";
 "data.format.help" = "market is us, hk, sh, sz, or crypto; code is a ticker such as NVDA or 700, or a pair such as BTC/USDT. name, pinned, and transactions are optional.";
 "data.import.status.missingCode" = "no code";
@@ -419,7 +419,7 @@
 "settings.mcp.title" = "MCP";
 "settings.mcp.enable" = "Enable MCP Server";
 "settings.mcp.copyField" = "Copy";
-"settings.mcp.intro" = "Let Claude, ChatGPT, or any MCP-compatible client read and edit your watchlists and trades while Pulse is running.";
+"settings.mcp.intro" = "Let Claude, ChatGPT, or any MCP-compatible client read and edit your watchlists and trades while FFF is running.";
 "settings.mcp.tools.title" = "Tools";
 "settings.mcp.tools.read" = "List watchlist groups, positions, and cached quotes; search symbols";
 "settings.mcp.tools.watchlist" = "Create, rename, and delete groups; add or remove symbols";
@@ -885,7 +885,7 @@
 /* Alerts */
 "alerts.status.off" = "Off";
 "alerts.status.demo" = "Demo mode does not send notifications";
-"alerts.status.permissionDenied" = "Notification permission not granted; allow Pulse in System Settings";
+"alerts.status.permissionDenied" = "Notification permission not granted; allow FFF in System Settings";
 "alerts.status.on" = "On · all brokerage accounts · this Mac";
 "alerts.snooze.title" = "Remind me in 15 minutes";
 "alerts.plan.title" = "%@ · %@ · plan at price";
@@ -906,7 +906,7 @@
 "feedback.emailUnavailableCopied" = "Mail unavailable · report copied";
 "feedback.emailUnavailable" = "Mail unavailable";
 "settings.section.support" = "Support";
-"settings.support.help" = "Send Email drafts a message to us with the diagnostics report attached. The report lists the Pulse and macOS versions, data-source status, and recent log lines from this session, and never includes your symbols, positions, or credentials. Without a mail client, copy the address and the report instead.";
+"settings.support.help" = "Send Email drafts a message to us with the diagnostics report attached. The report lists the FFF and macOS versions, data-source status, and recent log lines from this session, and never includes your symbols, positions, or credentials. Without a mail client, copy the address and the report instead.";
 
 /* Folder sync */
 "sync.title" = "Sync between Macs";
@@ -929,12 +929,12 @@
 "sync.conflict.useRemote" = "Use Other Mac’s Trades";
 "sync.conflict.changed" = "The other Mac changed during review. Check the updated conflict before choosing.";
 "sync.privacy" = "The selected folder contains readable watchlists, positions, and trade history. Provider credentials, Keychain items, MCP tokens, and Mac-specific settings stay local.";
-"sync.error.accessDenied" = "Pulse can’t access this folder. Choose it again in Settings.";
+"sync.error.accessDenied" = "FFF can’t access this folder. Choose it again in Settings.";
 "sync.error.folderUnavailable" = "The selected location is not an available folder.";
 "sync.error.invalidFile" = "A sync file is unreadable or belongs to a different device. Local data was kept.";
-"sync.error.coordination" = "Pulse could not coordinate access to the sync folder.";
-"sync.error.backupFailed" = "Pulse could not save the conflict backup, so no choice was applied.";
-"sync.error.ownFilePendingDownload" = "This Mac’s sync file is still downloading from iCloud. Pulse will retry in the background.";
+"sync.error.coordination" = "FFF could not coordinate access to the sync folder.";
+"sync.error.backupFailed" = "FFF could not save the conflict backup, so no choice was applied.";
+"sync.error.ownFilePendingDownload" = "This Mac’s sync file is still downloading from iCloud. FFF will retry in the background.";
 
 /* Trade plans: what the user means to do at which price */
 "detail.section.plan" = "Trade Plans";
@@ -1001,7 +1001,7 @@
 "plan.condition.unlink" = "Unlink";
 "plan.condition.noEvents" = "No other events for this symbol";
 "plan.condition.tapHelp" = "Choose condition status";
-"plan.condition.priceNote" = "Pulse only checks the plan's own price against the quote. Conditions are yours to judge.";
+"plan.condition.priceNote" = "FFF only checks the plan's own price against the quote. Conditions are yours to judge.";
 "plan.condition.invalid" = "Every condition needs a title and a valid http or https source link.";
 "plan.condition.kind.logic" = "Logic";
 "plan.condition.kind.event" = "Event";
@@ -1025,7 +1025,7 @@
 "plan.execution.record" = "Record Fill";
 "plan.execution.recordAndReview" = "Record and review";
 "plan.execution.note" = "Note (optional)";
-"plan.execution.poolHelp" = "Filed under %@. This records what your broker already did — Pulse never sends an order.";
+"plan.execution.poolHelp" = "Filed under %@. This records what your broker already did — FFF never sends an order.";
 "plan.execution.notAnOrder" = "Bookkeeping only. Nothing here reaches a broker.";
 "plan.execution.useRemaining" = "Use remaining %@";
 "plan.execution.useRemainingHelp" = "Fill in the quantity still open on this plan";
@@ -1056,7 +1056,7 @@
 "plan.detail.change.kind" = "Side %@";
 "plan.detail.change.status" = "Status %@";
 
-"main.window.title" = "Pulse";
+"main.window.title" = "FFF";
 "main.openWindow" = "Open Main Window";
 "main.dashboard" = "Watchlist";
 "main.settings" = "Settings";

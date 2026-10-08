@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Developer ID + Sparkle + GitHub Releases pipeline for Pulse.
+# Developer ID + Sparkle + GitHub Releases pipeline for FFF.
 #
 # Flow:
 #   xcodegen -> archive (Release, Developer ID, hardened runtime)
 #   -> exportArchive -> notarytool submit/wait -> staple
-#   -> Pulse.app.zip for Sparkle -> Pulse.dmg for first install
+#   -> FFF.app.zip for Sparkle -> Pulse-<version>.dmg for first install
 #   -> Sparkle appcast -> GitHub Releases upload
 #
 # Required local configuration:
@@ -116,9 +116,9 @@ if [[ "${SKIP_UPLOAD:-0}" == "1" ]]; then
 fi
 
 if [[ "$PUBLISH" == "1" ]]; then
-  echo "==> Releasing Pulse $VERSION as $TAG"
+  echo "==> Releasing FFF $VERSION as $TAG"
 else
-  echo "==> Building Pulse $VERSION as $TAG (build and verify only; this run does not publish)"
+  echo "==> Building FFF $VERSION as $TAG (build and verify only; this run does not publish)"
 fi
 
 if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
@@ -389,7 +389,7 @@ tell application "Finder"
     set icon size of view_options to 128
     set text size of view_options to 12
     set background picture of view_options to file ".background:background.tiff"
-    set position of item "Pulse.app" of container window to {150, 180}
+    set position of item "FFF.app" of container window to {150, 180}
     set position of item "Applications" of container window to {450, 180}
     close
     open
@@ -439,7 +439,7 @@ elif [[ -n "${SPARKLE_PRIVATE_KEY_FILE:-}" ]]; then
   fi
 fi
 
-echo "==> Archiving Pulse ${VERSION} (${BUILD_NUMBER})"
+echo "==> Archiving FFF ${VERSION} (${BUILD_NUMBER})"
 xcodebuild -quiet archive \
   -project Pulse.xcodeproj \
   -scheme PulseMac \
@@ -465,26 +465,26 @@ xcodebuild -quiet -exportArchive \
   -exportOptionsPlist "$EXPORT_OPTIONS" \
   -exportPath "$EXPORT_DIR"
 
-APP_PATH="$EXPORT_DIR/Pulse.app"
-[[ -d "$APP_PATH" ]] || { echo "error: exported Pulse.app not found" >&2; exit 1; }
+APP_PATH="$EXPORT_DIR/FFF.app"
+[[ -d "$APP_PATH" ]] || { echo "error: exported FFF.app not found" >&2; exit 1; }
 
 echo "==> Verifying executable architectures"
-APP_BINARY="$APP_PATH/Contents/MacOS/Pulse"
+APP_BINARY="$APP_PATH/Contents/MacOS/FFF"
 PLUGIN_BINARY="$APP_PATH/Contents/PlugIns/PulseLongbridgePlugin.bundle/Contents/MacOS/PulseLongbridgePlugin"
-[[ -f "$APP_BINARY" ]] || { echo "error: exported Pulse executable not found" >&2; exit 1; }
+[[ -f "$APP_BINARY" ]] || { echo "error: exported FFF executable not found" >&2; exit 1; }
 [[ -f "$PLUGIN_BINARY" ]] || { echo "error: exported Longbridge plugin not found" >&2; exit 1; }
 APP_ARCHITECTURES="$(lipo -archs "$APP_BINARY" | tr ' ' '\n' | sort | tr '\n' ' ')"
 PLUGIN_ARCHITECTURES="$(lipo -archs "$PLUGIN_BINARY" | tr ' ' '\n' | sort | tr '\n' ' ')"
 if [[ "$APP_ARCHITECTURES" != "$PLUGIN_ARCHITECTURES" ]]; then
-  echo "error: architecture mismatch: Pulse [$APP_ARCHITECTURES], Longbridge plugin [$PLUGIN_ARCHITECTURES]" >&2
+  echo "error: architecture mismatch: FFF [$APP_ARCHITECTURES], Longbridge plugin [$PLUGIN_ARCHITECTURES]" >&2
   exit 1
 fi
-echo "    Pulse and Longbridge plugin: $APP_ARCHITECTURES"
+echo "    FFF and Longbridge plugin: $APP_ARCHITECTURES"
 
 echo "==> Verifying code signature"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
-ZIP_FOR_NOTARY="$BUILD_DIR/Pulse.app.zip"
+ZIP_FOR_NOTARY="$BUILD_DIR/FFF.app.zip"
 /usr/bin/ditto -c -k --keepParent "$APP_PATH" "$ZIP_FOR_NOTARY"
 
 if [[ "${SKIP_NOTARIZE:-0}" != "1" ]]; then
@@ -524,9 +524,9 @@ DMG_STAGE="$BUILD_DIR/dmg-stage"
 echo "==> Creating first-install disk image $DMG_NAME"
 rm -rf "$DMG_STAGE"
 mkdir -p "$DMG_STAGE"
-/usr/bin/ditto "$APP_PATH" "$DMG_STAGE/Pulse.app"
+/usr/bin/ditto "$APP_PATH" "$DMG_STAGE/FFF.app"
 ln -s /Applications "$DMG_STAGE/Applications"
-create_installer_dmg "$DMG_STAGE" "$DMG_PATH" "Pulse"
+create_installer_dmg "$DMG_STAGE" "$DMG_PATH" "FFF"
 
 echo "==> Signing disk image"
 codesign --force \
@@ -596,16 +596,16 @@ else
     gh release create "$TAG" "$ZIP_PATH" "$DMG_PATH" \
       --repo "$GH_REPO" \
       --target "$RELEASE_COMMIT" \
-      --title "Pulse ${VERSION}" \
+      --title "FFF ${VERSION}" \
       --notes-file "$RELEASE_NOTES_FILE"
   else
     gh release create "$TAG" "$ZIP_PATH" "$DMG_PATH" \
       --repo "$GH_REPO" \
       --target "$RELEASE_COMMIT" \
-      --title "Pulse ${VERSION}" \
-      --notes "Pulse ${VERSION}
+      --title "FFF ${VERSION}" \
+      --notes "FFF ${VERSION}
 
-For first-time installation, download Pulse-${VERSION}.dmg and drag Pulse to Applications.
+For first-time installation, download Pulse-${VERSION}.dmg and drag FFF to Applications.
 The zip asset is used by Sparkle automatic updates."
   fi
 fi
@@ -615,7 +615,7 @@ if ! gh release view appcast --repo "$GH_REPO" >/dev/null 2>&1; then
   gh release create appcast \
     --repo "$GH_REPO" \
     --title "Sparkle appcast" \
-    --notes "Stable appcast feed for Pulse automatic updates"
+    --notes "Stable appcast feed for FFF automatic updates"
 fi
 gh release upload appcast "$APPCAST_DIR/appcast.xml" --repo "$GH_REPO" --clobber
 

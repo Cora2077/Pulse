@@ -160,7 +160,7 @@ final class LocalBackupController {
         }
         if let codecError = error as? WatchlistSyncWireCodec.CodecError {
             if case .unsupportedVersion = codecError {
-                return "此备份由较新版本的 Pulse 创建，请更新应用后再恢复。"
+                return "此备份由较新版本的 FFF 创建，请更新应用后再恢复。"
             }
             return "备份文件无法通过完整性校验，请选择其他备份。"
         }

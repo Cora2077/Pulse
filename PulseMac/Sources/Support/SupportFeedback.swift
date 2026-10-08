@@ -21,7 +21,7 @@ enum SupportLinks {
         guard let service = NSSharingService(named: .composeEmail),
               let attachment = try? writeReportFile(report) else { return false }
         service.recipients = [supportEmail]
-        service.subject = "Pulse feedback"
+        service.subject = "\(AppBrand.name) feedback"
         let items: [Any] = ["\n\n---\n\(environment)\n", attachment]
         guard service.canPerform(withItems: items) else { return false }
         service.perform(withItems: items)
@@ -35,7 +35,7 @@ enum SupportLinks {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Pulse-diagnostics-\(formatter.string(from: .now)).txt")
+            .appendingPathComponent("\(AppBrand.name)-diagnostics-\(formatter.string(from: .now)).txt")
         try report.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
@@ -62,7 +62,7 @@ enum SupportDiagnostics {
     /// `Pulse 0.15.2 (152) · macOS 26.0 (Build 25A123) · arm64 · Mac16,1`
     static var environmentSummary: String {
         let bundle = Bundle.main
-        let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Pulse"
+        let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? AppBrand.name
         let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
         var parts = [
@@ -119,7 +119,7 @@ enum SupportDiagnostics {
 
     static func report(_ snapshot: Snapshot) -> String {
         var lines: [String] = []
-        lines.append("# Pulse diagnostics report")
+        lines.append("# \(AppBrand.name) diagnostics report")
         lines.append("Generated: \(ISO8601DateFormatter().string(from: .now))")
         lines.append("Contains app, system, settings, and data-source status plus recent log lines from this session. No symbols, watchlists, positions, searches, or credentials.")
         lines.append("")

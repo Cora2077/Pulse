@@ -1120,7 +1120,7 @@ enum SelfTest {
                 exportedAt: exportedAt
             ).renderedText()
             let watchlistPayload = try decodedTextSnapshot(watchlistText)
-            guard watchlistText.hasPrefix("This market snapshot was exported by Pulse."),
+            guard watchlistText.hasPrefix("This market snapshot was exported by \(AppBrand.name)."),
                   !watchlistText.contains("987654.321"),
                   !watchlistText.contains("12345.678"),
                   !watchlistText.contains("—"),

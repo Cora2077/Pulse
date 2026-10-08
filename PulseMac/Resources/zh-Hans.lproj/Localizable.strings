@@ -14,7 +14,7 @@
 "action.pinWindow" = "钉为独立窗口";
 "action.unpinWindow" = "取消钉住";
 "action.pinToMenuBar" = "设为菜单栏显示";
-"action.quitPulse" = "退出 Pulse";
+"action.quitPulse" = "退出 FFF";
 "action.refreshNow" = "立即刷新";
 "action.retry" = "重试";
 "action.save" = "保存";
@@ -51,7 +51,7 @@
 "onboarding.tour.back" = "上一步";
 "onboarding.tour.gotIt" = "知道了";
 "onboarding.tour.next" = "下一步";
-"onboarding.tour.pin.panel" = "点击图钉可把 Pulse 钉成常驻浮窗。";
+"onboarding.tour.pin.panel" = "点击图钉可把 FFF 钉成常驻浮窗。";
 "onboarding.tour.pin.window" = "点击图钉可收回到菜单栏，之后点菜单栏图标随时打开。";
 "onboarding.tour.detail" = "点击这一行，查看分时、K 线与更多详情。";
 "onboarding.tour.search" = "点这里搜索代码或公司，在结果里点 + 添加自选。";
@@ -170,7 +170,7 @@
 "provider.status.fallback" = "已降级";
 "provider.detail.capabilities" = "能力";
 "provider.binance" = "币安 Binance";
-"provider.composite" = "Pulse 聚合";
+"provider.composite" = "FFF 聚合";
 "provider.delay.delayed" = "延时";
 "provider.delay.partial" = "部分实时";
 "provider.delay.realtime" = "实时";
@@ -186,7 +186,7 @@
 "longbridge.oauth.reauthorize" = "重新授权 Longbridge";
 "longbridge.client.label" = "授权客户端 ID";
 "longbridge.access.delayed" = "Longbridge 为当前会话返回了延迟行情权限。账户后台权限可能正常，刷新授权可重新协商本应用的行情包。";
-"longbridge.access.downgraded" = "Longbridge 当前返回的行情权限低于本应用此前成功协商的实时权限。请刷新授权；Pulse 不会自动退出登录。";
+"longbridge.access.downgraded" = "Longbridge 当前返回的行情权限低于本应用此前成功协商的实时权限。请刷新授权；FFF 不会自动退出登录。";
 "longbridge.account" = "账户";
 "longbridge.credentials.manual" = "手动填入 API 密钥";
 "longbridge.status.oauth" = "已验证(浏览器授权)";
@@ -198,12 +198,12 @@
 "longbridge.connection.connected" = "行情连接已建立";
 "longbridge.connection.fallback" = "正在使用备用行情";
 "longbridge.connection.retry" = "重新连接行情";
-"longbridge.connection.fallback.help" = "Longbridge 暂时不可用，Pulse 正在使用备用行情源。";
+"longbridge.connection.fallback.help" = "Longbridge 暂时不可用，FFF 正在使用备用行情源。";
 "longbridge.connection.error.limit" = "Longbridge 账户的实时连接额度已满。请关闭其他 OpenAPI 会话后重新连接。";
-"longbridge.connection.error.authentication" = "Longbridge 拒绝了行情会话，授权可能已失效或被撤销。请重新授权；Pulse 不会自动退出登录。";
+"longbridge.connection.error.authentication" = "Longbridge 拒绝了行情会话，授权可能已失效或被撤销。请重新授权；FFF 不会自动退出登录。";
 "longbridge.connection.error.rateLimit" = "Longbridge 暂时限制了连接频率，请稍后重新连接。";
-"longbridge.connection.error.network" = "Longbridge 行情连接已中断，Pulse 正在临时使用备用行情源。";
-"longbridge.connection.error.server" = "Longbridge 服务暂时异常，Pulse 正在临时使用备用行情源。";
+"longbridge.connection.error.network" = "Longbridge 行情连接已中断，FFF 正在临时使用备用行情源。";
+"longbridge.connection.error.server" = "Longbridge 服务暂时异常，FFF 正在临时使用备用行情源。";
 "longbridge.credentials.title" = "OpenAPI 凭证";
 "longbridge.credentials.status.configured" = "已配置";
 "longbridge.credentials.status.missing" = "未配置";
@@ -265,7 +265,7 @@
 "settings.general.language" = "语言";
 "settings.general.launchAtLogin" = "开机自启";
 "settings.general.anonymousAnalytics" = "共享匿名使用数据";
-"settings.general.anonymousAnalyticsHelp" = "仅用于改进 Pulse，发送应用使用情况与技术信息；不会发送标的、自选、持仓、搜索内容或凭证。";
+"settings.general.anonymousAnalyticsHelp" = "仅用于改进 FFF，发送应用使用情况与技术信息；不会发送标的、自选、持仓、搜索内容或凭证。";
 "settings.market.colorRule" = "涨跌颜色";
 "settings.market.greenUp" = "绿涨红跌";
 "settings.market.redUp" = "红涨绿跌";
@@ -369,7 +369,7 @@
 "position.quickEditTitle" = "直接修改持仓";
 "position.calibrationNotice" = "保存后将以此数量与成本覆盖当前持仓，记为一笔「校准」，不产生已实现盈亏。";
 "position.empty.title" = "尚未持有";
-"position.empty.subtitle" = "记录买入卖出，Pulse 自动计算成本与盈亏";
+"position.empty.subtitle" = "记录买入卖出，FFF 自动计算成本与盈亏";
 "position.historyTrades" = "历史交易";
 "position.tradeCount" = "%d 笔";
 "transaction.logTitle" = "交易记录";
@@ -402,15 +402,15 @@
 "data.import.status.unknownMarket" = "市场无效";
 "data.import.status.unreadable" = "无法识别";
 "data.error.emptyClipboard" = "剪贴板是空的。请先复制一份导出内容，或从示例格式开始。";
-"data.error.notArchive" = "剪贴板里不是 Pulse 导出的内容。可以先复制示例格式看看它长什么样。";
-"data.error.newerVersion" = "这份导出来自更新版本的 Pulse，请先升级后再试。";
+"data.error.notArchive" = "剪贴板里不是 FFF 导出的内容。可以先复制示例格式看看它长什么样。";
+"data.error.newerVersion" = "这份导出来自更新版本的 FFF，请先升级后再试。";
 "data.error.noLists" = "这份导出里没有任何列表。";
 "settings.data.row" = "数据与同步";
 "settings.data.rowStatus.on" = "已开启";
 "settings.data.rowStatus.off" = "未开启";
 "settings.data.rowStatus.attention" = "需处理";
 "data.export.subtitle" = "把全部列表、顺序、置顶与交易复制为文本";
-"data.import.subtitle" = "读取 Pulse 导出内容，导入前先逐条确认";
+"data.import.subtitle" = "读取 FFF 导出内容，导入前先逐条确认";
 "data.format.title" = "格式";
 "data.format.help" = "market 取 us、hk、sh、sz 或 crypto；code 填 NVDA、700 这类代码，或 BTC/USDT 这样的交易对。name、pinned、transactions 可省略。";
 "data.import.status.missingCode" = "代码为空";
@@ -436,12 +436,12 @@
 "sync.conflict.useRemote" = "使用另一台 Mac 的交易";
 "sync.conflict.changed" = "查看期间另一台 Mac 有更新。请检查更新后的冲突再选择。";
 "sync.privacy" = "所选文件夹内是可读的自选、持仓和交易记录。数据源凭据、钥匙串项目、MCP 令牌和本机设置仅保留在本机。";
-"sync.error.accessDenied" = "Pulse 无法访问此文件夹。请在设置中重新选择。";
+"sync.error.accessDenied" = "FFF 无法访问此文件夹。请在设置中重新选择。";
 "sync.error.folderUnavailable" = "所选位置不是可用的文件夹。";
 "sync.error.invalidFile" = "同步文件无法读取或属于其他设备。本机数据已保留。";
-"sync.error.coordination" = "Pulse 无法协调访问同步文件夹。";
-"sync.error.backupFailed" = "Pulse 无法保存冲突备份，因此没有应用任何选择。";
-"sync.error.ownFilePendingDownload" = "这台 Mac 的同步文件仍在从 iCloud 下载。Pulse 会在后台重试。";
+"sync.error.coordination" = "FFF 无法协调访问同步文件夹。";
+"sync.error.backupFailed" = "FFF 无法保存冲突备份，因此没有应用任何选择。";
+"sync.error.ownFilePendingDownload" = "这台 Mac 的同步文件仍在从 iCloud 下载。FFF 会在后台重试。";
 
 /* Trade plans: what the user means to do at which price */
 "detail.section.plan" = "交易计划";
@@ -508,7 +508,7 @@
 "plan.condition.unlink" = "解除关联";
 "plan.condition.noEvents" = "该标的暂无其他事件";
 "plan.condition.tapHelp" = "选择条件状态";
-"plan.condition.priceNote" = "Pulse 只比对计划自己的价位和行情。条件由你自己判断。";
+"plan.condition.priceNote" = "FFF 只比对计划自己的价位和行情。条件由你自己判断。";
 "plan.condition.invalid" = "每条条件都需要标题，以及有效的 http 或 https 来源链接。";
 "plan.condition.kind.logic" = "逻辑";
 "plan.condition.kind.event" = "事件";
@@ -532,7 +532,7 @@
 "plan.execution.record" = "记录成交";
 "plan.execution.recordAndReview" = "记录并复盘";
 "plan.execution.note" = "备注（可选）";
-"plan.execution.poolHelp" = "记入 %@。这里只是记录券商已经完成的成交 —— Pulse 从不发送委托。";
+"plan.execution.poolHelp" = "记入 %@。这里只是记录券商已经完成的成交 —— FFF 从不发送委托。";
 "plan.execution.notAnOrder" = "仅作记账。这里不会向券商发出任何指令。";
 "plan.execution.useRemaining" = "填入剩余 %@";
 "plan.execution.useRemainingHelp" = "填入这条计划尚未成交的数量";
@@ -567,7 +567,7 @@
 "settings.mcp.title" = "MCP";
 "settings.mcp.enable" = "启用 MCP 服务";
 "settings.mcp.copyField" = "复制";
-"settings.mcp.intro" = "在 Pulse 运行时，让 Claude、ChatGPT 或其他支持 MCP 的客户端读取并编辑你的自选与交易记录。";
+"settings.mcp.intro" = "在 FFF 运行时，让 Claude、ChatGPT 或其他支持 MCP 的客户端读取并编辑你的自选与交易记录。";
 "settings.mcp.tools.title" = "工具";
 "settings.mcp.tools.read" = "列出自选分组、持仓与缓存行情；搜索标的";
 "settings.mcp.tools.watchlist" = "创建、重命名、删除分组；增减标的";
@@ -1033,7 +1033,7 @@
 /* Alerts */
 "alerts.status.off" = "关闭";
 "alerts.status.demo" = "演示模式不发送通知";
-"alerts.status.permissionDenied" = "未获通知权限，请在系统设置中允许 Pulse 通知";
+"alerts.status.permissionDenied" = "未获通知权限，请在系统设置中允许 FFF 通知";
 "alerts.status.on" = "已开启 · 全部证券账号 · 当前 Mac";
 "alerts.snooze.title" = "15 分钟后提醒";
 "alerts.plan.title" = "%@ · %@ · 计划到价";
@@ -1054,9 +1054,9 @@
 "feedback.emailUnavailableCopied" = "无邮件客户端 · 已复制报告";
 "feedback.emailUnavailable" = "无法打开邮件";
 "settings.section.support" = "支持";
-"settings.support.help" = "“发送邮件”会新建一封给我们的邮件并附上诊断报告。报告包含 Pulse 与 macOS 版本、数据源状态以及本次运行的近期日志，不包含你的自选股、持仓或凭证。没有邮件客户端时，可分别复制地址和报告。";
+"settings.support.help" = "“发送邮件”会新建一封给我们的邮件并附上诊断报告。报告包含 FFF 与 macOS 版本、数据源状态以及本次运行的近期日志，不包含你的自选股、持仓或凭证。没有邮件客户端时，可分别复制地址和报告。";
 
-"main.window.title" = "Pulse";
+"main.window.title" = "FFF";
 "main.openWindow" = "打开主窗口";
 "main.dashboard" = "自选列表";
 "main.settings" = "设置";

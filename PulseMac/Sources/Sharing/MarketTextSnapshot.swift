@@ -75,7 +75,7 @@ struct WatchlistTextSnapshot {
     func renderedText() throws -> String {
         try MarketTextRenderer.render([
             "exported_at": MarketTextRenderer.utcTimestamp(exportedAt),
-            "exported_by": "Pulse",
+            "exported_by": AppBrand.name,
             "format": "pulse_market_snapshot",
             "items": items.enumerated().map { offset, item in
                 [
@@ -142,7 +142,7 @@ struct DetailTextSnapshot {
                 includesExtendedHours: includesExtendedHours
             ),
             "exported_at": MarketTextRenderer.utcTimestamp(exportedAt),
-            "exported_by": "Pulse",
+            "exported_by": AppBrand.name,
             "format": "pulse_market_snapshot",
             "instrument": MarketTextRenderer.instrument(
                 symbol: symbol,
@@ -161,7 +161,7 @@ struct DetailTextSnapshot {
 private enum MarketTextRenderer {
     static let maximumChartBars = 120
     static let productURL = "https://www.pulseticker.app"
-    static let preamble = "This market snapshot was exported by Pulse. Market data may be real-time or delayed; refer to each record's source, timestamp, and session fields."
+    static let preamble = "This market snapshot was exported by \(AppBrand.name). Market data may be real-time or delayed; refer to each record's source, timestamp, and session fields."
 
     static func render(
         _ object: [String: Any],

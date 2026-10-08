@@ -6,7 +6,7 @@
 //
 // The output is a 600x360pt canvas with 1x and 2x representations in one TIFF
 // (Finder picks the right one per display). The icon slots this artwork is
-// composed around live in the volume's .DS_Store, not here: Pulse.app centred
+// composed around live in the volume's .DS_Store, not here: FFF.app centred
 // at (150, 180) and Applications at (450, 180) in top-left-origin window
 // coordinates, both 128pt. Change one and re-capture the other with
 // scripts/capture-dmg-layout.sh, or the arrow will point at nothing.

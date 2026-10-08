@@ -96,7 +96,7 @@ enum MainWindowDemo {
                 turnover: price * volume,
                 currencyCode: info.symbol.currencyCode,
                 sourceID: "demo",
-                sourceName: "Pulse Demo",
+                sourceName: "FFF Demo",
                 timestamp: now
             )
         }
@@ -117,7 +117,7 @@ enum MainWindowDemo {
             turnover: 90_000,
             currencyCode: "USD",
             sourceID: "demo",
-            sourceName: "Pulse Demo",
+            sourceName: "FFF Demo",
             timestamp: now
         )])
 
