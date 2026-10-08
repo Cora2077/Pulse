@@ -43,6 +43,7 @@ final class MCPAgentServer {
     @ObservationIgnored private var listener: MCPHTTPListener?
     @ObservationIgnored private var startTask: Task<Void, Never>?
     @ObservationIgnored private var sessions: [String: Session] = [:]
+    @ObservationIgnored private let tokenSession = MCPTokenSession()
 
     init(commands: AgentWatchlistCommands, poke: @escaping @MainActor () -> Void) {
         self.commands = commands
@@ -53,13 +54,14 @@ final class MCPAgentServer {
 
     func start() {
         guard listener == nil, startTask == nil else { return }
+        tokenSession.retryAfterFailure()
         startTask = Task { await performStart() }
     }
 
     private func performStart() async {
         defer { startTask = nil }
         do {
-            let token = try MCPTokenStore.loadOrCreate()
+            let token = try tokenSession.current()
             let listener = MCPHTTPListener(port: Self.port, token: token) { [weak self] request in
                 guard let self else {
                     return .error(statusCode: 503, MCPError.connectionClosed)
@@ -98,13 +100,13 @@ final class MCPAgentServer {
     // MARK: - Token
 
     func currentToken() throws -> String {
-        try MCPTokenStore.loadOrCreate()
+        try tokenSession.current()
     }
 
     /// The rotated token is in the Keychain before any restart, so a crash
     /// between rotate and restart still leaves the shown token authoritative.
     func rotateToken() throws -> String {
-        let token = try MCPTokenStore.rotate()
+        let token = try tokenSession.rotate()
         let wasRunning = listener != nil || startTask != nil
         if wasRunning {
             stop()
@@ -145,7 +147,7 @@ final class MCPAgentServer {
 
         let transport = StatefulHTTPServerTransport()
         let server = Server(
-            name: "Pulse",
+            name: AppBrand.name,
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
             capabilities: .init(tools: .init(listChanged: false))
         )
