@@ -1,7 +1,8 @@
 import Foundation
 
 /// Tencent quote snapshots (qt.gtimg.cn, unofficial API).
-/// Capabilities: batch quotes plus real-time A-share minute series; other markets and historical K-line periods fall back to the next provider.
+/// Capabilities: batch quotes plus real-time A-share minute series and native
+/// daily/weekly/monthly history; other markets fall back to the next provider.
 /// The response is GBK-encoded text of the form `v_sh600519="1~<name>~600519~<price>~<prevClose>~<open>~...";`.
 /// The `hf_` channel (international futures, which is how Pulse reaches the
 /// precious metals) answers on the same endpoint in a different, comma-separated
@@ -20,7 +21,9 @@ public struct TencentProvider: QuoteProvider {
             markets: [.us, .hk, .sh, .sz, .metal],
             capabilities: [.quotes, .search, .candles],
             candleMarkets: [.sh, .sz],
-            candlePeriods: [.minute1, .minute5, .minute15, .minute30, .hour1],
+            // Minute periods come from the minute endpoint, day/week/month from
+            // the fqkline history endpoint.
+            candlePeriods: Set(CandlePeriod.allCases),
             delay: [.us: 0, .hk: 900, .sh: 0, .sz: 0, .metal: 0],
             rateLimit: RateLimitPolicy(minInterval: 2, batchSize: 60),
             suggestedPollInterval: 15
@@ -150,10 +153,16 @@ public struct TencentProvider: QuoteProvider {
     }
 
     public func candles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] {
-        guard symbol.market.isChinaA, period.isIntraday else {
+        guard symbol.market.isChinaA else {
             throw ProviderError.unsupported(.candles)
         }
+        if period.isIntraday {
+            return try await minuteCandles(for: symbol, period: period, count: count)
+        }
+        return try await historicalCandles(for: symbol, period: period, count: count)
+    }
 
+    private func minuteCandles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] {
         guard let tencentSymbol = Self.tencentSymbol(for: symbol) else {
             throw ProviderError.symbolNotFound(symbol)
         }
@@ -180,6 +189,122 @@ public struct TencentProvider: QuoteProvider {
             throw ProviderError.badResponse("tencent minute: no rows parsed")
         }
         return Array(candles.suffix(count))
+    }
+
+    // MARK: - Historical candles
+
+    /// Native daily/weekly/monthly history for the China A markets
+    /// (`web.ifzq.gtimg.cn/appstock/app/fqkline/get`).
+    ///
+    /// The final query field is the adjustment mode: left empty it returns
+    /// unadjusted ("不复权") prices, which is what the rest of Pulse's OHLC
+    /// semantics assume. Only the A-share markets are served here.
+    private func historicalCandles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] {
+        // A non-positive count is a caller mistake, not a source failure: answer
+        // it without spending a request.
+        guard count > 0 else { return [] }
+        guard symbol.market.isChinaA,
+              let wireSymbol = Self.tencentSymbol(for: symbol),
+              let interval = Self.historyInterval(for: period) else {
+            throw ProviderError.unsupported(.candles)
+        }
+        let clamped = min(count, Self.historyMaxCount)
+        var components = URLComponents(string: "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get")!
+        components.queryItems = [
+            .init(name: "param", value: "\(wireSymbol),\(interval),,,\(clamped),"),
+        ]
+        let data = try await http.get(components.url!, headers: ["Referer": "https://gu.qq.com/"])
+        let candles = try Self.parseHistoricalCandles(
+            data,
+            symbol: symbol,
+            wireSymbol: wireSymbol,
+            period: period
+        )
+        // The endpoint can include today's provisional bar in addition to lmt.
+        return Array(candles.suffix(clamped))
+    }
+
+    /// The wire name of an interval; nil for intraday periods.
+    static func historyInterval(for period: CandlePeriod) -> String? {
+        switch period {
+        case .day: "day"
+        case .week: "week"
+        case .month: "month"
+        case .minute1, .minute5, .minute15, .minute30, .hour1: nil
+        }
+    }
+
+    /// Tencent serves at most 640 bars per request.
+    static let historyMaxCount = 640
+
+    /// Parses `{"code":0,"msg":"","data":{"sh000688":{"day":[[…]],"qt":{…}}}}`.
+    ///
+    /// Each row is `[date, open, close, high, low, volume]` — note that the third
+    /// value is the *close*, not the high, and that volume is reported in lots of
+    /// 100 shares like the quote endpoint. Metadata keys such as `qt` and any
+    /// trailing row fields are ignored, and a row that is malformed or
+    /// contradicts itself (non-finite, non-positive, high below low) is dropped
+    /// rather than allowed to poison the chart.
+    static func parseHistoricalCandles(
+        _ data: Data,
+        symbol: SymbolID,
+        wireSymbol: String,
+        period: CandlePeriod
+    ) throws -> [Candle] {
+        guard let interval = historyInterval(for: period) else {
+            throw ProviderError.unsupported(.candles)
+        }
+        let response: HistoricalResponse
+        do {
+            response = try JSONDecoder().decode(HistoricalResponse.self, from: data)
+        } catch {
+            throw ProviderError.badResponse("tencent history: \(error.localizedDescription)")
+        }
+        guard response.code == 0 else {
+            throw ProviderError.badResponse("tencent history: code \(response.code)")
+        }
+        guard let rows = response.data?[wireSymbol]?.series?[interval] else {
+            throw ProviderError.symbolNotFound(symbol)
+        }
+
+        // The exchange's own day, so a bar can never land on the neighbouring date.
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = symbol.market.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+
+        var byDate: [Date: Candle] = [:]
+        for row in rows {
+            guard let candle = parseHistoricalRow(row.values, formatter: formatter) else { continue }
+            byDate[candle.time] = candle  // a repeated date keeps the last row
+        }
+        // Unusable rows alone must surface as an error, so Composite can fail
+        // over instead of caching an empty success.
+        guard !byDate.isEmpty else {
+            throw ProviderError.badResponse("tencent history: no usable rows for \(wireSymbol)")
+        }
+        return byDate.values.sorted { $0.time < $1.time }
+    }
+
+    private static func parseHistoricalRow(_ row: [HistoryValue], formatter: DateFormatter) -> Candle? {
+        guard row.count >= 5,  // a trailing volume field is optional
+              let date = formatter.date(from: row[0].stringValue),
+              formatter.string(from: date) == row[0].stringValue,  // reject 2025-13-45 etc.
+              let open = row[1].doubleValue,
+              let close = row[2].doubleValue,
+              let high = row[3].doubleValue,
+              let low = row[4].doubleValue,
+              open.isFinite, close.isFinite, high.isFinite, low.isFinite,
+              open > 0, close > 0,
+              high >= max(open, close), low <= min(open, close), low > 0 else { return nil }
+        // Volume is reported in lots; convert to shares to match the quote and
+        // minute parsers. Values that are absent or unusable become nil.
+        let volume = row.count > 5 ? row[5].doubleValue.flatMap { value -> Double? in
+            guard value.isFinite, value >= 0 else { return nil }
+            let shares = value * 100
+            return shares.isFinite ? shares : nil
+        } : nil
+        return Candle(time: date, open: open, high: high, low: low, close: close, volume: volume)
     }
 
     public func quotes(for symbols: [SymbolID]) async throws -> [Quote] {
@@ -371,6 +496,84 @@ private struct MinuteResponse: Decodable {
         let date: String
         let data: [String]
     }
+}
+
+/// A JSON scalar whose type the source is not consistent about: the real
+/// responses quote the OHLC and volume as strings, but a number must not be
+/// dropped if Tencent ever sends one.
+private enum HistoryValue: Decodable {
+    case string(String)
+    case number(Double)
+    case unusable
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let number = try? container.decode(Double.self) {
+            self = .number(number)
+        } else if let string = try? container.decode(String.self) {
+            self = .string(string)
+        } else { self = .unusable }
+    }
+
+    var stringValue: String {
+        switch self {
+        case .string(let raw): raw
+        case .number(let value): String(value)
+        case .unusable: ""
+        }
+    }
+
+    var doubleValue: Double? {
+        switch self {
+        case .string(let raw): Double(raw)
+        case .number(let value): value
+        case .unusable: nil
+        }
+    }
+}
+
+/// Skip an invalid row without discarding the other dates in the response.
+private struct HistoryRow: Decodable {
+    let values: [HistoryValue]
+
+    init(from decoder: any Decoder) throws {
+        guard var container = try? decoder.unkeyedContainer() else {
+            values = []
+            return
+        }
+        var decoded: [HistoryValue] = []
+        while !container.isAtEnd { decoded.append(try container.decode(HistoryValue.self)) }
+        values = decoded
+    }
+}
+
+private struct HistoricalResponse: Decodable {
+    let code: Int
+    let data: [String: SymbolPayload]?
+
+    struct SymbolPayload: Decodable {
+        let series: [String: [HistoryRow]]?
+
+        /// Every other key (`qt`, `prec`, …) is metadata the chart does not use.
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: AnyKey.self)
+            var series: [String: [HistoryRow]] = [:]
+            for key in container.allKeys {
+                if let rows = try? container.decode([HistoryRow].self, forKey: key) {
+                    series[key.stringValue] = rows
+                }
+            }
+            self.series = series.isEmpty ? nil : series
+        }
+    }
+}
+
+private struct AnyKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { nil }
 }
 
 extension Array {

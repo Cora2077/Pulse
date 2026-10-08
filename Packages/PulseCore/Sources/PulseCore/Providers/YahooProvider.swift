@@ -1,10 +1,11 @@
 import Foundation
 
 /// Yahoo Finance v8 chart / v1 search (unofficial API).
-/// Capabilities: search + quotes + candles across US/HK/SH/SZ/JP/KR and the
-/// metal contracts; A-shares and HK are delayed by about 15 minutes, Tokyo and
+/// Capabilities: search + quotes + candles across US/HK/JP/KR and the
+/// metal contracts; HK is delayed by about 15 minutes, Tokyo and
 /// Seoul by about 20, CME-group futures by about 10. Crypto is intentionally
-/// excluded: Binance is the sole source of truth for crypto pairs.
+/// excluded: Binance is the sole source of truth for crypto pairs. China A-share
+/// stocks and indices use domestic providers and never route to Yahoo.
 ///
 /// Yahoo indexes only English names and tickers: `任天堂`, `サムスン` and
 /// `삼성전자` all return nothing, so Japanese and Korean stocks are reachable by
@@ -23,13 +24,13 @@ public struct YahooProvider: QuoteProvider {
         ProviderDescriptor(
             id: "yahoo",
             name: PulseLocalization.localizedString("provider.yahoo"),
-            markets: [.us, .hk, .sh, .sz, .jp, .kr, .kq, .metal],
+            markets: [.us, .hk, .jp, .kr, .kq, .metal],
             capabilities: [.search, .quotes, .candles, .profile],
             // Yahoo is the only wired source of metal history, so it stays a
             // candle provider for that market even though Tencent quotes it live.
             // Seoul measured at ~21 minutes behind the tape; Tokyo is licensed the
             // same way. Both are rounded to the 20 minutes Yahoo publishes.
-            delay: [.us: 0, .hk: 900, .sh: 900, .sz: 900, .jp: 1_200, .kr: 1_200, .kq: 1_200, .metal: 600],
+            delay: [.us: 0, .hk: 900, .jp: 1_200, .kr: 1_200, .kq: 1_200, .metal: 600],
             rateLimit: RateLimitPolicy(minInterval: 1, batchSize: 1),
             // Yahoo rate-limits aggressively per IP; poll politely and let pushes/others carry liveliness
             suggestedPollInterval: 60
@@ -162,7 +163,7 @@ public struct YahooProvider: QuoteProvider {
             guard type != .other else { return nil }
             guard let raw = item.symbol else { return nil }
             let id = Self.symbolID(fromYahoo: raw)
-            guard let id else { return nil }
+            guard let id, !id.market.isChinaA else { return nil }
             let name = item.longname ?? item.shortname ?? raw
             return SymbolInfo(symbol: id, name: name, exchangeName: item.exchDisp, type: type)
         }
@@ -193,7 +194,7 @@ public struct YahooProvider: QuoteProvider {
     }
 
     func quote(for symbol: SymbolID) async throws -> Quote {
-        guard symbol.market != .crypto else { throw ProviderError.unsupported(.quotes) }
+        guard descriptor.supports(.quotes, in: symbol.market) else { throw ProviderError.unsupported(.quotes) }
         guard symbol.metalID?.isSpot != true else { throw ProviderError.unsupported(.quotes) }
         if symbol.market == .us, let quote = try? await extendedHoursQuote(for: symbol) {
             return quote
@@ -308,7 +309,7 @@ public struct YahooProvider: QuoteProvider {
     }
 
     public func candles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] {
-        guard symbol.market != .crypto else { throw ProviderError.unsupported(.candles) }
+        guard descriptor.supports(candles: period, in: symbol.market) else { throw ProviderError.unsupported(.candles) }
         // London spot has never had a working Yahoo symbol; say so instead of
         // spending a request on a guaranteed 404 before failing over.
         guard symbol.metalID?.isSpot != true else { throw ProviderError.unsupported(.candles) }
@@ -343,6 +344,7 @@ public struct YahooProvider: QuoteProvider {
     /// funds. Indices and crypto have none — that is an answer, not a failure,
     /// and is reported as such so no other source is asked.
     public func profile(for symbol: SymbolID) async throws -> SecurityProfile? {
+        guard descriptor.supports(.profile, in: symbol.market) else { throw ProviderError.unsupported(.profile) }
         guard symbol.isDescribable else { return nil }
         do {
             return try await requestProfile(for: symbol, crumb: try await crumbs.crumb(using: http))

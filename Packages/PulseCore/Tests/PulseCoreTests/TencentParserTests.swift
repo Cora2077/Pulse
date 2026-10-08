@@ -221,7 +221,7 @@ struct TencentParserTests {
         #expect(quote.low == nil)
     }
 
-    @Test("Tencent candle coverage is limited to A-share intraday periods")
+    @Test("Tencent candle coverage spans A-share intraday and daily history, and no other market")
     func candleCoverage() {
         let descriptor = TencentProvider().descriptor
         #expect(descriptor.supports(candles: .minute1, in: .sh))
@@ -229,8 +229,15 @@ struct TencentParserTests {
         #expect(descriptor.supports(candles: .minute15, in: .sh))
         #expect(descriptor.supports(candles: .minute30, in: .sz))
         #expect(descriptor.supports(candles: .hour1, in: .sh))
-        #expect(!descriptor.supports(candles: .day, in: .sh))
+        #expect(descriptor.supports(candles: .day, in: .sh))
+        #expect(descriptor.supports(candles: .week, in: .sz))
+        #expect(descriptor.supports(candles: .month, in: .sh))
+        #expect(descriptor.candlePeriods == Set(CandlePeriod.allCases))
+        // Other markets keep only quoting: no HK/US history is advertised here.
+        #expect(!descriptor.supports(candles: .day, in: .hk))
         #expect(!descriptor.supports(candles: .minute1, in: .hk))
+        #expect(!descriptor.supports(candles: .week, in: .us))
+        #expect(descriptor.candleMarkets == [.sh, .sz])
     }
 
     /// Excerpt from a real smartbox response (query: Tencent's Chinese name); the real API returns names in \uXXXX escaped form

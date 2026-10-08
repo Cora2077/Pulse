@@ -2,6 +2,96 @@ import Foundation
 import Testing
 @testable import PulseCore
 
+/// A session that answers nothing and records what was asked. China A-share
+/// requests must be rejected *before* any of these are reached, so a recorded
+/// request is itself the failure and the test needs no live Yahoo access.
+///
+/// A body can be installed to drive a method that really does fetch (search),
+/// which keeps the production filter — not a copy of it — under test.
+///
+/// Swift Testing runs cases in a suite in parallel, so the stub cannot be one
+/// global slot: every test owns a unique token and a handle that only sees and
+/// only answers requests carrying that token. One test's setup can therefore
+/// never blank another's body.
+final class YahooRequestRecorder: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var bodies: [String: Data] = [:]
+    nonisolated(unsafe) private static var seen: [String: [URL]] = [:]
+
+    static let tokenHeader = "X-Pulse-Test-Token"
+
+    /// One test's private view of the stub.
+    final class Handle: @unchecked Sendable {
+        let token: String
+
+        init(token: String) { self.token = token }
+
+        /// Requests this test made, in order.
+        var recorded: [URL] {
+            YahooRequestRecorder.lock.lock()
+            defer { YahooRequestRecorder.lock.unlock() }
+            return YahooRequestRecorder.seen[token] ?? []
+        }
+    }
+
+    /// Claims a fresh token, optionally with a body to answer it. Call once per
+    /// test, before building the provider.
+    @discardableResult
+    static func install(body: Data? = nil) -> Handle {
+        let token = UUID().uuidString
+        lock.lock()
+        defer { lock.unlock() }
+        seen[token] = []
+        if let body { bodies[token] = body }
+        return Handle(token: token)
+    }
+
+    /// An `HTTPClient` that routes every request to this recorder with `token`.
+    static func httpClient(token: String) -> HTTPClient {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [YahooRequestRecorder.self]
+        config.httpAdditionalHeaders = [tokenHeader: token]
+        return HTTPClient(session: URLSession(configuration: config))
+    }
+
+    /// The header is attached by the session configuration, but URLProtocol only
+    /// receives it on the request; this reads it back.
+    private static func token(of request: URLRequest) -> String? {
+        request.value(forHTTPHeaderField: tokenHeader)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url, let token = Self.token(of: request) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+
+        Self.lock.lock()
+        let body = Self.bodies[token]
+        Self.seen[token, default: []].append(url)
+        Self.lock.unlock()
+
+        guard let body else {
+            // Fail loudly: a China A request that reached the network is itself
+            // the bug, and the handle's `recorded` catches it either way.
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+            return
+        }
+        let response = HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 @Suite("Yahoo response parsing")
 struct YahooParserTests {
     static let chartFixture = Data("""
@@ -172,5 +262,182 @@ struct YahooParserTests {
         #expect(BinanceProvider.interval(for: .minute15) == "15m")
         #expect(BinanceProvider.interval(for: .minute30) == "30m")
         #expect(BinanceProvider.interval(for: .hour1) == "1h")
+    }
+
+    // MARK: - China A-share exclusion
+    //
+    // China A stocks and indices are served by domestic providers (Tencent,
+    // Sina, Eastmoney). Yahoo must neither route them nor answer for them.
+
+    /// Every way a China A instrument can be addressed: a Shanghai/Shenzhen
+    /// stock, and each canonical A-share index identity.
+    static let chinaASymbols: [SymbolID] = [
+        SymbolID(market: .sh, code: "600519"),
+        SymbolID(market: .sh, code: "000688"),
+        SymbolID(market: .sz, code: "000001"),
+        SymbolID(market: .sz, code: "399001"),
+        SymbolID(index: .shanghaiComposite),
+        SymbolID(index: .shenzhenComponent),
+        SymbolID(index: .chiNext),
+    ]
+
+    /// Markets that must stay supported, and the instruments that prove it.
+    static let retainedSymbols: [(id: SymbolID, market: Market)] = [
+        (SymbolID(market: .us, code: "AAPL"), .us),
+        (SymbolID(index: .sp500), .us),
+        (SymbolID(market: .hk, code: "700"), .hk),
+        (SymbolID(index: .hangSeng), .hk),
+        (SymbolID(market: .jp, code: "7203"), .jp),
+        (SymbolID(market: .kr, code: "005930"), .kr),
+        (SymbolID(market: .metal, code: "GC=F"), .metal),
+    ]
+
+    @Test("The descriptor drops China A from markets and from every delay it advertises")
+    func descriptorExcludesChinaA() {
+        let descriptor = YahooProvider().descriptor
+
+        #expect(!descriptor.markets.contains(.sh))
+        #expect(!descriptor.markets.contains(.sz))
+        #expect(!descriptor.markets.contains(.metalCN))
+        // The remaining coverage is intact rather than the whole set shrinking.
+        #expect(descriptor.markets == [.us, .hk, .jp, .kr, .kq, .metal])
+        // A stale delay entry would still advertise Shanghai/Shenzhen freshness.
+        #expect(descriptor.delay[.sh] == nil)
+        #expect(descriptor.delay[.sz] == nil)
+        #expect(descriptor.delay[.us] == 0)
+        #expect(descriptor.delay[.hk] == 900)
+
+        // Capability negotiation is what routing actually reads.
+        for capability in [Capability.quotes, .candles, .profile, .search] {
+            #expect(!descriptor.supports(capability, in: .sh))
+            #expect(!descriptor.supports(capability, in: .sz))
+            #expect(descriptor.supports(capability, in: .us))
+            #expect(descriptor.supports(capability, in: .hk))
+        }
+    }
+
+    @Test(
+        "Quotes, candles and profile reject China A symbols before any request",
+        arguments: YahooParserTests.chinaASymbols
+    )
+    func rejectsChinaAWithoutNetworking(symbol: SymbolID) async {
+        let recorder = YahooRequestRecorder.install()
+        let provider = YahooProvider(http: YahooRequestRecorder.httpClient(token: recorder.token))
+
+        // The capability is named in each assertion so a rejection for the wrong
+        // reason (say, a network failure) cannot pass as the right one.
+        await Self.expectUnsupported(.quotes) {
+            _ = try await provider.quotes(for: [symbol])
+        }
+        await Self.expectUnsupported(.candles) {
+            _ = try await provider.candles(for: symbol, period: .day, count: 30)
+        }
+        await Self.expectUnsupported(.profile) {
+            _ = try await provider.profile(for: symbol)
+        }
+
+        // The whole point: the rejection happened up front, not after a 404.
+        #expect(recorder.recorded.isEmpty)
+    }
+
+    /// Asserts the call failed with `ProviderError.unsupported(capability)`.
+    /// `ProviderError` is not `Equatable`, so the case is matched by hand.
+    static func expectUnsupported(
+        _ capability: Capability,
+        sourceLocation: SourceLocation = #_sourceLocation,
+        _ operation: () async throws -> Void
+    ) async {
+        do {
+            try await operation()
+            Issue.record("expected unsupported(\(capability)), but the call succeeded", sourceLocation: sourceLocation)
+        } catch let error as ProviderError {
+            guard case .unsupported(let reported) = error, reported == capability else {
+                Issue.record("expected unsupported(\(capability)), got \(error)", sourceLocation: sourceLocation)
+                return
+            }
+        } catch {
+            Issue.record("expected unsupported(\(capability)), got \(error)", sourceLocation: sourceLocation)
+        }
+    }
+
+    @Test(
+        "Every declared supported market still passes capability negotiation",
+        arguments: YahooParserTests.retainedSymbols
+    )
+    func retainsSupportedMarkets(symbol: SymbolID, market: Market) {
+        let descriptor = YahooProvider().descriptor
+        #expect(descriptor.supports(.quotes, in: market))
+        #expect(descriptor.supports(.candles, in: market))
+        #expect(descriptor.supports(.profile, in: market))
+        #expect(symbol.market == market || symbol.indexID != nil)
+        // Removing China A must not have removed the symbol mapping with it.
+        #expect(!YahooProvider.yahooSymbol(for: symbol).isEmpty)
+    }
+
+    /// A Yahoo search answer that mixes A-share equities and indices into
+    /// otherwise valid US/HK/JP results.
+    static let mixedSearchFixture = Data(#"""
+    {"quotes":[
+      {"symbol":"600519.SS","longname":"Kweichow Moutai Co Ltd","quoteType":"EQUITY","exchDisp":"Shanghai"},
+      {"symbol":"000001.SS","shortname":"SSE Composite Index","quoteType":"INDEX","exchDisp":"Shanghai"},
+      {"symbol":"399001.SZ","shortname":"Shenzhen Component","quoteType":"INDEX","exchDisp":"Shenzhen"},
+      {"symbol":"399006.SZ","shortname":"ChiNext Index","quoteType":"INDEX","exchDisp":"Shenzhen"},
+      {"symbol":"000688.SS","longname":"STAR 50 Index","quoteType":"INDEX","exchDisp":"Shanghai"},
+      {"symbol":"AAPL","longname":"Apple Inc.","quoteType":"EQUITY","exchDisp":"NASDAQ"},
+      {"symbol":"0700.HK","longname":"Tencent Holdings Limited","quoteType":"EQUITY","exchDisp":"HKSE"},
+      {"symbol":"^HSI","shortname":"HANG SENG INDEX","quoteType":"INDEX","exchDisp":"HKSE"},
+      {"symbol":"7203.T","longname":"Toyota Motor Corporation","quoteType":"EQUITY","exchDisp":"JPX"},
+      {"symbol":"^GSPC","shortname":"S&P 500","quoteType":"INDEX","exchDisp":"SNP"}
+    ]}
+    """#.utf8)
+
+    @Test("A mixed search answer keeps US/HK/JP results and drops every Chinese one")
+    func searchFiltersChineseResults() async throws {
+        // The real `search(_:)` runs against the fixture, so the production
+        // filter is what is under test — not a copy of it.
+        let recorder = YahooRequestRecorder.install(body: Self.mixedSearchFixture)
+        let provider = YahooProvider(http: YahooRequestRecorder.httpClient(token: recorder.token))
+        let kept = try await provider.search("tencent")
+
+        // The endpoint was really consulted, so an empty result below would mean
+        // filtering rather than a short-circuit.
+        #expect(recorder.recorded.count == 1)
+        #expect(recorder.recorded.first?.path.contains("/v1/finance/search") == true)
+
+        // No Chinese instrument survives, whether it arrived as an equity or an index.
+        #expect(kept.allSatisfy { !$0.symbol.market.isChinaA })
+        #expect(kept.allSatisfy { $0.symbol.market != .sh && $0.symbol.market != .sz })
+
+        // Shanghai codes must not survive as any market's file.
+        for chinese in ["600519", "000688", "000001", "399001", "399006"] {
+            #expect(!kept.contains { $0.symbol.code == chinese })
+        }
+        #expect(!kept.contains { $0.name.contains("SSE Composite") })
+        #expect(!kept.contains { $0.name.contains("Shenzhen Component") })
+
+        // The supported results are preserved, not merely the Chinese ones removed.
+        let codes = Set(kept.map(\.symbol.code))
+        #expect(codes.contains("AAPL"))
+        #expect(codes.contains("700"))
+        #expect(codes.contains("7203"))
+        #expect(kept.contains { $0.symbol.indexID == .hangSeng })
+        #expect(kept.contains { $0.symbol.indexID == .sp500 })
+        // 5 of the 10 mixed rows are supported; the 5 Chinese ones are gone.
+        #expect(kept.count == 5)
+    }
+
+    @Test("A-share index aliases still decode, but never as a Yahoo target market")
+    func chinaAIndexAliasesDecodeButAreNotRouted() throws {
+        // Reverse mapping is a pure string operation and stays total: the wire
+        // symbol must remain decodable for provenance and round-tripping.
+        #expect(YahooProvider.symbolID(fromYahoo: "000001.SS") == SymbolID(index: .shanghaiComposite))
+        #expect(YahooProvider.symbolID(fromYahoo: "399001.SZ") == SymbolID(index: .shenzhenComponent))
+        #expect(YahooProvider.symbolID(fromYahoo: "399006.SZ") == SymbolID(index: .chiNext))
+        for raw in ["000001.SS", "399001.SZ", "399006.SZ", "600519.SS"] {
+            let id = try #require(YahooProvider.symbolID(fromYahoo: raw))
+            #expect(id.market.isChinaA)
+            // Decoding an id is not permission to route it.
+            #expect(!YahooProvider().descriptor.supports(.quotes, in: id.market))
+        }
     }
 }

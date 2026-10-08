@@ -716,4 +716,55 @@ struct CompositeProviderTests {
         #expect(try await composite.candles(for: shanghai, period: .day, count: 10).first?.close == 2)
         #expect(try await composite.candles(for: hongKong, period: .minute1, count: 10).first?.close == 2)
     }
+
+    @Test("Single-bar index history tries another source and caches the recovered series")
+    func incompleteHistoryFallsBack() async throws {
+        let today = Candle(time: .now, open: 10, high: 10, low: 10, close: 10)
+        let yesterday = Candle(time: today.time.addingTimeInterval(-86_400), open: 9, high: 9, low: 9, close: 9)
+        let composite = CompositeProvider(providers: [
+            MockProvider(id: "snapshot-only", candleResult: [today]),
+            MockProvider(id: "historical", candleResult: [yesterday, today])
+        ])
+        let index = SymbolID(market: .sh, code: "000688")
+        for _ in 0..<2 {
+            #expect(try await composite.candles(for: index, period: .day, count: 250) == [yesterday, today])
+        }
+        #expect(await composite.healthReport()["snapshot-only"] == "healthy")
+    }
+
+    @Test("A genuinely short history remains usable when no source has more bars")
+    func preservesSingleBarHistory() async throws {
+        let candle = Candle(time: .now, open: 1, high: 1, low: 1, close: 1)
+        let composite = CompositeProvider(providers: [
+            MockProvider(id: "new-listing", candleResult: [candle]),
+            MockProvider(id: "empty", candleResult: [])
+        ])
+        #expect(try await composite.candles(for: Self.apple.symbol, period: .day, count: 250) == [candle])
+    }
+
+    @Test("Empty successful candle responses continue to the next source")
+    func emptyCandlesFallBack() async throws {
+        let candle = Candle(time: .now, open: 1, high: 1, low: 1, close: 1)
+        let composite = CompositeProvider(providers: [
+            MockProvider(id: "empty", candleResult: []),
+            MockProvider(id: "backup", candleResult: [candle])
+        ])
+        #expect(try await composite.candles(for: Self.apple.symbol, period: .minute1, count: 10) == [candle])
+        let emptyOnly = CompositeProvider(providers: [MockProvider(id: "empty", candleResult: [])])
+        await #expect(throws: ProviderError.self) {
+            try await emptyOnly.candles(for: Self.apple.symbol, period: .day, count: 10)
+        }
+    }
+
+    @Test("Intraday and explicit one-bar requests keep their preferred source")
+    func oneBarRequestsKeepPriority() async throws {
+        let first = Candle(time: .now, open: 1, high: 1, low: 1, close: 1)
+        let second = Candle(time: .now, open: 2, high: 2, low: 2, close: 2)
+        let composite = CompositeProvider(providers: [
+            MockProvider(id: "first", candleResult: [first]),
+            MockProvider(id: "second", candleResult: [second, second])
+        ])
+        #expect(try await composite.candles(for: Self.apple.symbol, period: .minute1, count: 10) == [first])
+        #expect(try await composite.candles(for: Self.apple.symbol, period: .day, count: 1) == [first])
+    }
 }

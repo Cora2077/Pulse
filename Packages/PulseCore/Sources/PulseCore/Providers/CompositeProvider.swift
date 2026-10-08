@@ -345,17 +345,12 @@ public actor CompositeProvider: QuoteProvider {
     }
 
     public func candles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] {
+        guard count > 0 else { return [] }
         let key = ProviderCandleCacheKey(symbol: symbol, period: period, count: count)
         if let cached = cachedCandles(for: key, maxAge: candleCacheTTL) {
             return cached
         }
-        let candles = try await failover(
-            .candles,
-            market: symbol.market,
-            eligible: { $0.descriptor.supports(candles: period, in: symbol.market) }
-        ) { provider in
-            try await provider.candles(for: symbol, period: period, count: count)
-        }
+        let candles = try await fetchCandles(for: symbol, period: period, count: count)
         candleCache[key] = CacheEntry(value: candles)
         return candles
     }
@@ -828,23 +823,28 @@ public actor CompositeProvider: QuoteProvider {
         }
     }
 
-    private func failover<T>(_ capability: Capability, market: Market,
-                             eligible: (any QuoteProvider) -> Bool = { _ in true },
-                             _ operation: (any QuoteProvider) async throws -> T) async throws -> T {
+    private func fetchCandles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] {
         let enabled = providers.filter {
-            $0.descriptor.supports(capability, in: market)
-                && eligible($0)
+            $0.descriptor.supports(candles: period, in: symbol.market)
                 && !disabledIDs.contains($0.descriptor.id)
         }
-        guard !enabled.isEmpty else { throw ProviderError.unsupported(capability) }
+        guard !enabled.isEmpty else { throw ProviderError.unsupported(.candles) }
         let healthy = enabled.filter { isHealthy($0.descriptor.id) }
         guard !healthy.isEmpty else { throw ProviderError.rateLimited }  // All in cooldown; recovers automatically shortly
 
-        var lastError: (any Error) = ProviderError.unsupported(capability)
+        var lastError: (any Error) = ProviderError.symbolNotFound(symbol)
+        var singleBarHistory: [Candle]?
         for provider in healthy {
             do {
                 try await waitForProviderBudget(provider)
-                return try await operation(provider)
+                let result = try await provider.candles(for: symbol, period: period, count: count)
+                // Some index endpoints return HTTP 200 and only today's snapshot
+                // for a multi-year request. Try the next source before accepting it.
+                // Keep a genuine newly listed instrument's sole bar if no source
+                // has more history, without penalizing this provider's quote health.
+                guard !result.isEmpty else { continue }
+                if period.isIntraday || count == 1 || result.count > 1 { return result }
+                if singleBarHistory == nil { singleBarHistory = result }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -852,6 +852,7 @@ public actor CompositeProvider: QuoteProvider {
                 lastError = error
             }
         }
+        if let singleBarHistory { return singleBarHistory }
         throw lastError
     }
 }
