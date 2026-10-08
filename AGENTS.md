@@ -10,8 +10,9 @@
 
 # Local macOS signing
 
-- Use `scripts/dev-mac.sh` for local builds, or reuse its discovered Apple Development identity and team when invoking Xcode directly. Do not force ad-hoc signing (`CODE_SIGN_IDENTITY=-`) when a valid development identity is available: it causes Keychain approvals to repeat after every rebuild. Keep certificate identifiers and private keys out of the repository.
-- By default, update the user's installed daily app at `/Users/cora/Applications/Pulse Dev.app` after focused checks, then verify that installed app. Avoid switching between demo and daily versions; use an isolated demo only when explicitly requested or necessary to keep a test from changing real data.
+- Use `scripts/dev-mac.sh` for local builds, or reuse its discovered identity and team when invoking Xcode directly. The installed daily app uses the persistent `Fight For Free Local Development` identity in the login Keychain; keep reusing it rather than creating a new certificate or switching signers. Its default requirement pins the certificate without adding a trusted root. Do not force ad-hoc signing (`CODE_SIGN_IDENTITY=-`): it causes Keychain approvals to repeat after every rebuild. Keep certificate identifiers and private keys out of the repository.
+- Daily installations require a stable certificate. If none is available, complete compile-only checks and ask the user to set up a signing identity; do not install an ad-hoc replacement. `PULSE_ALLOW_AD_HOC=1 scripts/dev-mac.sh --build` is reserved for isolated compilation checks and must not be used to update the daily app.
+- By default, update the user's installed daily app at `/Users/cora/Applications/FFF.app` after focused checks, then verify that installed app. Avoid switching between demo and daily versions; use an isolated demo only when explicitly requested or necessary to keep a test from changing real data.
 
 # ECNU worker delegation
 

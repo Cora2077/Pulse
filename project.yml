@@ -45,7 +45,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSUIElement: true
         LSMinimumSystemVersion: "14.0"
-        NSHumanReadableCopyright: "© 2026 Pulse"
+        NSHumanReadableCopyright: "© 2026 FFF"
         SUEnableAutomaticChecks: true
         SUEnableInstallerLauncherService: true
         SUFeedURL: $(SPARKLE_FEED_URL)
@@ -93,17 +93,16 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
         Debug:
-          PRODUCT_NAME: Pulse Dev
-          BUNDLE_DISPLAY_NAME: Pulse Dev
+          PRODUCT_NAME: FFF
+          BUNDLE_DISPLAY_NAME: FFF
           PRODUCT_BUNDLE_IDENTIFIER: app.pulse.mac.dev
           ENABLE_HARDENED_RUNTIME: false
           ENABLE_USER_SCRIPT_SANDBOXING: false
-          # Ad-hoc signatures change on every build, which makes the Keychain treat each
-          # rebuild as a new app and re-prompt for the Longbridge credentials. A real
-          # development certificate keeps the designated requirement stable across builds.
-          CODE_SIGN_IDENTITY: "Apple Development"
-          DEVELOPMENT_TEAM: N99T75CSKK
+          # Keep direct Xcode builds on the daily app's persistent local signer too.
+          # scripts/dev-mac.sh discovers this identity or a contributor's Apple identity.
+          CODE_SIGN_IDENTITY: "Fight For Free Local Development"
+          DEVELOPMENT_TEAM: ""
         Release:
-          PRODUCT_NAME: Pulse
-          BUNDLE_DISPLAY_NAME: Pulse
+          PRODUCT_NAME: FFF
+          BUNDLE_DISPLAY_NAME: FFF
           PRODUCT_BUNDLE_IDENTIFIER: app.pulse.mac
