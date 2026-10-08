@@ -27,16 +27,25 @@ struct TradeEntryView: View {
     @State private var feeText: String
     @State private var date: Date
     @State private var showsCalendar = false
-    /// Which money bought these shares. `nil` in record mode is the honest
-    /// default — the user has not said — and an edited trade is seeded from
-    /// what it already carries so re-saving cannot silently erase it.
+    /// Fresh buys default to ordinary funding; an edit preserves its stored
+    /// annotation, including nil on older records. A new buy is never nil: the
+    /// shared `BuyAccountMethodFields` offers no empty choice, because a record
+    /// being created has no history to preserve.
     @State private var fundingSource: PositionFundingSource?
+    /// The ledger a new buy lands in. `nil` until the user picks one; an edit
+    /// keeps the transaction's own attribution.
+    @State private var selectedBrokerageAccount: BrokerageAccountID?
     /// Daily candles backing the market-closed hint — whatever the detail
     /// chart already cached, or one fetch on first open.
     @State private var dailyCandles: [Candle] = []
     /// Return can reach `save()` twice in one keypress (field submit + default
     /// action); the first write wins so a trade is never recorded twice.
     @State private var didSave = false
+    /// A refused write. Only the new-buy path can produce one — the store's
+    /// `recordBuyTransaction` is the only call here that reports why it
+    /// declined, and the sentence belongs next to the fields rather than in an
+    /// alert that dismisses the form the user was filling in.
+    @State private var errorMessage: String?
     /// The account this draft belongs to, frozen when the form is built: a
     /// trade is recorded against the ledger the user was filling in, and the
     /// store object survives an account switch with a different ledger inside.
@@ -58,9 +67,8 @@ struct TradeEntryView: View {
         _quantityText = State(initialValue: "")
         _feeText = State(initialValue: "")
         _date = State(initialValue: Self.marketToday(for: symbol.market))
-        // A fresh buy keeps "not annotated": the app must never guess that a
-        // trade was funded on margin, and the user can say so in one click.
-        _fundingSource = State(initialValue: nil)
+        _fundingSource = State(initialValue: side == .buy ? .own : nil)
+        _selectedBrokerageAccount = State(initialValue: account == .unassigned ? nil : account)
         _draftAccount = State(initialValue: account)
     }
 
@@ -81,6 +89,7 @@ struct TradeEntryView: View {
         _feeText = State(initialValue: transaction.fee.map(Self.fieldText) ?? "")
         _date = State(initialValue: Calendar.current.startOfDay(for: transaction.date))
         _fundingSource = State(initialValue: transaction.fundingSource)
+        _selectedBrokerageAccount = State(initialValue: transaction.brokerageAccountID)
         _draftAccount = State(initialValue: account)
     }
 
@@ -109,7 +118,32 @@ struct TradeEntryView: View {
 
     private var marketToday: Date { Self.marketToday(for: symbol.market) }
 
-    private var item: WatchItem? { appState.watchlist.draftItem(for: symbol, account: draftAccount) }
+    /// The ledger this form is previewing against.
+    ///
+    /// A new buy previews the *destination* ledger, not the one it was opened
+    /// from: the numbers the user is about to commit are the destination's, and
+    /// showing the source's would describe a position this trade will not
+    /// touch. An edit keeps the draft account, because that is the ledger the
+    /// transaction actually lives in.
+    private var previewAccount: BrokerageAccountID {
+        isNewBuy ? (selectedBrokerageAccount ?? draftAccount) : draftAccount
+    }
+
+    private var item: WatchItem? { appState.watchlist.draftItem(for: symbol, account: previewAccount) }
+
+    /// The item the preview replays. When the destination ledger has never
+    /// held this symbol there is nothing to read, and a brand-new buy starts
+    /// from an empty ledger — not from the source account's history, which is
+    /// a different account's money entirely. The empty item is built from the
+    /// instrument's own identity so the preview's row styling matches, and it
+    /// carries no transactions and no lots, so the replayed result is exactly
+    /// this buy.
+    private var previewItem: WatchItem? {
+        if let item { return item }
+        guard isNewBuy, selectedBrokerageAccount != nil else { return nil }
+        return WatchItem(symbol: symbol, displayName: appState.displayName(for: symbol))
+    }
+
     private var quote: Quote? { appState.market.quote(for: symbol) }
     private var currencyCode: String? { quote?.currencyCode ?? symbol.currencyCode }
 
@@ -167,15 +201,16 @@ struct TradeEntryView: View {
             PositionPageHeader(
                 symbol: symbol,
                 title: (title, sideColor),
-                // The frozen account, never the live one: a caption that
-                // followed a switch would name the wrong ledger for the draft.
-                accountCaption: AccountIdentity.title(draftAccount),
+                accountCaption: isNewBuy
+                    ? selectedBrokerageAccount.map(AccountIdentity.title)
+                    : AccountIdentity.title(effectiveAccount),
                 onBack: { route = dismissRoute }
             )
             AccountDraftNotice(account: draftAccount)
                 .padding(.horizontal, 12)
                 .padding(.bottom, accountMatchesDraft ? 0 : 6)
             VStack(alignment: .leading, spacing: 10) {
+                if isNewBuy { buyAccountMethodFields }
                 HStack(spacing: 8) {
                     PositionInputCell(
                         label: priceFieldLabel,
@@ -202,6 +237,12 @@ struct TradeEntryView: View {
                     Text(PulseLocalization.localizedString("trade.invalidFee"))
                         .font(.caption2)
                         .foregroundStyle(.red)
+                }
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 dateRow
                 fundingRow
@@ -244,6 +285,13 @@ struct TradeEntryView: View {
         // The whole form is keyboard-first; Return from either field confirms
         // (the button's default action covers Return when no field has focus).
         .onSubmit { save() }
+        // A refused write's sentence describes the values that were submitted.
+        // Once the user edits any of them, keeping it on screen would be
+        // commenting on fields that no longer hold those values.
+        .onChange(of: priceText) { _, _ in errorMessage = nil }
+        .onChange(of: quantityText) { _, _ in errorMessage = nil }
+        .onChange(of: feeText) { _, _ in errorMessage = nil }
+        .onChange(of: date) { _, _ in errorMessage = nil }
         .task(id: symbol) { await loadDailyCandles() }
     }
 
@@ -296,30 +344,99 @@ struct TradeEntryView: View {
     /// fact and never an automatic source deduction. When the position really
     /// does mix own and borrowed shares, saying so here is what stops the user
     /// from assuming the app paid off the margin for them.
+    ///
+    /// Neither half renders for a mengmeng record. That account buys with its
+    /// own money and holds no borrowed shares, so a funding picker there would
+    /// be a label with one possible value — and the mixed-source warning would
+    /// be describing a composition the account cannot have. The stored value is
+    /// untouched either way: this view never rewrites the funding of a record
+    /// the user did not ask to change, and saving an unrelated correction
+    /// carries the annotation it loaded straight back.
     @ViewBuilder
     private var fundingRow: some View {
-        if kind == .buy {
-            FundingSourcePickerRow(
-                label: poolCopy("资金来源", "Funding source"),
-                selection: $fundingSource,
-                help: poolCopy("记录这笔买入实际动用的资金；不填表示尚未标注。",
-                               "Which money this buy actually used. Leaving it blank means nobody has said.")
-            )
-            if let editing, editing.fundingSource != fundingSource {
-                Text(poolCopy("修改买入资金来源后，请在仓位池核对现有份额标记。",
-                              "After correcting buy funding, review the existing portion labels in Position pools."))
-                    .font(.caption2).foregroundStyle(.orange)
-            }
-        } else if let mixedSourceNote {
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Image(systemName: "info.circle").font(.system(size: 10))
-                    .foregroundStyle(.orange)
-                Text(mixedSourceNote)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        if !isMengmengRecord {
+            if kind == .buy && !isNewBuy {
+                FundingSourcePickerRow(
+                    label: poolCopy("资金来源", "Funding source"),
+                    selection: $fundingSource,
+                    help: poolCopy("记录这笔买入实际动用的资金；不填表示尚未标注。",
+                                   "Which money this buy actually used. Leaving it blank means nobody has said."),
+                    options: editFundingOptions,
+                    account: effectiveAccount
+                )
+                if let editing, editing.fundingSource != fundingSource {
+                    Text(poolCopy("修改买入资金来源后，请在仓位池核对现有份额标记。",
+                                  "After correcting buy funding, review the existing portion labels in Position pools."))
+                        .font(.caption2).foregroundStyle(.orange)
+                }
+            } else if let mixedSourceNote {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: "info.circle").font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                    Text(mixedSourceNote)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
+    }
+
+    /// The ledger this draft's record belongs to: the transaction's own
+    /// attribution when editing, the account the form was opened for otherwise.
+    ///
+    /// Every funding question is asked about *this* account, never about the
+    /// globally selected one. The two can differ — the form is frozen to the
+    /// ledger it was built against while the store keeps moving — and reading
+    /// the global selection would answer for a different account's money.
+    private var effectiveAccount: BrokerageAccountID {
+        editing?.brokerageAccountID ?? draftAccount
+    }
+
+    /// Whether this draft edits a record that belongs to the mengmeng account.
+    /// Only an edit can: a new buy into mengmeng is announced by its own
+    /// account picker, which is where the shared fields decide the form.
+    private var isMengmengRecord: Bool {
+        effectiveAccount == .mengmeng
+    }
+
+    /// What an *edit* may newly claim about a buy's funding.
+    ///
+    /// A margin annotation only means something in the financing account, so no
+    /// other account offers one — an edit must not be the way a new invalid
+    /// combination enters the book. The exception is a record that already
+    /// carries margin: that value is history, and removing it from the menu
+    /// would leave the picker rendering a blank row and silently rewrite the
+    /// annotation the moment some unrelated field is corrected. Keeping it
+    /// selectable lets the user fix a price or a date without being forced to
+    /// rewrite the funding on the way through.
+    private var editFundingOptions: [PositionFundingSource] {
+        guard let editing else { return fundingSourcePickerOptions }
+        guard effectiveAccount != .financing, editing.fundingSource != .margin else {
+            return fundingSourcePickerOptions
+        }
+        return fundingSourcePickerOptions.filter { $0 != .margin }
+    }
+
+    private var isNewBuy: Bool { editing == nil && kind == .buy }
+
+    /// The shared account-then-method block, so this form and the plan
+    /// execution sheet cannot offer different combinations. The binding is
+    /// non-optional here because a new buy always has a method; an edit never
+    /// shows these fields, so the fallback is unreachable and `.own` only keeps
+    /// the type honest.
+    private var buyAccountMethodFields: some View {
+        BuyAccountMethodFields(
+            account: $selectedBrokerageAccount,
+            method: Binding(
+                get: { fundingSource ?? .own },
+                set: { fundingSource = $0 }
+            ),
+            accountAccessibilityID: "trade.buy.account",
+            methodAccessibilityID: "trade.buy.method",
+            onAccountChange: { errorMessage = nil },
+            onMethodChange: { errorMessage = nil }
+        )
     }
 
     /// Says that this sale's share composition has to be checked by hand.
@@ -328,9 +445,11 @@ struct TradeEntryView: View {
     /// because a sale spanning several sources cannot be attributed to one of
     /// them automatically — and attributing it would be the app quietly
     /// claiming a repayment nobody made. A single-source or unannotated
-    /// position needs no warning.
+    /// position needs no warning. So does a mengmeng position, where the
+    /// warning is suppressed whole (see `fundingRow`): the account holds no
+    /// borrowed shares to mix in.
     private var mixedSourceNote: String? {
-        guard kind == .sell, let item, let allocation = item.positionAllocation,
+        guard kind == .sell, !isMengmengRecord, let item, let allocation = item.positionAllocation,
               !item.positionAllocationNeedsReconciliation else { return nil }
         let sources = Set(allocation.portions.map { $0.fundingSource ?? .unmarked })
         guard sources.count > 1 else { return nil }
@@ -462,7 +581,7 @@ struct TradeEntryView: View {
     @ViewBuilder
     private var preview: some View {
         let simulated = simulatedOutcome
-        let held = item?.positionQuantity ?? 0
+        let held = previewItem?.positionQuantity ?? 0
         // A trade realizes P&L when it closes against the open side (sell on
         // a long, buy on a short); it moves the average cost when it opens
         // or extends a side. Before input parses, fall back to what the
@@ -514,7 +633,7 @@ struct TradeEntryView: View {
 
     private func newAverageCostText(_ outcome: SimulatedOutcome) -> String {
         let new = PriceFormatter.price(outcome.averageCost)
-        guard let previous = item?.averageCost else { return new }
+        guard let previous = previewItem?.averageCost else { return new }
         return "\(PriceFormatter.price(previous)) → \(new)"
     }
 
@@ -571,7 +690,12 @@ struct TradeEntryView: View {
     }
 
     private var isValid: Bool {
-        parsedPrice != nil && parsedQuantity != nil && parsedFeeIsValid
+        let fieldsValid = parsedPrice != nil && parsedQuantity != nil && parsedFeeIsValid
+        guard isNewBuy else { return fieldsValid }
+        // The account/method pairing is core's rule, not a second copy: a new
+        // buy needs a named account that permits the chosen method.
+        return fieldsValid
+            && selectedBrokerageAccount?.permitsBuy(fundingSource: fundingSource ?? .own) == true
     }
 
     private struct SimulatedOutcome {
@@ -585,8 +709,8 @@ struct TradeEntryView: View {
     /// store will on save) so the preview matches the post-save state. In edit
     /// mode the existing entry is replaced in the replay rather than appended.
     private var simulatedOutcome: SimulatedOutcome? {
-        guard let item, let price = parsedPrice, let quantity = parsedQuantity else { return nil }
-        var transactions = item.materializedTransactions()
+        guard let previewItem, let price = parsedPrice, let quantity = parsedQuantity else { return nil }
+        var transactions = previewItem.materializedTransactions()
         if let editing {
             guard let existing = transactions.firstIndex(where: { $0.id == editing.id }) else {
                 return nil
@@ -639,12 +763,16 @@ struct TradeEntryView: View {
     }
 
     private func save() {
-        guard !didSave, accountMatchesDraft, let item, let price = parsedPrice,
+        guard !didSave, accountMatchesDraft, let price = parsedPrice,
               let quantity = parsedQuantity, isValid else {
             return
         }
-        didSave = true
         if var updated = editing {
+            // An edit writes through the draft's own ledger, unchanged. The id
+            // it rewrites was read from that ledger, so it needs no item guard
+            // beyond the account one the caller already passed.
+            guard let item else { return }
+            didSave = true
             updated.price = price
             updated.quantity = quantity
             updated.fee = parsedFee
@@ -654,17 +782,66 @@ struct TradeEntryView: View {
             // allocation already describes.
             if kind == .buy { updated.fundingSource = fundingSource }
             appState.watchlist.updateTransaction(item.symbol, updated)
-        } else {
+            route = dismissRoute
+            return
+        }
+        guard isNewBuy else {
+            // A new sell: the existing non-throwing path, untouched. A sale
+            // consumes portions and never chooses its own funding here.
+            guard let item else { return }
+            didSave = true
             appState.watchlist.addTransaction(item.symbol, PositionTransaction(
-                kind: recordSide == .buy ? .buy : .sell,
+                kind: .sell,
                 price: price,
                 quantity: quantity,
                 date: date,
-                fee: parsedFee,
-                fundingSource: kind == .buy ? fundingSource : nil
+                fee: parsedFee
             ))
+            route = dismissRoute
+            return
         }
-        route = dismissRoute
+        guard let account = selectedBrokerageAccount else { return }
+        // A new buy is the one write with a destination of its own choosing, so
+        // it goes through the throwing entry point: the store can refuse a
+        // combination (a margin buy in mengmeng) and say why, and the form
+        // stays open on the fields that caused it.
+        didSave = true
+        do {
+            _ = try appState.watchlist.recordBuyTransaction(
+                symbol,
+                PositionTransaction(
+                    kind: .buy,
+                    price: price,
+                    quantity: quantity,
+                    date: date,
+                    fee: parsedFee,
+                    fundingSource: fundingSource ?? .own,
+                    brokerageAccountID: account
+                ),
+                account: account
+            )
+            // The trade landed in its destination ledger, so the app follows it
+            // there: the hub this form dismisses to must describe the position
+            // the user just created, not the one they were looking at before.
+            _ = appState.selectBrokerageAccount(account)
+            route = dismissRoute
+        } catch {
+            // Nothing was written. Reopening the door lets the user correct the
+            // price, the date, or the account and save again — the failed
+            // attempt must not latch the form shut.
+            didSave = false
+            errorMessage = Self.describe(error)
+        }
+    }
+
+    /// A store error is never swallowed into a generic sentence: a refusal the
+    /// user can act on is the whole reason this path is throwing.
+    private static func describe(_ error: Error) -> String {
+        if let executionError = error as? TradePlanExecutionError,
+           let description = executionError.errorDescription {
+            return description
+        }
+        return error.localizedDescription
     }
 
     /// Removes the entry being edited and returns to the log it came from —

@@ -289,18 +289,24 @@ final class MCPToolAdapter {
         },
         ToolSpec(
             name: "record_trade",
-            description: "Record a buy or sell for a symbol already on the watchlist. The date is the trade day in the user's local calendar. A buy may carry a zero price to bridge a share split; fee is optional commission in account currency. Pass a stable id to make retries idempotent.",
+            description: "Record a buy or sell for a symbol already on the watchlist. The date is the trade day in the user's local calendar. A buy may carry a zero price to bridge a share split; fee is optional commission in account currency. Pass a stable id to make retries idempotent. New buys require a named account; funding_source defaults to own and margin is available only for financing.",
             properties: [
                 "symbol": symbolSchema,
                 "kind": .object(["type": "string", "enum": .array([.string("buy"), .string("sell")])]),
                 "quantity": .object(["type": "number"]),
                 "price": .object(["type": "number"]),
                 "fee": .object(["type": "number"]),
+                "funding_source": .object(["type": "string", "enum": .array([.string("own"), .string("margin")])]),
                 "date": tradeDateSchema,
                 "id": uuidSchema,
             ],
             required: ["symbol", "kind", "quantity", "price", "date"]
         ) { adapter, arguments in
+            let fundingRaw = try arguments.optionalString("funding_source")
+            let funding = fundingRaw.flatMap(PositionFundingSource.init(rawValue:))
+            if let fundingRaw, fundingRaw != "own" && fundingRaw != "margin" {
+                throw ToolFailure(code: "invalid_buy_method", message: "funding_source must be own or margin.")
+            }
             let draft = AgentTradeDraft(
                 symbol: try arguments.symbol("symbol"),
                 kind: try arguments.tradeKind("kind"),
@@ -308,7 +314,8 @@ final class MCPToolAdapter {
                 price: try arguments.double("price"),
                 fee: try arguments.optionalDouble("fee"),
                 date: try arguments.date("date"),
-                id: try arguments.optionalUUID("id")
+                id: try arguments.optionalUUID("id"),
+                fundingSource: funding
             )
             let mutation = try MCPToolAdapter.unwrap(adapter.commands.recordTrade(draft))
             return try adapter.appliedValue(mutation)
@@ -476,6 +483,10 @@ final class MCPToolAdapter {
             ToolFailure(code: "invalid_quantity", message: "quantity must be a finite number greater than 0.")
         case .invalidPrice:
             ToolFailure(code: "invalid_price", message: "price must be a finite, non-negative number.")
+        case .invalidBuyAccount:
+            ToolFailure(code: "account_required", message: "A new buy requires account_id financing or mengmeng.")
+        case .invalidBuyMethod:
+            ToolFailure(code: "invalid_buy_method", message: "Margin buys require the financing account. Mengmeng supports ordinary buys only.")
         case .transactionNotFound(let id):
             ToolFailure(code: "transaction_not_found", message: "No transaction with id \(id.uuidString).")
         case .searchUnavailable:

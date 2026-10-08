@@ -16,18 +16,54 @@ struct TradeJournalView: View {
             }
         }
     }
+
+    /// Which ledger the journal is *showing*. A view filter only: it never
+    /// changes the store's selected account, and every row keeps naming the
+    /// account it actually came from.
+    private enum AccountScope: Hashable, CaseIterable {
+        case all
+        case account(BrokerageAccountID)
+
+        /// Menu order: the unfiltered view first, then the named ledgers, then
+        /// the legacy records that no longer carry a label.
+        static var allCases: [AccountScope] {
+            [.all, .account(.financing), .account(.mengmeng), .account(.unassigned)]
+        }
+
+        var title: String {
+            switch self {
+            case .all: PulseLocalization.currentLanguageIdentifier.hasPrefix("zh") ? "全部账户" : "All accounts"
+            case .account(let id): AccountIdentity.title(id)
+            }
+        }
+
+        func includes(_ account: BrokerageAccountID) -> Bool {
+            switch self {
+            case .all: true
+            case .account(let id): id == account
+            }
+        }
+    }
+
     private struct TradeKey: Hashable {
+        let accountID: BrokerageAccountID
         let symbol: SymbolID
         let transactionID: UUID
     }
 
     private struct Entry: Identifiable {
+        /// The ledger this fill was read out of. Two ledgers may hold the same
+        /// symbol, so every row carries its owner: the key keeps them distinct,
+        /// and the row, the detail caption and the save all read it.
+        let accountID: BrokerageAccountID
         let item: WatchItem
         let transaction: PositionTransaction
         let replayIndex: Int
         let realizedPnL: Double?
 
-        var id: TradeKey { TradeKey(symbol: item.symbol, transactionID: transaction.id) }
+        var id: TradeKey {
+            TradeKey(accountID: accountID, symbol: item.symbol, transactionID: transaction.id)
+        }
     }
 
     private enum PlanChoice: String, CaseIterable, Identifiable {
@@ -109,6 +145,11 @@ struct TradeJournalView: View {
     let onSelect: (SymbolID) -> Void
     @State private var query = ""
     @State private var selectedMonth: Date?
+    /// Local to this page and independent of `activeBrokerageAccountID`: the
+    /// journal reads every ledger at once, and the global selection is only
+    /// where a write is routed. Defaults to `.all` and is never re-derived
+    /// from the global account.
+    @State private var accountScope: AccountScope = .all
     @State private var selection: TradeKey?
     @State private var note = ""
     @State private var followedPlan = PlanChoice.unset
@@ -126,6 +167,12 @@ struct TradeJournalView: View {
     /// switch with a different ledger inside it, and a fill id is not proof of
     /// which account the draft was written for.
     @State private var frozenAccount: BrokerageAccountID?
+    /// How many times the pending id has been retried against a changed entry
+    /// list. A pending id can arrive before this view observes the ledger that
+    /// holds it, so the retry waits for entries — but only for a bounded number
+    /// of them, never indefinitely.
+    @State private var pendingResolutionAttempts = 0
+    private static let maximumPendingResolutionAttempts = 5
     private var initialTransactionID: UUID?
 
     init(onSelect: @escaping (SymbolID) -> Void, initialTransactionID: UUID? = nil) {
@@ -133,48 +180,76 @@ struct TradeJournalView: View {
         self.initialTransactionID = initialTransactionID
     }
 
-    /// Non-nil only when the store still holds the ledger this draft came from.
+    /// Non-nil only while the exact record this draft was opened from is still
+    /// resolvable: the frozen owner still names one of the entries, and the
+    /// selection still points at that same entry. Used to tint the caption.
     private var accountMatchesDraft: Bool {
-        frozenAccount.map { appState.watchlist.activeBrokerageAccountID == $0 } ?? false
+        guard let frozenAccount, let selection else { return false }
+        return entries.contains { $0.id == selection && $0.accountID == frozenAccount }
     }
 
+    /// Every fill in every enabled ledger. `records` returns each ledger's
+    /// items, so the same symbol — or even the same transaction id — can appear
+    /// once per account; the owner rides along on each entry instead of being
+    /// merged away. Realized P&L is read from that record's own ledger only.
     private var entries: [Entry] {
-        appState.watchlist.tradeHistoryItems.flatMap { item in
-            let realized = Dictionary(uniqueKeysWithValues: (item.ledger?.entries ?? []).map {
-                ($0.transaction.id, $0.realizedPnL)
-            })
-            return item.transactions.enumerated().map { index, transaction in
-                Entry(
-                    item: item,
-                    transaction: transaction,
-                    replayIndex: index,
-                    realizedPnL: realized[transaction.id] ?? nil
-                )
+        BrokerageBoardReader.records(store: appState.watchlist)
+            .filter { !$0.item.transactions.isEmpty }
+            .flatMap { record in
+                let transactions = record.item.transactions
+                let realized = Dictionary(uniqueKeysWithValues: (record.item.ledger?.entries ?? []).map {
+                    ($0.transaction.id, $0.realizedPnL)
+                })
+                return transactions.enumerated().map { index, transaction in
+                    Entry(
+                        accountID: record.accountID,
+                        item: record.item,
+                        transaction: transaction,
+                        replayIndex: index,
+                        realizedPnL: realized[transaction.id] ?? nil
+                    )
+                }
+            }.sorted { lhs, rhs in
+                let calendar = Calendar.current
+                let leftDay = calendar.startOfDay(for: lhs.transaction.date)
+                let rightDay = calendar.startOfDay(for: rhs.transaction.date)
+                if leftDay != rightDay { return leftDay > rightDay }
+                if lhs.transaction.createdAt != rhs.transaction.createdAt {
+                    return lhs.transaction.createdAt > rhs.transaction.createdAt
+                }
+                if lhs.item.symbol != rhs.item.symbol {
+                    return lhs.item.symbol.displayCode < rhs.item.symbol.displayCode
+                }
+                if lhs.replayIndex != rhs.replayIndex { return lhs.replayIndex > rhs.replayIndex }
+                // The same trade can sit in two ledgers, so the owner closes
+                // the ordering: a stable order that never flickers between them.
+                return lhs.accountID.rawValue < rhs.accountID.rawValue
             }
-        }.sorted { lhs, rhs in
-            let calendar = Calendar.current
-            let leftDay = calendar.startOfDay(for: lhs.transaction.date)
-            let rightDay = calendar.startOfDay(for: rhs.transaction.date)
-            if leftDay != rightDay { return leftDay > rightDay }
-            if lhs.transaction.createdAt != rhs.transaction.createdAt {
-                return lhs.transaction.createdAt > rhs.transaction.createdAt
-            }
-            if lhs.item.symbol != rhs.item.symbol {
-                return lhs.item.symbol.displayCode < rhs.item.symbol.displayCode
-            }
-            return lhs.replayIndex > rhs.replayIndex
-        }
+    }
+
+    /// The entries the local account filter admits — the single source every
+    /// other readout on this page derives from.
+    private var scopedEntries: [Entry] {
+        entries.filter { accountScope.includes($0.accountID) }
+    }
+
+    /// The scoped items the summaries aggregate over. Two ledgers holding the
+    /// same symbol stay two entries here: no cross-account merging.
+    private var scopedItems: [WatchItem] {
+        BrokerageBoardReader.records(store: appState.watchlist)
+            .filter { accountScope.includes($0.accountID) && !$0.item.transactions.isEmpty }
+            .map(\.item)
     }
 
     private var monthOptions: [Date] {
-        Array(Set(entries.compactMap {
+        Array(Set(scopedEntries.compactMap {
             Calendar.current.dateInterval(of: .month, for: $0.transaction.date)?.start
         })).sorted(by: >)
     }
 
     private var filteredEntries: [Entry] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return entries.filter { entry in
+        return scopedEntries.filter { entry in
             switch reviewScope {
             case .today where !Calendar.current.isDateInToday(entry.transaction.date): return false
             case .pending where entry.transaction.kind == .adjustment
@@ -193,11 +268,31 @@ struct TradeJournalView: View {
 
     private var monthlySummaries: [TradeJournalMonthlySummary] {
         TradeJournalMonthlySummary.make(
-            from: appState.watchlist.tradeHistoryItems,
+            from: scopedItems,
             query: query,
             selectedMonth: selectedMonth
         )
     }
+
+    /// The key to open when a pending fill id arrives. The same UUID can exist
+    /// in two ledgers, so the globally active one wins a tie; otherwise the
+    /// first match in a deterministic order decides.
+    private func resolveEntry(transactionID: UUID) -> Entry? {
+        let matches = entries.filter { $0.transaction.id == transactionID }
+        guard !matches.isEmpty else { return nil }
+        let active = appState.watchlist.activeBrokerageAccountID
+        if let owned = matches.first(where: { $0.accountID == active }) { return owned }
+        return matches.min { lhs, rhs in
+            if lhs.item.symbol != rhs.item.symbol {
+                return lhs.item.symbol.displayCode < rhs.item.symbol.displayCode
+            }
+            return lhs.accountID.rawValue < rhs.accountID.rawValue
+        }
+    }
+
+    /// The key the pending-id retry observes. Plain value types only, so the
+    /// observation is bounded and Equatable.
+    private var entryIDs: [TradeKey] { entries.map(\.id) }
 
     private var selectedEntry: Entry? {
         filteredEntries.first { $0.id == selection }
@@ -240,6 +335,34 @@ struct TradeJournalView: View {
         )
     }
 
+    /// Whether this entry's funding questions are suppressed whole.
+    ///
+    /// A mengmeng record is bought with that account's own money by
+    /// construction: it holds no borrowed shares and its plans intend no
+    /// funding method, so neither a transaction's funding line nor a plan's
+    /// intended funding says anything the user can act on. Asking for the
+    /// annotation anyway would print a label whose only possible answer is the
+    /// account itself. Nothing is rewritten — the stored values stay exactly as
+    /// they are, and a stored `.margin` on such a record remains readable
+    /// through the ledger surfaces that own it.
+    ///
+    /// The owner is always the *entry's* own ledger. Reading the global
+    /// selection instead would describe a different account's trade.
+    private func suppressesFunding(_ entry: Entry) -> Bool {
+        entry.accountID == .mengmeng
+    }
+
+    /// The account whose words a plan's intended funding is named in.
+    ///
+    /// A fill can land in one ledger while the plan was written in another —
+    /// the execution sheet records that owner on the snapshot — and the
+    /// intention belongs to the plan, so that is the account whose funding
+    /// vocabulary applies. Falls back to the entry's own ledger when no
+    /// snapshot recorded one, which is every legacy and same-account fill.
+    private func planIntentAccount(_ entry: Entry) -> BrokerageAccountID {
+        entry.transaction.planExecution?.sourceAccountID ?? entry.accountID
+    }
+
     var body: some View {
         let summaries = monthlySummaries
         HStack(spacing: 0) {
@@ -257,6 +380,24 @@ struct TradeJournalView: View {
                 HStack(spacing: 8) {
                     TextField(PulseLocalization.localizedString("journal.search.placeholder"), text: $query)
                         .textFieldStyle(.roundedBorder)
+                    // Whose ledgers are shown, not where a write goes: the menu
+                    // is labelled from this view's own scope.
+                    Picker("", selection: Binding(get: { accountScope }, set: { scope in
+                        accountScope = scope
+                        selectedMonth = nil
+                        frozenAccount = nil
+                        selection = nil
+                        saved = false
+                        clearDraftFields()
+                    })) {
+                        ForEach(AccountScope.allCases, id: \.self) { scope in
+                            scopeLabel(scope)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+                    .accessibilityLabel(accountScope.title)
                     Picker(PulseLocalization.localizedString("journal.month"), selection: $selectedMonth) {
                         Text(PulseLocalization.localizedString("journal.month.all")).tag(nil as Date?)
                         ForEach(monthOptions, id: \.self) { month in
@@ -343,15 +484,30 @@ struct TradeJournalView: View {
             if !entries.contains(where: { Calendar.current.isDateInToday($0.transaction.date) }) { reviewScope = .all }
             openReview(appState.pendingJournalTransactionID ?? initialTransactionID)
         }
-        .onChange(of: appState.pendingJournalTransactionID) { _, id in openReview(id) }
+        .onChange(of: appState.pendingJournalTransactionID) { _, id in
+            pendingResolutionAttempts = 0
+            openReview(id)
+        }
+        // A pending id can arrive before the observations have this view's
+        // entries. Retry when entries change, and only while the id is still
+        // unresolved and the attempt budget is unspent.
+        .onChange(of: entryIDs) { _, _ in
+            guard let id = appState.pendingJournalTransactionID else { return }
+            guard pendingResolutionAttempts < Self.maximumPendingResolutionAttempts else { return }
+            pendingResolutionAttempts += 1
+            openReview(id)
+        }
         .onChange(of: selection) { _, _ in loadDraft() }
-        // The selected fill and the review fields describe the previous
-        // account's ledger. Clearing the selection is honest: the fields are
-        // reloaded from whatever the user opens next.
+        // The global ledger changed. The selection and the review fields still
+        // describe the row that was open, so clear them rather than let stale
+        // text look like it belongs to whatever is shown now. The local account
+        // filter is deliberately untouched: it is this page's own scope, and
+        // every row keeps naming the ledger it actually came from.
         .onChange(of: appState.watchlist.activeBrokerageAccountID) { _, _ in
             frozenAccount = nil
             selection = nil
             saved = false
+            clearDraftFields()
         }
         .onChange(of: note) { _, _ in saved = false }
         .onChange(of: followedPlan) { _, _ in saved = false }
@@ -361,10 +517,27 @@ struct TradeJournalView: View {
         .onChange(of: nextReviewDate) { _, _ in saved = false }
         .onChange(of: nextReviewNote) { _, _ in saved = false }
         .sheet(isPresented: $showStrategyAnalysis) {
-            TradeStrategySummaryView(query: query, selectedMonth: selectedMonth)
+            // The sheet reads exactly the items the current scope, query and
+            // month select, so two ledgers' copies of a symbol stay separate.
+            TradeStrategySummaryView(items: scopedItems, query: query, selectedMonth: selectedMonth)
         }
         .alert(PulseLocalization.localizedString("journal.error.missing.title"), isPresented: $saveError) {
             Button(PulseLocalization.localizedString("journal.error.ok"), role: .cancel) { }
+        }
+    }
+
+    /// One account-filter menu row. The dot is added only where the menu style
+    /// renders content, so `.all` (which has no account) stays plain text.
+    @ViewBuilder private func scopeLabel(_ scope: AccountScope) -> some View {
+        switch scope {
+        case .all:
+            Text(scope.title).tag(scope)
+        case .account(let id):
+            HStack(spacing: 5) {
+                Circle().fill(AccountIdentity.dotColor(id)).frame(width: 6, height: 6)
+                Text(scope.title)
+            }
+            .tag(scope)
         }
     }
 
@@ -400,6 +573,14 @@ struct TradeJournalView: View {
             if let reason = entry.transaction.note, !reason.isEmpty {
                 Text(reason).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
             }
+            // The owning ledger, so two rows for the same symbol read apart.
+            HStack(spacing: 4) {
+                Circle().fill(AccountIdentity.dotColor(entry.accountID)).frame(width: 5, height: 5)
+                Text(AccountIdentity.title(entry.accountID))
+                    .font(.system(size: 10, design: .monospaced))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.secondary)
             if checkpointDue(entry.transaction) {
                 Label(PulseLocalization.localizedString("journal.checkpoint.due"), systemImage: "calendar.badge.clock").font(.caption2).foregroundStyle(.orange)
             }
@@ -421,10 +602,17 @@ struct TradeJournalView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button(PulseLocalization.localizedString("journal.detail.openSymbol")) { onSelect(entry.item.symbol) }
-                        // Named from the account the draft was loaded under, so
-                        // the ledger this review lands in is never ambiguous.
-                        let captionAccount = frozenAccount ?? appState.watchlist.activeBrokerageAccountID
+                        // Navigation only: this view's account filter is local,
+                        // so opening the instrument must not silently reselect
+                        // the global ledger (and with it the pool and sector
+                        // scopes that follow it).
+                        Button(PulseLocalization.localizedString("journal.detail.openSymbol")) {
+                            onSelect(entry.item.symbol)
+                        }
+                        // Named from the account the draft was loaded under —
+                        // the entry's own ledger, never the global selection —
+                        // so the ledger this review lands in is unambiguous.
+                        let captionAccount = frozenAccount ?? entry.accountID
                         HStack(spacing: 5) {
                             Circle().fill(AccountIdentity.dotColor(captionAccount)).frame(width: 5, height: 5)
                             Text(PulseLocalization.localizedString(
@@ -444,8 +632,8 @@ struct TradeJournalView: View {
                                    PulseLocalization.localizedString("journal.detail.tradeValue", kindName(entry.transaction.kind), fullDate(entry.transaction.date)))
                         detailLine(PulseLocalization.localizedString("journal.detail.price"), PriceFormatter.price(entry.transaction.price, market: entry.item.symbol.market))
                         detailLine(PulseLocalization.localizedString("journal.detail.quantity"), PriceFormatter.quantity(entry.transaction.quantity))
-                        if entry.transaction.kind == .buy {
-                            detailLine(PulseLocalization.localizedString("journal.detail.funding"), fundingSourceTitle(entry.transaction.fundingSource))
+                        if entry.transaction.kind == .buy, !suppressesFunding(entry) {
+                            detailLine(PulseLocalization.localizedString("journal.detail.funding"), fundingSourceTitle(entry.transaction.fundingSource, account: entry.accountID))
                         }
                         if let fee = entry.transaction.fee {
                             detailLine(PulseLocalization.localizedString("journal.detail.fee"), PriceFormatter.money(fee, currencyCode: entry.item.symbol.currencyCode))
@@ -477,8 +665,8 @@ struct TradeJournalView: View {
                             ))
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
-                            if context.kind == .buy {
-                                Text(PulseLocalization.localizedString("journal.plan.plannedFunding", fundingSourceTitle(context.fundingSource)))
+                            if context.kind == .buy, !suppressesFunding(entry) {
+                                Text(PulseLocalization.localizedString("journal.plan.plannedFunding", fundingSourceTitle(context.fundingSource, account: planIntentAccount(entry))))
                                     .font(.system(size: 11)).foregroundStyle(.secondary)
                             }
                             if let note = context.note, !note.isEmpty {
@@ -695,12 +883,25 @@ struct TradeJournalView: View {
         }
     }
 
+    private func clearDraftFields() {
+        note = ""
+        followedPlan = .unset
+        retrospective = ""
+        strategy = ""
+        schedulesReview = false
+        nextReviewDate = .now
+        nextReviewNote = ""
+        saveError = false
+    }
+
     private func loadDraft() {
         guard let entry = selectedEntry else {
             frozenAccount = nil
             return
         }
-        frozenAccount = appState.watchlist.activeBrokerageAccountID
+        // The entry's own ledger, never the global selection: the id alone does
+        // not say which account the draft was opened from.
+        frozenAccount = entry.accountID
         note = entry.transaction.note ?? ""
         followedPlan = PlanChoice(entry.transaction.review?.followedPlan)
         retrospective = entry.transaction.review?.retrospective ?? ""
@@ -717,41 +918,105 @@ struct TradeJournalView: View {
     }
 
     private func openReview(_ id: UUID?) {
-        guard let id, let entry = entries.first(where: { $0.transaction.id == id }) else { return }
+        guard let id, let entry = resolveEntry(transactionID: id) else { return }
         query = ""
         selectedMonth = nil
         reviewScope = .all
+        // The target must be inside the local scope, or the selection would be
+        // matched against a list that cannot show it. Narrow to the resolved
+        // owner's own ledger: `.all` would also satisfy visibility, but it
+        // would silently discard a filter the user had set.
+        accountScope = .account(entry.accountID)
         selection = entry.id
         loadDraft()
+        // The id resolved, so the retry budget is unspent again for the next one.
+        pendingResolutionAttempts = 0
+        // Cleared only once the selection actually took.
         if appState.pendingJournalTransactionID == id { appState.pendingJournalTransactionID = nil }
     }
 
+    // MARK: - Review persistence
+
+    private static func nonemptyText(_ text: String?) -> String? {
+        guard let text else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// The transaction as the given ledger currently stores it, in the two
+    /// places the store can hold it. Nil when the record is not there at all.
+    private func persistedTransaction(
+        symbol: SymbolID,
+        id: UUID,
+        owner: BrokerageAccountID
+    ) -> PositionTransaction? {
+        let portfolio = appState.watchlist.brokeragePortfolio(for: owner)
+        for item in portfolio.items + portfolio.retainedHistoryItems where item.symbol == symbol {
+            if let transaction = item.transactions.first(where: { $0.id == id }) {
+                return transaction
+            }
+        }
+        return nil
+    }
+
     private func saveReview() {
-        // A review is written into whichever ledger is selected now, so the
-        // account the fields were filled in for has to be the one still open.
-        guard accountMatchesDraft else {
+        // 1. The draft, the frozen owner and the open selection must all still
+        //    agree before anything is written.
+        guard let entry = selectedEntry, let owner = frozenAccount,
+              entry.accountID == owner, entry.id == selection else {
             saveError = true
             return
         }
-        guard let entry = selectedEntry else { return }
-        guard appState.watchlist.tradeHistoryItems.first(where: { $0.symbol == entry.item.symbol })?
-            .transactions.contains(where: { $0.id == entry.transaction.id }) == true else {
-            saveError = true
-            return
-        }
-        _ = appState.watchlist.updateTransactionReview(
-            entry.item.symbol,
+        // 2. The record must still exist in the exact owner's ledger, whatever
+        //    the global selection has since become. A missing record is never
+        //    reported as saved.
+        guard persistedTransaction(
+            symbol: entry.item.symbol,
             id: entry.transaction.id,
-            note: note,
-            review: PositionTransactionReview(
-                followedPlan: followedPlan.value,
-                retrospective: retrospective,
-                strategy: strategy,
+            owner: owner
+        ) != nil else {
+            saveError = true
+            return
+        }
+        let review: PositionTransactionReview?
+        do {
+            review = try PositionTransactionReview(
+                followedPlan: followedPlan.value, retrospective: retrospective, strategy: strategy,
                 nextReviewDate: schedulesReview ? Calendar.current.startOfDay(for: nextReviewDate) : nil,
                 nextReviewNote: nextReviewNote
+            ).normalizedForPersistence()
+        } catch {
+            saveError = true
+            return
+        }
+        let normalizedNote = Self.nonemptyText(note)
+
+        guard appState.watchlist.brokerageAccountsEnabled || owner == .unassigned else {
+            saveError = true
+            return
+        }
+        let accepted = appState.watchlist.withBrokerageAccount(owner) {
+            appState.watchlist.updateTransactionReview(
+                entry.item.symbol, id: entry.transaction.id, note: normalizedNote, review: review
             )
+        }
+
+        // 4. Re-read after the call. `false` is ambiguous — the record was
+        //    missing, or the write was a no-op because the stored values
+        //    already match — so only the persisted state decides.
+        let persisted = persistedTransaction(
+            symbol: entry.item.symbol,
+            id: entry.transaction.id,
+            owner: owner
         )
-        saved = true
+        let matchesDraft = persisted?.note == normalizedNote && persisted?.review == review
+        if accepted || matchesDraft {
+            saved = true
+            saveError = false
+        } else {
+            saved = false
+            saveError = true
+        }
     }
 
     private func kindName(_ kind: PositionTransaction.Kind) -> String {

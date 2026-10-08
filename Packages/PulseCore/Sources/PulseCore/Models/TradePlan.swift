@@ -332,6 +332,8 @@ public enum TradePlanExecutionError: LocalizedError, Equatable {
     case planNotFound
     case unsupportedInstrument
     case invalidFill
+    case invalidBuyAccount
+    case invalidBuyMethod
     case duplicateTransactionID
     case stalePlan
     case staleAllocation
@@ -351,6 +353,8 @@ public enum TradePlanExecutionError: LocalizedError, Equatable {
         case .planNotFound: return chinese ? "这项计划已不存在，请刷新后重试。" : "Trade plan no longer exists. Refresh and try again."
         case .unsupportedInstrument: return chinese ? "此品种不支持持仓交易。" : "This instrument does not support position trades."
         case .invalidFill: return chinese ? "成交价格、数量、费用或日期无效。" : "Fill price, quantity, fee, or date is invalid."
+        case .invalidBuyAccount: return chinese ? "请先选择融资账户或萌萌账户。" : "Choose a financing or Mengmeng account first."
+        case .invalidBuyMethod: return chinese ? "该账户不支持此买入方式；只有融资账户可以融资买入。" : "This buy method is unavailable for the account; margin buys require the financing account."
         case .duplicateTransactionID: return chinese ? "成交编号已被其他交易使用。" : "Transaction ID is already in use."
         case .stalePlan: return chinese ? "计划已变化，请刷新后重新记录成交。" : "Trade plan changed. Refresh before recording this fill."
         case .staleAllocation: return chinese ? "仓位用途或资金来源已变化，请重新选择卖出份额。" : "Position allocation or funding changed. Select the sale portions again."

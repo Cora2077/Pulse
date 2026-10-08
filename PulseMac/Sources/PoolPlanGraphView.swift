@@ -211,7 +211,7 @@ struct PoolPlanCardFace: View {
             // Dashed, so an intention never reads as a holding. It renders for
             // `.margin` only: an own-capital plan needs no tag to explain it,
             // and a legacy plan adds no row at all.
-            PlannedFundingTag(source: entry.plan.fundingSource)
+            PlannedFundingTag(source: entry.plan.fundingSource, account: entry.accountID ?? .unassigned)
             Spacer(minLength: 0)
             if reached {
                 PoolStatusPill(systemImage: "target", text: PulseLocalization.localizedString("poolPlan.status.atPrice"), tint: .orange)

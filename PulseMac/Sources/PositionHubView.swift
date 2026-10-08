@@ -35,6 +35,9 @@ struct PositionHubView: View {
     private var item: WatchItem? { appState.watchlist.item(for: symbol) }
     private var quote: Quote? { appState.market.quote(for: symbol) }
     private var currencyCode: String? { quote?.currencyCode ?? symbol.currencyCode }
+    /// The ledger this page is describing, used only to pick the right words for
+    /// a funding state — never to change a quantity or a total.
+    private var activeAccount: BrokerageAccountID { appState.watchlist.activeBrokerageAccountID }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -123,7 +126,10 @@ struct PositionHubView: View {
             }
             .padding(.top, 10)
 
-            if let composition = fundingComposition(item) {
+            // Mengmeng has no funding axis at all: its buys are ordinary by
+            // construction, so a composition line there would report a choice
+            // the account never made. The calculation itself is untouched.
+            if activeAccount != .mengmeng, let composition = fundingComposition(item) {
                 fundingCompositionRow(composition)
                     .padding(.top, 8)
             }
@@ -199,7 +205,7 @@ struct PositionHubView: View {
                 // comparable between holdings at a glance. Only non-zero parts
                 // are printed; a zero would be noise, and "not annotated" is
                 // itself the meaningful absence.
-                Text(compositionParts(composition))
+                Text(compositionParts(composition, account: activeAccount))
                     .font(.system(size: 10, weight: .medium).monospacedDigit())
                     .foregroundStyle(.primary)
                     .lineLimit(1)
@@ -210,10 +216,15 @@ struct PositionHubView: View {
                        "Summed from portion funding annotations. Not a broker balance or net worth."))
     }
 
-    private func compositionParts(_ composition: FundingComposition) -> String {
+    private func compositionParts(_ composition: FundingComposition,
+                                  account: BrokerageAccountID) -> String {
         var parts: [String] = []
         if composition.own > 0 {
-            parts.append(poolCopy("普通 ", "Own ") + PriceFormatter.quantity(composition.own))
+            // "Ordinary" and "collateral" name the same stored `.own` value. In
+            // the financing account the shares are the collateral the account
+            // holds; everywhere else they are simply ordinary buys.
+            parts.append(fundingSourceTitle(.own, account: account)
+                         + " " + PriceFormatter.quantity(composition.own))
         }
         if composition.margin > 0 {
             parts.append(poolCopy("融资 ", "Margin ") + PriceFormatter.quantity(composition.margin))

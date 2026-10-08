@@ -390,7 +390,7 @@ public final class SharedWatchlist {
                 for symbol in group.symbols where seenInAccount.insert(symbol).inserted {
                     guard let item = bySymbol[symbol] else { continue }
                     entries.append(contentsOf: item.plans.map {
-                        TradePlanEntry(symbol: symbol, plan: $0, transactions: item.transactions,
+                        TradePlanEntry(symbol: symbol, plan: $0, transactions: store.transactionsForPlan(symbol, account: account),
                                        accountID: account)
                     })
                 }
@@ -401,7 +401,7 @@ public final class SharedWatchlist {
             where !seenInAccount.contains(item.symbol) && !item.plans.isEmpty {
                 seenInAccount.insert(item.symbol)
                 entries.append(contentsOf: item.plans.map {
-                    TradePlanEntry(symbol: item.symbol, plan: $0, transactions: item.transactions,
+                    TradePlanEntry(symbol: item.symbol, plan: $0, transactions: store.transactionsForPlan(item.symbol, account: account),
                                    accountID: account)
                 })
             }

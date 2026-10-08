@@ -11,6 +11,8 @@ public enum AgentWatchlistError: Error, Equatable, Sendable {
     case itemNotOnWatchlist
     case invalidQuantity
     case invalidPrice
+    case invalidBuyAccount
+    case invalidBuyMethod
     case transactionNotFound(UUID)
     case searchUnavailable
     case searchFailed(String)

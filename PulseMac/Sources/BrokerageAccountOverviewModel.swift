@@ -118,7 +118,7 @@ enum BrokerageAccountOverviewReader {
                 }
                 for item in items where item.symbol.currencyCode.uppercased() == currency {
                     for plan in item.plans where plan.status == .active {
-                        let remaining = TradePlanExecutionProgress(plan: plan, transactions: item.transactions).remainingQuantity
+                        let remaining = TradePlanExecutionProgress(plan: plan, transactions: store.transactionsForPlan(item.symbol, account: account)).remainingQuantity
                         guard remaining.isFinite, remaining > 0, plan.price.isFinite, plan.price > 0 else { continue }
                         let amount = plan.price * remaining
                         guard amount.isFinite else { row.hasOverflow = true; continue }

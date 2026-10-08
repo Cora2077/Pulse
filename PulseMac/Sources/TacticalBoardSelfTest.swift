@@ -13,7 +13,7 @@ import PulseCore
 /// Usage (must be paired with `--main-window-demo`, which selects the isolated
 /// offline defaults path inside `AppState.init`):
 ///
-///     Pulse Dev.app/Contents/MacOS/Pulse --main-window-demo --tactical-board-selftest
+///     "FFF.app/Contents/MacOS/FFF" --main-window-demo --tactical-board-selftest
 @MainActor
 enum TacticalBoardSelfTest {
     private static var failures: [String] = []
@@ -44,6 +44,26 @@ enum TacticalBoardSelfTest {
         }
 
         let appState = AppState()
+        if CommandLine.arguments.contains("--reconciliation-only") {
+            renderReconciliationForm(appState: appState, into: outputDirectory)
+            return finish()
+        }
+        if CommandLine.arguments.contains("--journal-account-only") {
+            renderJournalAccounts(appState: appState, into: outputDirectory)
+            return finish()
+        }
+        if CommandLine.arguments.contains("--plan-buy-only") {
+            guard CommandLine.arguments.contains("--main-window-demo") else {
+                report("plan-buy", "isolated demo required")
+                return finish()
+            }
+            renderPlanBuyForms(appState: appState, into: outputDirectory)
+            return finish()
+        }
+        if CommandLine.arguments.contains("--trade-buy-only") {
+            renderBuyAccountForms(appState: appState, into: outputDirectory)
+            return finish()
+        }
         // Must run before `seedFixture`: the whole point is to render the
         // untouched isolated demo books, so no other fixture may bleed in.
         if CommandLine.arguments.contains("--holdings-account-only") {
@@ -59,6 +79,14 @@ enum TacticalBoardSelfTest {
             return finish()
         }
         let symbols = seedFixture(into: appState)
+        if CommandLine.arguments.contains("--pool-transfer-only") {
+            renderPoolTransferForms(appState: appState, into: outputDirectory)
+            return finish()
+        }
+        if CommandLine.arguments.contains("--pool-header-only") {
+            renderPoolHeaders(appState: appState, into: outputDirectory)
+            return finish()
+        }
         if CommandLine.arguments.contains("--audit-ui-only") {
             renderAuditArtifacts(appState: appState, symbols: symbols, into: outputDirectory)
             return finish()
@@ -96,6 +124,267 @@ enum TacticalBoardSelfTest {
         renderAccountOverviewArtifacts(appState: appState, into: outputDirectory)
 
         return finish()
+    }
+
+    /// The production reconciliation form, including a real synthetic save.
+    private static func renderReconciliationForm(appState: AppState, into directory: URL) {
+        let store = appState.watchlist
+        store.enableBrokerageAccounts()
+        _ = appState.selectBrokerageAccount(.unassigned)
+        let symbol = SymbolID(market: .us, code: "RECONTEST")
+        store.add(SymbolInfo(symbol: symbol, name: "虚构：核对交互样本"))
+        store.addTransaction(symbol, .init(kind: .buy, price: 10, quantity: 12))
+        var snapshot = store.syncSnapshot()
+        guard let index = snapshot.items.firstIndex(where: { $0.symbol == symbol }) else {
+            report("reconciliation", "missing fixture")
+            return
+        }
+        let portions = (0..<4).map { index in
+            PositionPortion(quantity: 4, pool: index == 1 ? .strategic : .tactical,
+                origin: index < 2 ? .init(kind: .snapshot)
+                    : .init(kind: .buy, transactionID: UUID(), date: .now, price: 10, quantity: 4),
+                note: "Synthetic row \(index + 1)", fundingSource: index < 2 ? nil : .own,
+                brokerageAccountID: index == 3 ? .unassigned : .financing)
+        }
+        snapshot.items[index].positionAllocation = .init(
+            basisFingerprint: PositionAllocation.basisFingerprint(for: snapshot.items[index]), portions: portions)
+        _ = store.applySyncSnapshot(snapshot)
+        guard let item = store.item(for: symbol), let allocation = item.positionAllocation else {
+            report("reconciliation", "fixture allocation missing")
+            return
+        }
+        let baselineTrades = item.transactions
+        let otherAccount = store.brokeragePortfolio(for: .mengmeng)
+        let interactive = CommandLine.arguments.contains("--reconciliation-interactive")
+        var didSave = false
+        let view = PoolReconciliationSheet(item: item, allocation: allocation, account: .unassigned,
+            onCancel: {}, onSuccess: {
+                didSave = true
+                if interactive {
+                    NSApp.stop(nil)
+                    if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+                        modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                        subtype: 0, data1: 0, data2: 0) { NSApp.postEvent(event, atStart: true) }
+                }
+            }).environment(appState)
+        do {
+            try renderInOffscreenWindow(view: view, width: 500, height: 540,
+                to: directory.appendingPathComponent("reconciliation-editable.png"),
+                scheme: .light, requiresBoardBand: false,
+                inspect: { host in
+                    guard interactive, let window = host.window else { return }
+                    // The ordinary render window is deliberately inert. Give
+                    // this interactive fixture a title bar so it can take keys.
+                    window.styleMask = [.titled, .closable]
+                    window.title = "虚构核对表单测试"
+                    window.setFrameOrigin(NSPoint(x: 300, y: 250))
+                    NSApp.finishLaunching()
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    print("RECONCILIATION_INTERACTIVE_READY")
+                    fflush(stdout)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 180) {
+                        NSApp.stop(nil)
+                        if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+                            modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                            subtype: 0, data1: 0, data2: 0) { NSApp.postEvent(event, atStart: true) }
+                    }
+                    NSApp.run()
+                })
+            if interactive {
+                expect(didSave, "reconciliation", "quantity edit with empty optional reason must save")
+                let saved = store.item(for: symbol)
+                expect(saved?.transactions == baselineTrades, "reconciliation", "reconciling must not modify trades")
+                expect(saved?.positionQuantity == 12, "reconciliation", "ledger quantity must stay 12")
+                expect(saved?.positionAllocation?.portions.count == 3, "reconciliation", "zero row must be removed")
+                expect(saved?.positionAllocation?.portions.reduce(0, { $0 + $1.quantity }) == 12,
+                       "reconciliation", "allocation total must become 12")
+                expect(saved?.positionAllocationNeedsReconciliation == false, "reconciliation", "warning must clear after save")
+                expect(saved?.positionAllocation?.changes.last?.reason.isEmpty == false,
+                       "reconciliation", "optional reason must still create an audit description")
+                expect(store.brokeragePortfolio(for: .mengmeng) == otherAccount,
+                       "reconciliation", "another account must remain unchanged")
+            }
+        } catch { report("reconciliation", error.localizedDescription) }
+    }
+
+    /// Journal scope and reconciliation labels across synthetic accounts.
+    private static func renderJournalAccounts(appState: AppState, into directory: URL) {
+        let store = appState.watchlist
+        store.enableBrokerageAccounts()
+        let symbol = SymbolID(market: .sh, code: "600000")
+        store.withBrokerageAccount(.unassigned) {
+            store.add(SymbolInfo(symbol: symbol, name: "虚构：账户核对样本"))
+            store.addTransaction(symbol, .init(kind: .buy, price: 10, quantity: 600))
+        }
+        do {
+            let fill = try store.recordBuyTransaction(symbol,
+                .init(kind: .buy, price: 12, quantity: 100, fundingSource: .margin), account: .financing)
+            _ = try store.recordBuyTransaction(symbol,
+                .init(kind: .buy, price: 15, quantity: 200, fundingSource: .own), account: .mengmeng)
+            _ = appState.selectBrokerageAccount(.mengmeng)
+            let baseline = store.syncSnapshot()
+            for scheme in [ColorScheme.light, .dark] {
+                let suffix = scheme == .dark ? "dark" : "light"
+                let view = TradeJournalView(onSelect: { _ in }, initialTransactionID: fill.id)
+                    .environment(appState).environment(\.locale, PulseLocalization.currentLocale)
+                try renderInOffscreenWindow(view: view, width: 1140, height: 900,
+                    to: directory.appendingPathComponent("journal-accounts-\(suffix).png"),
+                    scheme: scheme, requiresBoardBand: false)
+            }
+            expect(store.syncSnapshot() == baseline, "journal-accounts", "render must not mutate any ledger")
+            expect(store.activeBrokerageAccountID == .mengmeng, "journal-accounts", "opening a financing review must not change global selection")
+
+            // A stale card total must stay distinct from the real ledger quantity.
+            var snapshot = store.syncSnapshot()
+            if let index = snapshot.items.firstIndex(where: { $0.symbol == symbol }) {
+                snapshot.items[index].positionAllocation?.portions[0].quantity = 800
+                snapshot.items[index].positionAllocation?.portions[0].origin = .init(kind: .snapshot)
+                _ = store.applySyncSnapshot(snapshot)
+            }
+            let pools = PositionPoolsView(onSelect: { _ in }, tactical: .init(currencyFilter: "CNY", mode: .symbol, showsPlanRail: false))
+                .environment(appState)
+            try renderInOffscreenWindow(view: pools, width: 1440, height: 900,
+                to: directory.appendingPathComponent("pool-reconciliation-reasons.png"),
+                scheme: .light, requiresBoardBand: false)
+            let index = SymbolID(market: .sh, code: "000688")
+            store.withBrokerageAccount(.unassigned) {
+                store.add(SymbolInfo(symbol: index, name: "虚构：跨账户指数", type: .index))
+            }
+            expect(store.item(for: index) == nil && appState.sharedWatchlist.item(for: index)?.supportsPosition == false,
+                   "index-identity", "the active empty ledger must retain shared index identity")
+            let beforeIndexRender = store.syncSnapshot()
+            try renderInOffscreenWindow(view: MainInstrumentView(symbol: index).environment(appState),
+                width: 1140, height: 800, to: directory.appendingPathComponent("index-empty-account.png"),
+                scheme: .light, requiresBoardBand: false)
+            expect(store.syncSnapshot() == beforeIndexRender, "index-identity", "viewing an index must not create a holding")
+        } catch { report("journal-accounts", error.localizedDescription) }
+    }
+
+    private static func renderPlanBuyForms(appState: AppState, into directory: URL) {
+        let store = appState.watchlist
+        store.enableBrokerageAccounts()
+        let symbol = SymbolID(market: .sz, code: "300223")
+        let plan = TradePlan(kind: .buy, price: 125, quantity: 100, note: "Synthetic account fixture",
+                             positionPool: .tactical, fundingSource: .margin)
+        for account in BrokerageAccountID.allCases {
+            store.withBrokerageAccount(account) {
+                store.add(SymbolInfo(symbol: symbol, name: "Synthetic instrument"))
+                store.setTradePlan(plan, for: symbol)
+            }
+        }
+        for account in BrokerageAccountID.allCases {
+            _ = appState.selectBrokerageAccount(account)
+            guard let entry = store.tradePlanEntries.first(where: { $0.plan.id == plan.id }) else {
+                report("plan-buy", "stored fixture plan missing")
+                continue
+            }
+            for scheme in [ColorScheme.light, .dark] {
+                let suffix = scheme == .dark ? "dark" : "light"
+                let baseline = store.syncSnapshot()
+                let interactive = account == .unassigned && scheme == .dark
+                    && CommandLine.arguments.contains("--plan-buy-interactive")
+                let view = PlanExecutionSheet(entry: entry, account: account) {
+                    if interactive {
+                        print("PLAN_BUY_INTERACTIVE_SAVED")
+                        fflush(stdout)
+                        NSApp.stop(nil)
+                        if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+                            modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                            subtype: 0, data1: 0, data2: 0) { NSApp.postEvent(event, atStart: true) }
+                    }
+                }.environment(appState).environment(\.locale, PulseLocalization.currentLocale)
+                    .environment(\.colorScheme, scheme).frame(width: 470, height: 560)
+                do {
+                    try renderInOffscreenWindow(view: view, width: 470, height: 560,
+                        to: directory.appendingPathComponent("plan-buy-\(account.rawValue)-\(suffix).png"),
+                        scheme: scheme, requiresBoardBand: false, inspect: { host in
+                            if interactive, let window = host.window {
+                                window.styleMask = [.titled, .closable]
+                                window.title = "虚构账户买入测试"
+                                window.setFrameOrigin(NSPoint(x: 300, y: 250))
+                                NSApp.finishLaunching()
+                                window.makeKeyAndOrderFront(nil)
+                                NSApp.activate(ignoringOtherApps: true)
+                                print("PLAN_BUY_INTERACTIVE_READY")
+                                fflush(stdout)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 120) {
+                                    NSApp.stop(nil)
+                                    if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+                                        modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                                        subtype: 0, data1: 0, data2: 0) { NSApp.postEvent(event, atStart: true) }
+                                }
+                                NSApp.run()
+                            }
+                        })
+                    if interactive {
+                        let source = store.brokeragePortfolio(for: .unassigned).items.first { $0.symbol == symbol }
+                        let destination = store.brokeragePortfolio(for: .mengmeng).items.first { $0.symbol == symbol }
+                        expect(source?.positionQuantity == 0 && destination?.positionQuantity == 100,
+                               "plan-buy-ui", "the selected destination must own the actual fill")
+                        expect(destination?.transactions.last?.fundingSource == .own
+                            && destination?.transactions.last?.planExecution?.sourceAccountID == .unassigned,
+                               "plan-buy-ui", "UI must clear margin and preserve source plan linkage")
+                    } else {
+                        expect(store.syncSnapshot() == baseline, "plan-buy-render", "drawing a form must not write a fill")
+                    }
+                    print("PLAN_BUY_RENDER \(account.rawValue) \(suffix)")
+                } catch { report("plan-buy-render", error.localizedDescription) }
+            }
+        }
+    }
+
+    /// Production buy forms, rendered with disposable offline ledgers only.
+    private static func renderBuyAccountForms(appState: AppState, into directory: URL) {
+        let store = appState.watchlist
+        store.enableBrokerageAccounts()
+        let info = MainWindowDemo.infos[0]
+        for account in BrokerageAccountID.allCases {
+            store.withBrokerageAccount(account) { store.add(info) }
+        }
+        for account in BrokerageAccountID.allCases {
+            _ = appState.selectBrokerageAccount(account)
+            for scheme in [ColorScheme.light, .dark] {
+                let suffix = scheme == .dark ? "dark" : "light"
+                let route = Binding<PopoverRoute>(get: { .trade(info.symbol, .buy, .list) }, set: { _ in })
+                let view = TradeEntryView(symbol: info.symbol, side: .buy,
+                    returnRoute: .list, route: route, account: account)
+                    .environment(appState).environment(\.locale, PulseLocalization.currentLocale)
+                    .environment(\.colorScheme, scheme).frame(width: 340, height: 390)
+                let baseline = store.syncSnapshot()
+                do {
+                    try renderInOffscreenWindow(view: view, width: 340, height: 390,
+                        to: directory.appendingPathComponent("trade-buy-\(account.rawValue)-\(suffix).png"),
+                        scheme: scheme, requiresBoardBand: false,
+                        inspect: { host in
+                            if account == .financing && scheme == .dark,
+                               CommandLine.arguments.contains("--trade-buy-interactive"), let window = host.window {
+                                window.setFrameOrigin(NSPoint(x: 300, y: 250))
+                                NSApp.finishLaunching()
+                                window.makeKeyAndOrderFront(nil)
+                                NSApp.activate(ignoringOtherApps: true)
+                                print("TRADE_BUY_INTERACTIVE_READY")
+                                fflush(stdout)
+                                // A short-lived synthetic window for native UI automation.
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 80) {
+                                    NSApp.stop(nil)
+                                    if let event = NSEvent.otherEvent(with: .applicationDefined,
+                                        location: .zero, modifierFlags: [], timestamp: 0,
+                                        windowNumber: 0, context: nil, subtype: 0, data1: 0, data2: 0) {
+                                        NSApp.postEvent(event, atStart: true)
+                                    }
+                                }
+                                NSApp.run()
+                                window.orderOut(nil)
+                                window.setFrameOrigin(NSPoint(x: -20_000, y: -20_000))
+                            }
+                        })
+                    print("TRADE_BUY_RENDER \(account.rawValue) \(suffix)")
+                } catch { report("trade-buy-render", error.localizedDescription) }
+                expect(store.syncSnapshot() == baseline && store.activeBrokerageAccountID == account,
+                       "trade-buy-render", "rendering must not change transactions or account selection")
+            }
+        }
     }
 
     private static func renderSharedWatchlist(appState: AppState, into directory: URL) {
@@ -145,6 +434,76 @@ enum TacticalBoardSelfTest {
                "shared-metric", "shared presentation must preserve independent ledgers")
     }
 
+    private static func renderPoolTransferForms(appState: AppState, into directory: URL) {
+        guard let original = appState.watchlist.allItems.first(where: { ($0.positionAllocation?.portions.first?.quantity ?? 0) >= 50 }),
+              let originalAllocation = original.positionAllocation else {
+            report("pool-transfer", "synthetic allocation missing")
+            return
+        }
+        expect(PositionPoolsView.holdingTransferDestinations(from: .strategic) == [.tactical]
+               && PositionPoolsView.holdingTransferDestinations(from: .tactical) == [.strategic]
+               && PositionPoolsView.holdingTransferDestinations(from: .unassigned) == [.strategic, .tactical]
+               && PositionPoolsView.holdingTransferDestinations(from: .observation) == [.strategic, .tactical],
+               "pool-transfer", "holding destinations must be actual roles different from the source")
+        let cases: [(String, PositionPool, PositionPool?, ColorScheme)] = [
+            ("transfer-strategic-choose-light", .strategic, nil, .light),
+            ("transfer-tactical-choose-dark", .tactical, nil, .dark),
+            ("transfer-legacy-choose-light", .unassigned, nil, .light),
+            ("transfer-invalid-unassigned-light", .strategic, .unassigned, .light),
+            ("transfer-tactical-selected-light", .strategic, .tactical, .light),
+            ("transfer-strategic-selected-dark", .tactical, .strategic, .dark)
+        ]
+        let baseline = appState.watchlist.syncSnapshot()
+        for (name, source, destination, scheme) in cases {
+            var item = original
+            var allocation = originalAllocation
+            allocation.portions[0].pool = source
+            item.positionAllocation = allocation
+            let view = PoolTransferSheet(item: item, portion: allocation.portions[0], allocation: allocation,
+                initialDestination: destination, onCancel: {}, onSuccess: { _, _ in }, initialAmount: "25")
+                .environment(appState).environment(\.colorScheme, scheme)
+                .environment(\.locale, Locale(identifier: "zh_CN"))
+                .frame(width: 460, height: 360)
+            do {
+                try renderInOffscreenWindow(view: view, width: 460, height: 360,
+                    to: directory.appendingPathComponent("\(name).png"), scheme: scheme, requiresBoardBand: false)
+                print("TACTICAL_BOARD_RENDER \(name)")
+            } catch { report("pool-transfer-render", error.localizedDescription) }
+        }
+        expect(appState.watchlist.syncSnapshot() == baseline,
+               "pool-transfer-render", "rendering transfer choices must not change stored data")
+    }
+
+    private static func renderPoolHeaders(appState: AppState, into directory: URL) {
+        guard let item = appState.watchlist.allItems.first(where: { $0.positionAllocation != nil }) else {
+            report("pool-header", "synthetic allocation missing")
+            return
+        }
+        let cases: [(String, CGFloat, ColorScheme, Bool, PositionPoolsView.Stance)] = [
+            ("pool-header-wide-light-undo", 1440, .light, true, .current),
+            ("pool-header-threshold-light-undo", 1180, .light, true, .current),
+            ("pool-header-wide-dark-undo", 1440, .dark, true, .current),
+            ("pool-header-narrow-light-undo", 1000, .light, true, .current),
+            ("pool-header-wide-light-no-undo", 1440, .light, false, .current),
+            ("pool-header-preview-dark-undo", 1180, .dark, true, .preview)
+        ]
+        let baseline = appState.watchlist.syncSnapshot()
+        for (name, width, scheme, showsUndo, stance) in cases {
+            let pools = PositionPoolsView(onSelect: { _ in }, tactical: .init(stance: stance, currencyFilter: "USD"))
+            let view = (showsUndo ? pools.withUndoRenderFixture(item) : pools)
+                .environment(appState).environment(\.colorScheme, scheme)
+                .environment(\.locale, Locale(identifier: "zh_CN"))
+                .frame(width: width, height: 900)
+            do {
+                try renderInOffscreenWindow(view: view, width: width, height: 900,
+                    to: directory.appendingPathComponent("\(name).png"), scheme: scheme)
+                print("TACTICAL_BOARD_RENDER \(name)")
+            } catch { report("pool-header-render", error.localizedDescription) }
+        }
+        expect(appState.watchlist.syncSnapshot() == baseline,
+               "pool-header-render", "rendering the header must not change stored data")
+    }
+
     private static func renderAccountTags(appState: AppState, into directory: URL) {
         appState.watchlist.enableBrokerageAccounts()
         let items = appState.watchlist.allItems.filter { $0.positionQuantity > 0 && $0.positionAllocation != nil }
@@ -160,6 +519,11 @@ enum TacticalBoardSelfTest {
                 for (offset, part) in current.portions.enumerated() {
                     current = try appState.watchlist.setPositionBrokerageAccount(symbol: item.symbol, portionID: part.id,
                         accountID: (index + offset) % 2 == 0 ? .financing : .mengmeng, expectedRevision: current.revision)
+                    if part.fundingSource != .own {
+                        current = try appState.watchlist.markPositionFundingSource(symbol: item.symbol,
+                            portionID: part.id, quantity: part.quantity, source: .own,
+                            reason: "Synthetic funding display", expectedRevision: current.revision)
+                    }
                 }
             } catch { report("account-tags", error.localizedDescription) }
         }
@@ -168,6 +532,7 @@ enum TacticalBoardSelfTest {
             ("account-tags-financing", 1440, .dark, .financing),
             ("account-tags-narrow-light", 1000, .light, nil)
         ]
+        let baseline = appState.watchlist.syncSnapshot()
         for (name, width, scheme, account) in cases {
             let view = PositionPoolsView(onSelect: { _ in }, tactical: .init(currencyFilter: "USD", accountFilter: account))
                 .environment(appState).environment(\.colorScheme, scheme).environment(\.locale, Locale(identifier: "zh_CN"))
@@ -178,6 +543,8 @@ enum TacticalBoardSelfTest {
                 print("TACTICAL_BOARD_RENDER \(name)")
             } catch { report("account-tags-render", error.localizedDescription) }
         }
+        expect(appState.watchlist.syncSnapshot() == baseline,
+               "account-tags-render", "rendering account-specific funding must not change stored data")
     }
 
     // MARK: - Fixture
@@ -1888,7 +2255,7 @@ enum TacticalBoardSelfTest {
         // three distinct figures rather than one folded number.
         var marginPlan = TradePlan(kind: .buy, price: 38, quantity: 20, note: "虚构融资买入")
         marginPlan.fundingSource = .margin
-        var ownPlan = TradePlan(kind: .buy, price: 36, quantity: 10, note: "虚构自有买入")
+        var ownPlan = TradePlan(kind: .buy, price: 36, quantity: 10, note: "虚构普通买入")
         ownPlan.fundingSource = .own
         var unmarkedPlan = TradePlan(kind: .buy, price: 35, quantity: 5, note: "虚构未标注买入")
         unmarkedPlan.fundingSource = .unmarked
@@ -2162,7 +2529,8 @@ enum TacticalBoardSelfTest {
     private static func renderInOffscreenWindow<V: View>(view: V, width: CGFloat, height: CGFloat,
                                                         to url: URL,
                                                         scheme: ColorScheme,
-                                                        requiresBoardBand: Bool = true) throws {
+                                                        requiresBoardBand: Bool = true,
+                                                        inspect: ((NSView) -> Void)? = nil) throws {
         let frame = NSRect(x: 0, y: 0, width: width, height: height)
         let hosting = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
         hosting.frame = frame
@@ -2200,6 +2568,8 @@ enum TacticalBoardSelfTest {
         hosting.layoutSubtreeIfNeeded()
         hosting.displayIfNeeded()
 
+        inspect?(hosting)
+
         defer { window.orderOut(nil) }
 
         guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
@@ -2216,6 +2586,12 @@ enum TacticalBoardSelfTest {
             throw ShareImageError.encodingFailed
         }
         try data.write(to: url)
+        // Synthetic artifacts only. Export through stdout for review when the
+        // app sandbox owns the render directory and the host cannot read it.
+        if CommandLine.arguments.contains("--export-render-base64") {
+            print("PULSE_RENDER_BASE64 \(url.lastPathComponent) \(data.base64EncodedString())")
+            fflush(stdout)
+        }
         // Compact sheets may legitimately leave the middle band empty. Check
         // their full frame, while retaining the stricter pool-board check.
         if let blank = blankRegionReport(rep: rep, width: width, height: height, boardBand: requiresBoardBand) {

@@ -439,7 +439,7 @@ struct TradingEventDetailSheet: View {
     private var activePlans: [TradePlan] {
         plansOnSymbol.filter {
             $0.status == .active && TradePlanExecutionProgress(plan: $0,
-                transactions: appState.watchlist.item(for: entry.symbol)?.transactions ?? []).remainingQuantity > 0
+                transactions: appState.watchlist.transactionsForPlan(entry.symbol)).remainingQuantity > 0
         }
     }
 

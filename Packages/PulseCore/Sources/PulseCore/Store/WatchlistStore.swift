@@ -690,7 +690,7 @@ public final class WatchlistStore {
             for symbol in group.symbols where seen.insert(symbol).inserted {
                 guard let item = bySymbol[symbol] else { continue }
                 entries.append(contentsOf: item.plans.map {
-                    TradePlanEntry(symbol: symbol, plan: $0, transactions: item.transactions)
+                    TradePlanEntry(symbol: symbol, plan: $0, transactions: transactionsForPlan(symbol))
                 })
             }
         }
@@ -950,6 +950,102 @@ public final class WatchlistStore {
 
     // MARK: - Transactions
 
+    /// Plan progress follows the plan's source account while holdings follow the
+    /// account that actually bought them. A legacy execution inherits its ledger.
+    public func transactionsForPlan(_ symbol: SymbolID, account: BrokerageAccountID? = nil) -> [PositionTransaction] {
+        let source = account ?? activeBrokerageAccountID
+        let accounts = brokerageAccountsEnabled ? BrokerageAccountID.allCases : [activeBrokerageAccountID]
+        return accounts.flatMap { owner -> [PositionTransaction] in
+            let portfolio = brokeragePortfolio(for: owner)
+            let transactions = (portfolio.items + portfolio.retainedHistoryItems)
+                .first { $0.symbol == symbol }?.transactions ?? []
+            return transactions.filter { transaction in
+                if let origin = transaction.planExecution?.sourceAccountID { return origin == source }
+                return owner == source
+            }
+        }
+    }
+
+    /// An explicit new buy is committed into its chosen ledger in one save.
+    /// Only reference identity is copied when that account does not track the symbol.
+    @discardableResult
+    public func recordBuyTransaction(_ symbol: SymbolID, _ draft: PositionTransaction,
+                                     account: BrokerageAccountID) throws -> PositionTransaction {
+        guard brokerageAccountsEnabled, account != .unassigned else { throw TradePlanExecutionError.invalidBuyAccount }
+        guard account.permitsBuy(fundingSource: draft.fundingSource) else { throw TradePlanExecutionError.invalidBuyMethod }
+        guard draft.kind == .buy else { throw TradePlanExecutionError.invalidFill }
+        try validateNewTransaction(draft)
+        guard let source = item(for: symbol) ?? retainedHistoryItem(for: symbol)
+            ?? BrokerageAccountID.allCases.lazy.compactMap({ id in
+                let portfolio = self.brokeragePortfolio(for: id)
+                return (portfolio.items + portfolio.retainedHistoryItems).first { $0.symbol == symbol }
+            }).first else { throw TradePlanExecutionError.itemNotFound }
+        var transaction = draft
+        transaction.brokerageAccountID = account
+        let target = try portfolioAppendingBuy(transaction, symbol: symbol, source: source, account: account)
+        try commitAccountPortfolios([account: target])
+        return transaction
+    }
+
+    private func validateNewTransaction(_ transaction: PositionTransaction) throws {
+        guard transaction.price.isFinite, transaction.price >= 0,
+              transaction.quantity.isFinite, transaction.quantity > 0,
+              (transaction.price * transaction.quantity).isFinite,
+              (transaction.price * transaction.quantity + (transaction.fee ?? 0)).isFinite,
+              transaction.hasValidFee, transaction.date.timeIntervalSince1970.isFinite,
+              transaction.createdAt.timeIntervalSince1970.isFinite,
+              transaction.note.map({ $0.count <= 4_000 }) ?? true else { throw TradePlanExecutionError.invalidFill }
+        guard !syncSnapshot().allAccountItems.contains(where: { item in
+            item.transactions.contains { $0.id == transaction.id }
+        }) else { throw TradePlanExecutionError.duplicateTransactionID }
+    }
+
+    private func portfolioAppendingBuy(_ transaction: PositionTransaction, symbol: SymbolID,
+                                      source: WatchItem, account: BrokerageAccountID) throws -> BrokerageAccountPortfolio {
+        var target = brokeragePortfolio(for: account)
+        var previous = (target.items + target.retainedHistoryItems).first { $0.symbol == symbol }
+            ?? WatchItem(symbol: symbol, displayName: source.displayName, displayNameSource: source.displayNameSource,
+                         instrumentType: source.instrumentType)
+        guard previous.supportsPosition else { throw TradePlanExecutionError.unsupportedInstrument }
+        _ = initializePositionAllocation(&previous)
+        var transactions = previous.materializedTransactions()
+        transactions.append(transaction)
+        let updated = applyingAppendedBuy(transaction, previous: previous,
+                                          to: Self.applyingTransactions(transactions, to: previous))
+        guard Self.validAccountLedger(PositionLedger(transactions: updated.transactions)) else {
+            throw TradePlanExecutionError.invalidFill
+        }
+        target.retainedHistoryItems.removeAll { $0.symbol == symbol }
+        if let index = target.items.firstIndex(where: { $0.symbol == symbol }) { target.items[index] = updated }
+        else { target.items.append(updated) }
+        if !target.groups.contains(where: { $0.symbols.contains(symbol) }) {
+            if target.groups.isEmpty { target.groups.append(WatchlistGroup(name: initialGroupName)) }
+            target.groups[0].symbols.append(symbol)
+        }
+        return target
+    }
+
+    /// Validate the entire proposed snapshot before publishing either side of a
+    /// cross-account fill. Failed writes cannot leave an empty target or half a plan.
+    private func commitAccountPortfolios(_ updates: [BrokerageAccountID: BrokerageAccountPortfolio]) throws {
+        var snapshot = syncSnapshot()
+        for (account, portfolio) in updates {
+            if account == .unassigned {
+                snapshot.items = portfolio.items; snapshot.groups = portfolio.groups
+                snapshot.retainedHistoryItems = portfolio.retainedHistoryItems
+                snapshot.accountSettings = portfolio.settings
+            } else {
+                snapshot.brokerageAccounts?.removeAll { $0.accountID == account }
+                snapshot.brokerageAccounts?.append(portfolio)
+            }
+        }
+        _ = try WatchlistSyncWireCodec.encode(deviceID: "buy-validation", snapshot: snapshot)
+        for (account, portfolio) in updates { accountPortfolios[account] = portfolio }
+        if updates[activeBrokerageAccountID] != nil { adoptAccount(activeBrokerageAccountID) }
+        save()
+    }
+
+
     /// Records a user-reported fill and its plan context in one local commit.
     /// Nothing here sends an order or changes a manually entered cash balance.
     ///
@@ -976,6 +1072,7 @@ public final class WatchlistStore {
         transactionID: UUID = UUID(),
         expectedPlanUpdatedAt: Date? = nil,
         fundingSource: PositionFundingSource? = nil,
+        brokerageAccountID: BrokerageAccountID? = nil,
         salePortionQuantities: [UUID: Double]? = nil,
         expectedAllocationRevision: UUID? = nil
     ) throws -> PositionTransaction {
@@ -988,6 +1085,14 @@ public final class WatchlistStore {
             throw TradePlanExecutionError.planNotFound
         }
         let plan = previous.plans[planIndex]
+        let destination = brokerageAccountID ?? activeBrokerageAccountID
+        if let brokerageAccountID {
+            guard brokerageAccountsEnabled, brokerageAccountID != .unassigned else { throw TradePlanExecutionError.invalidBuyAccount }
+            guard plan.kind == .buy || brokerageAccountID == activeBrokerageAccountID else { throw TradePlanExecutionError.invalidBuyAccount }
+            if plan.kind == .buy, !destination.permitsBuy(fundingSource: fundingSource) { throw TradePlanExecutionError.invalidBuyMethod }
+        }
+        if plan.kind == .buy, fundingSource == .margin,
+           brokerageAccountsEnabled && destination != .financing { throw TradePlanExecutionError.invalidBuyMethod }
         guard plan.status == .active, plan.hasValidPayload,
               expectedPlanUpdatedAt.map({ $0 == plan.updatedAt }) ?? true else {
             throw TradePlanExecutionError.stalePlan
@@ -1004,7 +1109,7 @@ public final class WatchlistStore {
               note.map({ $0.count <= 4_000 }) ?? true else {
             throw TradePlanExecutionError.invalidFill
         }
-        guard !(allItems + retainedHistoryItems).contains(where: {
+        guard !syncSnapshot().allAccountItems.contains(where: {
             $0.transactions.contains { $0.id == transactionID }
         }) else { throw TradePlanExecutionError.duplicateTransactionID }
 
@@ -1012,11 +1117,26 @@ public final class WatchlistStore {
             id: transactionID, kind: plan.kind == .buy ? .buy : .sell,
             price: price, quantity: quantity, date: date, fee: fee,
             note: Self.nonemptyText(note),
-            planExecution: TradePlanExecution(planID: planID, configuration: TradePlanConfiguration(plan: plan)),
+            planExecution: TradePlanExecution(planID: planID, configuration: TradePlanConfiguration(plan: plan),
+                sourceAccountID: destination == activeBrokerageAccountID ? nil : activeBrokerageAccountID),
             // The reported fill's funding; the snapshot above keeps the plan's
             // intent. Both are stored because they answer different questions.
-            fundingSource: fundingSource
+            fundingSource: fundingSource,
+            brokerageAccountID: brokerageAccountsEnabled && destination != .unassigned ? destination : nil
         )
+        if plan.kind == .buy, destination != activeBrokerageAccountID {
+            try validateNewTransaction(transaction)
+            let target = try portfolioAppendingBuy(transaction, symbol: symbol, source: previous, account: destination)
+            var source = currentPortfolio()
+            var updatedPlan = plan
+            updatedPlan.filledTransactionID = plan.filledTransactionID ?? transactionID
+            let fills = transactionsForPlan(symbol) + [transaction]
+            if TradePlanExecutionProgress(plan: updatedPlan, transactions: fills).isComplete { updatedPlan.status = .done }
+            updatedPlan.updatedAt = .now
+            source.items[index].plans[planIndex] = updatedPlan
+            try commitAccountPortfolios([activeBrokerageAccountID: source, destination: target])
+            return transaction
+        }
         _ = initializePositionAllocation(&previous)
         var transactions = previous.materializedTransactions()
         transactions.append(transaction)
@@ -1047,9 +1167,9 @@ public final class WatchlistStore {
         if let soldAllocation { allItems[index].positionAllocation = soldAllocation }
         var updatedPlan = plan
         updatedPlan.filledTransactionID = plan.filledTransactionID.flatMap { legacyID in
-            allItems[index].transactions.contains { $0.id == legacyID } ? legacyID : nil
+            transactionsForPlan(symbol).contains { $0.id == legacyID } ? legacyID : nil
         } ?? transactionID
-        if TradePlanExecutionProgress(plan: updatedPlan, transactions: allItems[index].transactions).isComplete {
+        if TradePlanExecutionProgress(plan: updatedPlan, transactions: transactionsForPlan(symbol)).isComplete {
             updatedPlan.status = .done
         }
         updatedPlan.updatedAt = .now
@@ -1205,12 +1325,18 @@ public final class WatchlistStore {
     /// no money moved); a sell at zero would fabricate a realized loss, so it
     /// stays strictly positive.
     public func addTransaction(_ symbol: SymbolID, _ transaction: PositionTransaction) {
+        if transaction.kind == .buy, let account = transaction.brokerageAccountID {
+            _ = try? recordBuyTransaction(symbol, transaction, account: account)
+            return
+        }
         guard let index = allItems.firstIndex(where: { $0.symbol == symbol }),
               allItems[index].supportsPosition,
               transaction.quantity.isFinite, transaction.quantity > 0,
               transaction.price.isFinite, transaction.price >= 0,
               transaction.kind == .buy || transaction.price > 0,
               transaction.hasValidFee else { return }
+        guard transaction.kind != .buy || transaction.fundingSource != .margin
+            || !brokerageAccountsEnabled || activeBrokerageAccountID == .financing else { return }
         if allItems[index].positionAllocation == nil,
            allItems[index].positionQuantity.isFinite, allItems[index].positionQuantity > 0 {
             _ = initializePositionAllocation(&allItems[index])
@@ -1252,7 +1378,13 @@ public final class WatchlistStore {
         var transactions = allItems[index].transactions
         guard let existing = transactions.firstIndex(where: { $0.id == transaction.id }) else { return }
         var updated = transaction
-        updated.createdAt = transactions[existing].createdAt
+        let original = transactions[existing]
+        let account = original.brokerageAccountID ?? activeBrokerageAccountID
+        guard updated.brokerageAccountID == nil || updated.brokerageAccountID == original.brokerageAccountID else { return }
+        guard updated.kind != .buy || updated.fundingSource != .margin || !brokerageAccountsEnabled
+            || account == .financing || updated.fundingSource == original.fundingSource else { return }
+        updated.brokerageAccountID = original.brokerageAccountID
+        updated.createdAt = original.createdAt
         updated.planExecution = transactions[existing].planExecution ?? updated.planExecution
         updated = Self.preservingTransactionMetadata(updated, from: transactions[existing])
         transactions[existing] = updated
@@ -1269,23 +1401,9 @@ public final class WatchlistStore {
         review: PositionTransactionReview?
     ) -> Bool {
         let normalizedNote = Self.nonemptyText(note)
-        var normalizedReview = review
-        if var value = normalizedReview {
-            value.retrospective = Self.nonemptyText(value.retrospective)
-            value.strategy = Self.nonemptyText(value.strategy)
-            // The checkpoint fields are validated as a unit: a non-finite date
-            // or an over-long note refuses the whole update rather than
-            // persisting the other half. Nothing is written on that path.
-            guard let checked = value.normalizedCheckpoint() else { return false }
-            normalizedReview = checked
-        }
-        // A review is empty only when every one of its fields is absent. The
-        // checkpoint fields count: a note to check next week with no verdict
-        // about the trade yet is a review worth keeping.
-        if normalizedReview?.followedPlan == nil, normalizedReview?.retrospective == nil,
-           normalizedReview?.strategy == nil, normalizedReview?.hasCheckpoint != true {
-            normalizedReview = nil
-        }
+        let normalizedReview: PositionTransactionReview?
+        do { normalizedReview = try review?.normalizedForPersistence() }
+        catch { return false }
 
         if let itemIndex = allItems.firstIndex(where: { $0.symbol == symbol }),
            let transactionIndex = allItems[itemIndex].transactions.firstIndex(where: { $0.id == id }) {
@@ -1420,6 +1538,10 @@ public final class WatchlistStore {
         var portions = current.portions
         let original = portions[index]
         guard original.fundingSource != source else { throw PositionAllocationError.sameFundingSource }
+        if brokerageAccountsEnabled, source == .margin,
+           (original.brokerageAccountID ?? activeBrokerageAccountID) != .financing {
+            throw PositionAllocationError.incompatibleAccountFunding
+        }
         let tolerance = PositionAllocation.quantityTolerance(quantity, original.quantity)
         guard quantity <= original.quantity + tolerance else {
             throw PositionAllocationError.quantityExceedsPortion
@@ -1553,6 +1675,9 @@ public final class WatchlistStore {
         }
         guard current.portions[index].brokerageAccountID != accountID else {
             return current
+        }
+        if brokerageAccountsEnabled, accountID == .mengmeng, current.portions[index].fundingSource == .margin {
+            throw PositionAllocationError.incompatibleAccountFunding
         }
         var portions = current.portions
         portions[index].brokerageAccountID = accountID
@@ -1845,21 +1970,57 @@ public final class WatchlistStore {
         appendedBuy: PositionTransaction? = nil
     ) {
         let previous = allItems[index]
+        let trackedPlans = linkedPlanProgress()
+        let proposed = Self.applyingTransactions(transactions, to: previous)
+        guard Self.validAccountLedger(PositionLedger(transactions: proposed.transactions)) else { return }
         applyTransactions(transactions, at: index)
-        // Reopen only a plan that was completed by its linked fills. A manually
-        // closed partial plan and a cancelled plan remain the user's decision.
-        for planIndex in allItems[index].plans.indices {
-            let plan = allItems[index].plans[planIndex]
-            guard plan.status == .done,
-                  TradePlanExecutionProgress(plan: plan, transactions: previous.transactions).isComplete,
-                  !TradePlanExecutionProgress(plan: plan, transactions: allItems[index].transactions).isComplete else {
-                continue
-            }
-            allItems[index].plans[planIndex].status = .active
-            allItems[index].plans[planIndex].updatedAt = .now
-        }
+        // Cross-account fills reopen their source plan after an edit/deletion too.
+        for reference in trackedPlans { refreshPlanProgress(reference) }
         if let appendedBuy { recordAppendedBuy(appendedBuy, previous: previous, at: index) }
         save()
+    }
+
+    private struct PlanReference {
+        let account: BrokerageAccountID
+        let symbol: SymbolID
+        let id: UUID
+        let previousProgress: TradePlanExecutionProgress
+    }
+
+    private func linkedPlanProgress() -> [PlanReference] {
+        let accounts = brokerageAccountsEnabled ? BrokerageAccountID.allCases : [activeBrokerageAccountID]
+        return accounts.flatMap { account -> [PlanReference] in
+            let portfolio = brokeragePortfolio(for: account)
+            return (portfolio.items + portfolio.retainedHistoryItems).flatMap { item -> [PlanReference] in
+                item.plans.compactMap { plan -> PlanReference? in
+                    guard plan.status != .cancelled else { return nil }
+                    return PlanReference(account: account, symbol: item.symbol, id: plan.id,
+                        previousProgress: TradePlanExecutionProgress(plan: plan, transactions: transactionsForPlan(item.symbol, account: account)))
+                }
+            }
+        }
+    }
+
+    private func refreshPlanProgress(_ reference: PlanReference) {
+        var portfolio = brokeragePortfolio(for: reference.account)
+        func reopened(_ items: inout [WatchItem]) {
+            guard let itemIndex = items.firstIndex(where: { $0.symbol == reference.symbol }),
+                  let planIndex = items[itemIndex].plans.firstIndex(where: { $0.id == reference.id }) else { return }
+            let plan = items[itemIndex].plans[planIndex]
+            let progress = TradePlanExecutionProgress(plan: plan,
+                transactions: transactionsForPlan(reference.symbol, account: reference.account))
+            let reopened = plan.status == .done && reference.previousProgress.isComplete && !progress.isComplete
+            let completed = plan.status == .active && progress.isComplete
+                && progress.filledQuantity != reference.previousProgress.filledQuantity
+            guard reopened || completed else { return }
+            items[itemIndex].plans[planIndex].status = reopened ? .active : .done
+            items[itemIndex].plans[planIndex].updatedAt = .now
+        }
+        reopened(&portfolio.items)
+        reopened(&portfolio.retainedHistoryItems)
+        if reference.account == activeBrokerageAccountID {
+            allItems = portfolio.items; retainedHistoryItems = portfolio.retainedHistoryItems
+        } else { accountPortfolios[reference.account] = portfolio }
     }
 
     private func recordAppendedBuy(
@@ -1867,29 +2028,37 @@ public final class WatchlistStore {
         previous: WatchItem,
         at index: Int
     ) {
-        guard transaction.kind == .buy, allItems[index].positionQuantity > 0 else { return }
-        let newTransactions = allItems[index].transactions
+        allItems[index] = applyingAppendedBuy(transaction, previous: previous, to: allItems[index])
+    }
+
+    /// Builds allocation changes without mutating a portfolio or persisting a draft.
+    private func applyingAppendedBuy(
+        _ transaction: PositionTransaction, previous: WatchItem, to updatedItem: WatchItem
+    ) -> WatchItem {
+        var result = updatedItem
+        guard transaction.kind == .buy, result.positionQuantity > 0 else { return result }
+        let newTransactions = result.transactions
         guard newTransactions.last?.id == transaction.id,
-              newTransactions.filter({ $0.id == transaction.id }).count == 1 else { return }
+              newTransactions.filter({ $0.id == transaction.id }).count == 1 else { return result }
         if previous.transactions.isEmpty {
             let legacyAdjustment = previous.materializedTransactions().first
-            guard newTransactions.count == (legacyAdjustment == nil ? 1 : 2) else { return }
+            guard newTransactions.count == (legacyAdjustment == nil ? 1 : 2) else { return result }
             if let legacyAdjustment, let applied = newTransactions.first {
                 guard applied.kind == .adjustment,
                       applied.price == legacyAdjustment.price,
                       applied.quantity == legacyAdjustment.quantity,
                       applied.date == legacyAdjustment.date,
-                      applied.createdAt == legacyAdjustment.createdAt else { return }
+                      applied.createdAt == legacyAdjustment.createdAt else { return result }
             }
         } else {
             guard newTransactions.count == previous.transactions.count + 1,
                   previous.transactions.allSatisfy({ old in
                       newTransactions.first(where: { $0.id == old.id }) == old
-                  }) else { return }
+                  }) else { return result }
         }
-        let added = allItems[index].positionQuantity - previous.positionQuantity
+        let added = result.positionQuantity - previous.positionQuantity
         guard abs(added - transaction.quantity) <= PositionAllocation.quantityTolerance(added, transaction.quantity) else {
-            return
+            return result
         }
         if previous.positionQuantity == 0 {
             let portion = Self.buyPortion(from: transaction)
@@ -1902,27 +2071,28 @@ public final class WatchlistStore {
                 previousPortions: previous.positionAllocation?.portions ?? [],
                 resultingPortions: [portion]
             ))
-            allItems[index].positionAllocation = PositionAllocation(
+            result.positionAllocation = PositionAllocation(
                 revision: UUID(),
-                basisFingerprint: PositionAllocation.basisFingerprint(for: allItems[index]),
+                basisFingerprint: PositionAllocation.basisFingerprint(for: result),
                 portions: [portion],
                 changes: changes
             )
-            return
+            return result
         }
         guard let allocation = previous.positionAllocation,
               !previous.positionAllocationNeedsReconciliation,
-              previous.positionQuantity > 0 else { return }
+              previous.positionQuantity > 0 else { return result }
         let portion = Self.buyPortion(from: transaction)
         let note = transaction.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let updated = changedAllocation(
             allocation,
             portions: allocation.portions + [portion],
-            item: allItems[index],
+            item: result,
             kind: .buy,
             reason: note.isEmpty ? "Buy transaction" : note
         )
-        allItems[index].positionAllocation = updated
+        result.positionAllocation = updated
+        return result
     }
 
     /// The portion a recorded buy creates.
@@ -1940,11 +2110,8 @@ public final class WatchlistStore {
     /// is added so the legacy intent to verify is preserved as a task rather
     /// than lost with the pool.
     ///
-    /// The brokerage account is deliberately left `nil`. A buy is a *new* card
-    /// with no prior attribution, and the transaction carries no account field
-    /// to inherit from: the label belongs to whatever ledger the buy is recorded
-    /// in, which the enclosing-account fallback already supplies. Inventing an
-    /// owner here would attribute shares nobody classified.
+    /// The new card carries the account explicitly selected for this purchase.
+    /// Legacy transactions leave it nil and inherit their enclosing ledger.
     nonisolated static func buyPortion(from transaction: PositionTransaction) -> PositionPortion {
         let configuration = transaction.planExecution?.configuration
         let recordedPool = configuration?.positionPool ?? .unassigned
@@ -1966,7 +2133,8 @@ public final class WatchlistStore {
             // disagree — a plan written for margin paid with cash — and the
             // portion has to follow the money that actually moved.
             fundingSource: transaction.fundingSource,
-            conditions: conditions
+            conditions: conditions,
+            brokerageAccountID: transaction.brokerageAccountID
         )
     }
 
@@ -2825,7 +2993,9 @@ public final class WatchlistStore {
         var result = preferred
         if result.note == nil { result.note = fallback.note }
         if result.planExecution == nil { result.planExecution = fallback.planExecution }
+        else { result.planExecution = result.planExecution?.preservingSourceAccount(from: fallback.planExecution) }
         if result.fundingSource == nil { result.fundingSource = fallback.fundingSource }
+        if result.brokerageAccountID == nil { result.brokerageAccountID = fallback.brokerageAccountID }
         if result.review == nil {
             result.review = fallback.review
         } else if let fallbackReview = fallback.review {

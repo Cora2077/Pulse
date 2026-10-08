@@ -11,11 +11,13 @@ import Foundation
 /// reference and a transaction review's forward-looking checkpoint; version 11
 /// adds a verification condition array on a position portion; version 12 adds
 /// named brokerage accounts; version 13 adds per-account settings; version 14
-/// adds a per-portion brokerage-account label.
+/// adds a per-portion brokerage-account label; version 15 records the account
+/// selected for a buy on its transaction; version 16 identifies the source account
+/// of a cross-account plan fill.
 /// Encoders keep older versions when the newer fields are absent.
 public enum WatchlistSyncWireCodec {
     public static let formatIdentifier = "pulse.device-sync"
-    public static let currentVersion = 14
+    public static let currentVersion = 16
     private static let reviewVersion = 4
     private static let tradingMetadataVersion = 5
     private static let allocationVersion = 6
@@ -31,6 +33,8 @@ public enum WatchlistSyncWireCodec {
     /// it a separate constant means raising `currentVersion` for the label does
     /// not move an untagged account-scoped payload off 12.
     private static let brokerageTagVersion = 14
+    private static let transactionAccountVersion = 15
+    private static let planSourceAccountVersion = 16
 
     public struct File: Sendable, Equatable {
         public let format: String
@@ -149,7 +153,11 @@ public enum WatchlistSyncWireCodec {
         // would declare the settings version and let an older reader drop the
         // attribution.
         let hasBrokerageTag = snapshot.allAccountItems.contains { $0.positionAllocation?.hasBrokerageTagMetadata == true }
-        let version = hasBrokerageTag ? brokerageTagVersion
+        let version = snapshot.allAccountItems.flatMap(\.transactions).contains { $0.planExecution?.sourceAccountID != nil }
+            ? planSourceAccountVersion
+            : snapshot.allAccountItems.flatMap(\.transactions).contains { $0.brokerageAccountID != nil }
+            ? transactionAccountVersion
+            : hasBrokerageTag ? brokerageTagVersion
             : snapshot.hasAccountSettings ? accountSettingsVersion
             : snapshot.brokerageAccounts != nil ? brokerageVersion
             : hasVerification ? verificationVersion
@@ -253,6 +261,14 @@ public enum WatchlistSyncWireCodec {
         }
         let items = file.snapshot.items + file.snapshot.retainedHistoryItems
         let transactions = items.flatMap(\.transactions)
+        if file.version < planSourceAccountVersion,
+           file.snapshot.allAccountItems.flatMap(\.transactions).contains(where: { $0.planExecution?.sourceAccountID != nil }) {
+            throw CodecError.unsupportedVersion(planSourceAccountVersion)
+        }
+        if file.version < transactionAccountVersion,
+           file.snapshot.allAccountItems.flatMap(\.transactions).contains(where: { $0.brokerageAccountID != nil }) {
+            throw CodecError.unsupportedVersion(transactionAccountVersion)
+        }
         // A per-portion brokerage-account label is the newest field. It is
         // checked before the account branches below and against the whole
         // snapshot, including the portions nested in named accounts, because a

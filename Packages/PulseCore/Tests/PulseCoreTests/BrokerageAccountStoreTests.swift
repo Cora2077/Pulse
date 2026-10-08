@@ -218,14 +218,14 @@ struct BrokerageAccountStoreTests {
         // Mengmeng: a buy, a sell, and funding/pool annotations.
         #expect(store.selectBrokerageAccount(.mengmeng))
         store.add(SymbolInfo(symbol: apple, name: "Apple"))
-        store.addTransaction(apple, buy(price: 300, quantity: 5, day: 1_700_000_000, fundingSource: .margin))
+        store.addTransaction(apple, buy(price: 300, quantity: 5, day: 1_700_000_000, fundingSource: .own))
         store.initializePositionAllocations()
         let portion = try #require(store.item(for: apple)?.positionAllocation?.portions.first)
         _ = try store.markPositionFundingSource(
             symbol: apple,
             portionID: portion.id,
             quantity: 2,
-            source: .own,
+            source: .unmarked,
             reason: "split",
             expectedRevision: try #require(store.item(for: apple)?.positionAllocation?.revision)
         )
@@ -541,7 +541,7 @@ struct BrokerageAccountStoreTests {
         let (store, defaults, suite) = try makeStore("whole")
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        store.enableBrokerageAccounts()
+        // Seed the historic unassigned ledger before account rules are enabled.
         store.add(SymbolInfo(symbol: apple, name: "Apple"))
 
         let firstBuy = UUID()
@@ -557,6 +557,7 @@ struct BrokerageAccountStoreTests {
         #expect(store.setTradePlan(plan, for: apple))
         store.setThesis("core position", for: apple)
 
+        store.enableBrokerageAccounts()
         let before = try #require(store.item(for: apple))
         let beforePortions = try #require(before.positionAllocation?.portions)
         let beforeMembership = store.groups.first { $0.symbols.contains(apple) }?.name

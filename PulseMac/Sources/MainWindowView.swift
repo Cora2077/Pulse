@@ -823,7 +823,7 @@ struct InstrumentSummaryInspector: View {
     }
 
     private func planRow(_ plan: TradePlan) -> some View {
-        let entry = TradePlanEntry(symbol: symbol, plan: plan, transactions: item?.transactions ?? [])
+        let entry = TradePlanEntry(symbol: symbol, plan: plan, transactions: appState.watchlist.transactionsForPlan(symbol))
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
                 Text(PulseLocalization.localizedString(plan.kind == .buy ? "plan.kind.buy" : "plan.kind.sell"))

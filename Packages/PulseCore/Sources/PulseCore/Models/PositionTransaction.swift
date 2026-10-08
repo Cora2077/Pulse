@@ -44,6 +44,9 @@ public struct PositionTransaction: Codable, Sendable, Hashable, Identifiable {
     /// inherits *this* value, never the plan's. `nil` on records written before
     /// the field existed; see `PositionFundingSource`.
     public var fundingSource: PositionFundingSource?
+    /// The account explicitly selected for this purchase, independently of its
+    /// funding. Legacy records inherit their enclosing ledger when absent.
+    public var brokerageAccountID: BrokerageAccountID?
 
     public var hasValidFee: Bool { fee.map { $0.isFinite && $0 >= 0 } ?? true }
 
@@ -58,7 +61,8 @@ public struct PositionTransaction: Codable, Sendable, Hashable, Identifiable {
         note: String? = nil,
         planExecution: TradePlanExecution? = nil,
         review: PositionTransactionReview? = nil,
-        fundingSource: PositionFundingSource? = nil
+        fundingSource: PositionFundingSource? = nil,
+        brokerageAccountID: BrokerageAccountID? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -71,16 +75,29 @@ public struct PositionTransaction: Codable, Sendable, Hashable, Identifiable {
         self.planExecution = planExecution
         self.review = review
         self.fundingSource = fundingSource
+        self.brokerageAccountID = brokerageAccountID
     }
 }
 
 public struct TradePlanExecution: Codable, Sendable, Hashable {
     public var planID: UUID
     public var configuration: TradePlanConfiguration
+    /// The ledger owning the plan when a fill is recorded into another account.
+    /// Absent on legacy and same-account fills, which inherit their own ledger.
+    public var sourceAccountID: BrokerageAccountID?
 
-    public init(planID: UUID, configuration: TradePlanConfiguration) {
+    public init(planID: UUID, configuration: TradePlanConfiguration, sourceAccountID: BrokerageAccountID? = nil) {
         self.planID = planID
         self.configuration = configuration
+        self.sourceAccountID = sourceAccountID
+    }
+
+    func preservingSourceAccount(from other: Self?) -> Self {
+        var result = self
+        if result.sourceAccountID == nil, let other, other.planID == planID {
+            result.sourceAccountID = other.sourceAccountID
+        }
+        return result
     }
 }
 
@@ -118,6 +135,24 @@ public struct PositionTransactionReview: Codable, Sendable, Hashable {
     /// normalized away to `nil`.
     var hasCheckpoint: Bool { nextReviewDate != nil || nextReviewNote != nil }
 
+    /// Canonical review value for storage and no-op comparisons. An empty
+    /// review is nil; invalid checkpoint data is a distinct failure.
+    public func normalizedForPersistence() throws -> Self? {
+        var value = self
+        func text(_ raw: String?) -> String? {
+            let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed?.isEmpty == false ? trimmed : nil
+        }
+        value.retrospective = text(value.retrospective)
+        value.strategy = text(value.strategy)
+        guard let checked = value.normalizedCheckpoint() else {
+            throw PositionTransactionReviewValidationError.invalidCheckpoint
+        }
+        if checked.followedPlan == nil, checked.retrospective == nil,
+           checked.strategy == nil, !checked.hasCheckpoint { return nil }
+        return checked
+    }
+
     /// Trims and validates the checkpoint fields, returning nil for anything
     /// unusable. A non-finite date or an over-long note is rejected whole so the
     /// caller can refuse the update instead of writing a half-applied one.
@@ -131,6 +166,10 @@ public struct PositionTransactionReview: Codable, Sendable, Hashable {
         }
         return value
     }
+}
+
+public enum PositionTransactionReviewValidationError: Error {
+    case invalidCheckpoint
 }
 
 /// Replays a transaction list into the current position using the

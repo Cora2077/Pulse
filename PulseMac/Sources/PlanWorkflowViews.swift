@@ -27,11 +27,12 @@ func planIntentTitle(_ entry: TradePlanEntry) -> String {
 ///
 /// Nothing here reads a balance, a price, or a broker figure: the label
 /// describes where the *shares* came from, never a debt.
-func fundingSourceTitle(_ source: PositionFundingSource?) -> String {
+func fundingSourceTitle(_ source: PositionFundingSource?, account: BrokerageAccountID = .unassigned) -> String {
     switch source {
     case .none: poolCopy("未标注", "Not annotated")
     case .some(.unmarked): poolCopy("未标注（已清除）", "Cleared")
-    case .some(.own): poolCopy("普通资金", "Own capital")
+    case .some(.own): account == .financing
+        ? poolCopy("担保品", "Collateral") : poolCopy("普通买入", "Ordinary buy")
     case .some(.margin): poolCopy("融资买入", "Margin")
     }
 }
@@ -42,11 +43,13 @@ func fundingSourceTitle(_ source: PositionFundingSource?) -> String {
 /// "未标注" line on every card, which would turn a missing field into visual
 /// noise the design explicitly rules out. Only an explicit selection earns a
 /// tag.
-func fundingSourceTagTitle(_ source: PositionFundingSource?) -> String? {
-    switch source {
+func fundingSourceTagTitle(_ source: PositionFundingSource?, account: BrokerageAccountID = .unassigned) -> String? {
+    guard account != .mengmeng else { return nil }
+    return switch source {
     case .none: nil
     case .some(.unmarked): poolCopy("未标注", "Unmarked")
-    case .some(.own): poolCopy("自有", "Own")
+    case .some(.own): account == .financing
+        ? poolCopy("担保品", "Collateral") : poolCopy("普通", "Ordinary")
     case .some(.margin): poolCopy("融资", "Margin")
     }
 }
@@ -61,9 +64,10 @@ let fundingSourcePickerOptions: [PositionFundingSource] = [.unmarked, .own, .mar
 /// adds no animation and no per-frame work.
 struct FundingSourceTag: View {
     let source: PositionFundingSource?
+    var account: BrokerageAccountID = .unassigned
 
     var body: some View {
-        if let title = fundingSourceTagTitle(source) {
+        if let title = fundingSourceTagTitle(source, account: account) {
             Text(title)
                 .font(PoolType.label)
                 .foregroundStyle(tint)
@@ -72,7 +76,7 @@ struct FundingSourceTag: View {
                 .background(tint.opacity(0.1), in: Capsule())
                 .overlay { Capsule().stroke(tint.opacity(0.4), lineWidth: 1) }
                 .fixedSize(horizontal: true, vertical: false)
-                .accessibilityLabel(fundingSourceTitle(source))
+                .accessibilityLabel(fundingSourceTitle(source, account: account))
         }
     }
 
@@ -87,9 +91,10 @@ struct FundingSourceTag: View {
 /// reads portions, not plans.
 struct PlannedFundingTag: View {
     let source: PositionFundingSource?
+    var account: BrokerageAccountID = .unassigned
 
     var body: some View {
-        if source == .margin {
+        if account != .mengmeng, source == .margin {
             Text(poolCopy("拟融资", "Planned margin"))
                 .font(PoolType.label)
                 .foregroundStyle(PoolFundingStyle.marginTint)
@@ -129,27 +134,34 @@ struct FundingSourcePickerRow: View {
     @Binding var selection: PositionFundingSource?
     var help: String?
     var onChange: (() -> Void)?
+    var options: [PositionFundingSource] = fundingSourcePickerOptions
+    var includesUnannotated = true
+    var account: BrokerageAccountID = .unassigned
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-            Picker("", selection: $selection) {
-                Text(fundingSourceTitle(nil)).tag(nil as PositionFundingSource?)
-                ForEach(fundingSourcePickerOptions, id: \.self) { source in
-                    Text(fundingSourceTitle(source)).tag(Optional(source))
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .controlSize(.small)
-            .onChange(of: selection) { _, _ in onChange?() }
-            if let help {
-                Text(help)
+        if account != .mengmeng {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(label)
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Picker("", selection: $selection) {
+                    if includesUnannotated {
+                        Text(fundingSourceTitle(nil, account: account)).tag(nil as PositionFundingSource?)
+                    }
+                    ForEach(options, id: \.self) { source in
+                        Text(fundingSourceTitle(source, account: account)).tag(Optional(source))
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .onChange(of: selection) { _, _ in onChange?() }
+                if let help {
+                    Text(help)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
@@ -191,7 +203,18 @@ struct PlanExecutionSheet: View {
     /// The money that actually moved, pre-selected from the plan's intention
     /// but always the user's to change. The plan's intent is a proposal; the
     /// fill is the fact, and this field is where the two are allowed to differ.
+    ///
+    /// For a buy it is never `nil`: the shared fields offer ordinary capital as
+    /// the floor, because a fill being recorded now has no "nobody has said
+    /// yet" state to preserve. A sell leaves it `nil` — a sale consumes
+    /// portions and does not choose a source here.
     @State private var fundingSource: PositionFundingSource?
+    /// The ledger a *buy* fill is recorded into, chosen on this sheet rather
+    /// than inherited from the sheet's own account. A plan is a proposal about
+    /// an instrument, not about a ledger, so the user names where the fill
+    /// actually landed; `draftAccount` above stays the source plan's account
+    /// and is what the stale guard checks.
+    @State private var selectedBrokerageAccount: BrokerageAccountID?
     /// For a sell that spans several sources: how many shares to take from each
     /// portion card. Empty means the caller has not named a selection, which
     /// the store then only accepts when the candidates agree on one source.
@@ -212,9 +235,20 @@ struct PlanExecutionSheet: View {
             entry.remainingQuantity > 0 ? entry.remainingQuantity : entry.plan.quantity
         ))
         _date = State(initialValue: Calendar.current.startOfDay(for: .now))
-        // Pre-select the plan's stated intention, including its absence: a plan
-        // that never said keeps "not annotated" rather than gaining a value.
-        _fundingSource = State(initialValue: entry.plan.fundingSource)
+        // The destination starts at the account this sheet was opened from when
+        // that account is a real one. `unassigned` is a source of legacy
+        // records and never a place to file a new fill, so it starts empty and
+        // the user has to name a ledger.
+        _selectedBrokerageAccount = State(initialValue: account == .unassigned ? nil : account)
+        // Ordinary capital unless the plan itself intended margin *and* the
+        // starting account can hold it. The shared fields enforce the same
+        // pairing after this.
+        _fundingSource = State(initialValue:
+            entry.plan.kind == .buy
+                && account == .financing
+                && entry.plan.fundingSource == .margin
+                ? .margin : .own
+        )
     }
 
     /// Whether the store is still pointed at the ledger this fill belongs to.
@@ -241,6 +275,11 @@ struct PlanExecutionSheet: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
+                    // Which ledger, and what money — asked first, because they
+                    // are the two answers that decide whether this fill can be
+                    // recorded at all. Price and quantity are meaningless if
+                    // the destination refuses the combination.
+                    if kind == .buy { buyAccountMethodFields }
                     HStack(spacing: 8) {
                         PositionInputCell(
                             label: PulseLocalization.localizedString(
@@ -298,7 +337,7 @@ struct PlanExecutionSheet: View {
         // means a later allocation edit on another surface cannot have this
         // sheet's card selection applied to different shares.
         .onAppear {
-            loadedAllocationRevision = appState.watchlist.item(for: symbol)?.positionAllocation?.revision
+            loadedAllocationRevision = appState.watchlist.draftItem(for: symbol, account: draftAccount)?.positionAllocation?.revision
         }
     }
 
@@ -345,12 +384,15 @@ struct PlanExecutionSheet: View {
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
-            // The ledger this fill lands in, named from the value frozen when
-            // the sheet opened rather than from whatever is selected now.
+            // The ledger this fill lands in. A buy names the destination the
+            // user picked on this sheet, or asks for one when it is still
+            // empty; a sell has no destination of its own and keeps naming the
+            // account the sheet was opened for. Either way the value is not
+            // read from whatever the toolbar happens to have selected now —
+            // `accountMatchesDraft` is a separate guard.
             HStack(spacing: 5) {
-                Circle().fill(AccountIdentity.dotColor(draftAccount)).frame(width: 5, height: 5)
-                Text(poolCopy("记入账号：\(AccountIdentity.title(draftAccount))",
-                              "Recording into: \(AccountIdentity.title(draftAccount))"))
+                Circle().fill(AccountIdentity.dotColor(headerAccount)).frame(width: 5, height: 5)
+                Text(headerAccountText)
                     .font(.system(size: 9))
                     .foregroundStyle(accountMatchesDraft ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Color.orange))
                     .lineLimit(1)
@@ -358,6 +400,29 @@ struct PlanExecutionSheet: View {
             }
         }
         .padding(12)
+    }
+
+    /// The account the header names. A buy names its chosen destination — the
+    /// dot colour has to belong to that account, or the caption would describe
+    /// a different ledger than the fill does.
+    private var headerAccount: BrokerageAccountID {
+        guard kind == .buy else { return draftAccount }
+        return selectedBrokerageAccount ?? .unassigned
+    }
+
+    /// "记入账户：萌萌账号", or the question itself while a buy still has no
+    /// destination. Asking here rather than showing a bare placeholder is what
+    /// makes the missing answer visible in the chrome as well as in the form.
+    private var headerAccountText: String {
+        guard kind == .buy else {
+            return poolCopy("记入账号：\(AccountIdentity.title(draftAccount))",
+                            "Recording into: \(AccountIdentity.title(draftAccount))")
+        }
+        guard let account = selectedBrokerageAccount else {
+            return poolCopy("记入账户：请选择账户", "Recording into: Select account")
+        }
+        return poolCopy("记入账户：\(AccountIdentity.title(account))",
+                        "Recording into: \(AccountIdentity.title(account))")
     }
 
     private func summaryValue(_ label: String, _ value: String, color: Color? = nil) -> some View {
@@ -395,30 +460,30 @@ struct PlanExecutionSheet: View {
 
     // MARK: - Funding
 
-    /// A buy confirms what money moved. A sell instead shows which cards the
-    /// shares come out of, because a sale consumes existing portions and the
-    /// store refuses to guess when they disagree about funding.
+    /// A sell shows which cards the shares come out of, because a sale consumes
+    /// existing portions and the store refuses to guess when they disagree
+    /// about funding.
     ///
-    /// Both halves sit in the field column and neither can disable the record
-    /// button: conditions and source ambiguity are things to review, never
-    /// reasons to hide a fill that already happened.
+    /// A buy has nothing here any more: its account and method are asked at the
+    /// top of the form by the shared fields, which is the only way those two
+    /// answers stay paired with each other. The old "funding actually used"
+    /// picker asked half of that question in isolation, and could offer margin
+    /// in an account that would refuse it.
+    ///
+    /// The sell half cannot disable the record button: source ambiguity is
+    /// something to review, never a reason to hide a fill that already happened.
     @ViewBuilder
     private var fundingSection: some View {
-        if kind == .buy {
-            FundingSourcePickerRow(
-                label: poolCopy("实际资金来源", "Funding actually used"),
-                selection: $fundingSource,
-                help: poolCopy("默认沿用计划拟用资金；实际不同就改这里。",
-                               "Defaults to the plan's intention; change it if the fill differed."),
-                onChange: { errorMessage = nil }
-            )
-        } else if !saleCandidates.isEmpty {
+        if kind == .sell, !saleCandidates.isEmpty {
             if hasMixedFunding {
                 saleSelectionSection
             } else {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(poolCopy("资金来源：", "Funding: ") + fundingSourceTitle(saleCandidates.first?.fundingSource))
-                        .font(.caption2).foregroundStyle(.secondary)
+                    if draftAccount != .mengmeng {
+                        Text(poolCopy("资金来源：", "Funding: ")
+                            + fundingSourceTitle(saleCandidates.first?.fundingSource, account: draftAccount))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                     Text(plan.positionPool == nil
                          ? poolCopy("来源池未指定，记录成交后需核对分账。", "Source pool unset; reconcile the allocation after recording.")
                          : poolCopy("按计划来源池减少份额。", "Reduces shares in the plan's source pool."))
@@ -426,6 +491,37 @@ struct PlanExecutionSheet: View {
                 }
             }
         }
+    }
+
+    /// The shared account-then-method block, the same one the direct buy form
+    /// uses. Sharing it is what stops these two routes from drifting into
+    /// offering different combinations.
+    private var buyAccountMethodFields: some View {
+        BuyAccountMethodFields(
+            account: $selectedBrokerageAccount,
+            method: Binding(
+                get: { fundingSource ?? .own },
+                set: { fundingSource = $0 }
+            ),
+            accountAccessibilityID: "plan.fill.account",
+            methodAccessibilityID: "plan.fill.method",
+            onAccountChange: { errorMessage = nil },
+            onMethodChange: { errorMessage = nil }
+        )
+    }
+
+    /// Whether the chosen account and method are a pair the store will accept.
+    ///
+    /// This is the same rule the shared fields render, restated as a value so
+    /// the footer can disable both record buttons and Return. A buy with no
+    /// account, or a margin method outside the financing account, is not a
+    /// recordable fill — and disabling is honest here, unlike the sell side,
+    /// because nothing has happened yet that these fields would be hiding.
+    private var isBuySelectionRecordable: Bool {
+        guard kind == .buy else { return true }
+        // `fundingSource ?? .own` matches the binding the shared fields write
+        // through, so the button's rule and the menu's rule read one value.
+        return selectedBrokerageAccount?.permitsBuy(fundingSource: fundingSource ?? .own) ?? false
     }
 
     /// The portion cards this sale may draw from.
@@ -436,7 +532,7 @@ struct PlanExecutionSheet: View {
     /// allocations qualify; an unreconciled one is refused by the store anyway.
     private var saleCandidates: [PositionPortion] {
         guard kind == .sell,
-              let item = appState.watchlist.item(for: symbol),
+              let item = appState.watchlist.draftItem(for: symbol, account: draftAccount),
               let allocation = item.positionAllocation,
               !item.positionAllocationNeedsReconciliation else { return [] }
         guard let pool = plan.positionPool else { return allocation.portions }
@@ -533,8 +629,9 @@ struct PlanExecutionSheet: View {
                             Text(portion.pool.title)
                                 .font(.system(size: 10))
                                 .lineLimit(1)
-                            FundingSourceTag(source: portion.fundingSource)
-                            if portion.fundingSource == nil {
+                            FundingSourceTag(source: portion.fundingSource,
+                                account: draftAccount == .mengmeng ? .mengmeng : (portion.brokerageAccountID ?? draftAccount))
+                            if draftAccount != .mengmeng, portion.fundingSource == nil {
                                 Text(poolCopy("来源未标注", "Source unknown"))
                                     .font(.system(size: 9)).foregroundStyle(.secondary)
                             }
@@ -677,7 +774,7 @@ struct PlanExecutionSheet: View {
     }
 
     private var footer: some View {
-        let blocked = didSave || !isValid || !accountMatchesDraft
+        let blocked = didSave || !isSubmittable || !accountMatchesDraft
         return HStack(spacing: 8) {
             Spacer()
             Button(PulseLocalization.localizedString("action.cancel")) {
@@ -752,6 +849,14 @@ struct PlanExecutionSheet: View {
         return saleSelectionIsValid
     }
 
+    /// Everything that must hold before either record button — or Return —
+    /// writes anything. The buy selection is included so a fill can never be
+    /// submitted into an account/method pair the store would refuse, which
+    /// would only surface as an error after the user had filled in the rest.
+    private var isSubmittable: Bool {
+        isValid && isBuySelectionRecordable
+    }
+
     /// Records the fill, and optionally asks the journal to open it.
     ///
     /// The review flag changes nothing about the write: it only decides whether
@@ -762,7 +867,7 @@ struct PlanExecutionSheet: View {
     /// it.
     private func submit(openingReview: Bool = false) {
         guard !didSave, let price = parsedPrice, let quantity = parsedQuantity else { return }
-        guard isValid else { return }
+        guard isSubmittable else { return }
         // The ledger moved out from under this sheet. The fill is not filed
         // against the newly selected account; the error stays visible and
         // `didSave` stays false so nothing is silently redirected.
@@ -789,7 +894,12 @@ struct PlanExecutionSheet: View {
                 // The reported fill's funding. A buy sends what the user
                 // confirmed; a sell sends nothing here, because a sale consumes
                 // portions rather than choosing a source.
-                fundingSource: kind == .buy ? fundingSource : nil,
+                fundingSource: kind == .buy ? (fundingSource ?? .own) : nil,
+                // Where a buy's fill lands. The store keeps the source plan in
+                // its own ledger and records the transaction in this one. A
+                // sell sends nothing: a sale reduces shares where they already
+                // live, which is the plan's own account.
+                brokerageAccountID: kind == .buy ? selectedBrokerageAccount : nil,
                 // Only a genuinely mixed sale names its cards. A single-source
                 // pool keeps the existing automatic deduction, so nothing about
                 // that path changes.
@@ -801,6 +911,15 @@ struct PlanExecutionSheet: View {
                 // single-source sale leaves the check off, exactly as before.
                 expectedAllocationRevision: parsedSaleSelection == nil ? nil : loadedAllocationRevision
             )
+            if openingReview, kind == .buy, let account = selectedBrokerageAccount {
+                // The journal opens a transaction in a ledger, so the app has
+                // to be on the destination before the id is handed over —
+                // otherwise the review would look for this fill in the source
+                // plan's account and find nothing. Selecting an account clears
+                // `pendingJournalTransactionID`, which is exactly why the order
+                // here is select first, then set.
+                _ = appState.selectBrokerageAccount(account)
+            }
             if openingReview {
                 appState.pendingJournalTransactionID = transaction.id
             }
@@ -881,12 +1000,12 @@ struct PlanWorkflowDetailView: View {
     /// presented so a switch while it is up cannot re-point its write.
     @State private var executionSheetAccount: BrokerageAccountID?
 
-    private var item: WatchItem? { appState.watchlist.item(for: symbol) }
+    private var item: WatchItem? { appState.watchlist.draftItem(for: symbol, account: account) }
     private var plan: TradePlan? { item?.plans.first { $0.id == planID } }
     private var quote: Quote? { appState.market.quote(for: symbol) }
     private var currencyCode: String? { quote?.currencyCode ?? symbol.currencyCode }
 
-    private var transactions: [PositionTransaction] { item?.transactions ?? [] }
+    private var transactions: [PositionTransaction] { appState.watchlist.transactionsForPlan(symbol, account: account) }
 
     var body: some View {
         Group {
@@ -1417,6 +1536,8 @@ struct PlanWorkflowDetailView: View {
                         .foregroundStyle(PlanSideStyle.color(for: transaction.kind))
                         Text("\(PriceFormatter.price(transaction.price, market: symbol.market)) × \(PriceFormatter.quantity(transaction.quantity))")
                             .font(.system(size: 10, design: .monospaced))
+                        Text(AccountIdentity.title(transaction.brokerageAccountID ?? account))
+                            .font(.system(size: 9)).foregroundStyle(.secondary)
                         Spacer(minLength: 0)
                         if transaction.kind != expectedKind {
                             Text(PulseLocalization.localizedString("plan.detail.notCounted"))
@@ -1428,6 +1549,7 @@ struct PlanWorkflowDetailView: View {
                         // its own full entry list, so a row that a filter would
                         // have hidden still opens.
                         Button(PulseLocalization.localizedString("plan.detail.reviewTrade")) {
+                            if let owner = transaction.brokerageAccountID { _ = appState.selectBrokerageAccount(owner) }
                             appState.pendingJournalTransactionID = transaction.id
                         }
                         .controlSize(.small)

@@ -5,10 +5,14 @@ import PulseUI
 struct TradeStrategySummaryView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
+    /// Supplied by the journal: already scoped to an account, query and month
+    /// by its owner. Two ledgers' copies of one symbol arrive as two items and
+    /// are never merged, so this view never reads the active-only ledger.
+    let items: [WatchItem]
     let query: String
     let selectedMonth: Date?
     private var summaries: [TradeStrategySummary] {
-        TradeStrategySummary.make(from: appState.watchlist.tradeHistoryItems, query: query, selectedMonth: selectedMonth)
+        TradeStrategySummary.make(from: items, query: query, selectedMonth: selectedMonth)
     }
 
     var body: some View {

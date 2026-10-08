@@ -437,7 +437,8 @@ struct PopoverRootView: View {
     /// not model, so neither can hold a position — or a plan for one.
     private func plansApply(to symbol: SymbolID) -> Bool {
         if symbol.indexID != nil || symbol.metalID != nil { return false }
-        guard let item = appState.watchlist.item(for: symbol) else { return true }
+        guard let item = appState.sharedWatchlist.item(for: symbol)
+            ?? appState.watchlist.item(for: symbol) else { return true }
         return item.supportsPosition
     }
 
@@ -477,6 +478,10 @@ struct PopoverRootView: View {
             // A closed position stacks fewer blocks; it still uses the older
             // fixed heights until it is measured the same way.
             return item.transactions.isEmpty ? 300 : 380
+        case .trade(_, .buy, _):
+            // Account and buy method each have a labelled row before the
+            // confirmation; leave room for both in the menu-bar panel.
+            return (host == .pinnedWindow ? 420 : 390) + noticeHeight
         case .trade, .editTrade:
             // The entry form is a stack of labelled fields. The panel gets the
             // tightest budget that still fits them; a pinned window can afford

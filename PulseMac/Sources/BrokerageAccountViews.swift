@@ -18,9 +18,9 @@ import PulseUI
 /// * **Margin funding** is a fact about one trade: the orange `FundingSourceTag`.
 ///
 /// The 融资账号 account is deliberately *not* orange and does not use a credit
-/// card: a user can hold a margin-funded trade inside 萌萌账号, so "which account
-/// is this" and "was this bought on margin" are independent questions, and a
-/// screen that colour-codes both the same way would answer them as one.
+/// card: the financing account can hold ordinary or margin-funded purchases,
+/// while Mengmeng purchases use ordinary funding. Account identity and funding
+/// method keep separate visual signals.
 
 // MARK: - Copy
 
@@ -431,8 +431,8 @@ struct BrokerageAccountClassificationSheet: View {
     /// inside it was bought on margin — those are separate axes, and without this
     /// sentence the indigo dot and the orange tag would read as the same idea.
     private let marginExplanation = accountCopy(
-        "融资标注记录单笔交易是否使用融资，与账号归属互相独立：融资账号里也可以有自有资金交易。",
-        "The margin tag records whether one trade used margin. It is independent of account ownership: the 融资账号 can hold own-capital trades too."
+        "融资账号可以选择担保品买入或融资买入。",
+        "The financing account supports collateral buys and margin buys."
     )
 
     /// The unassigned portfolio, including instruments kept only for their
@@ -599,7 +599,8 @@ struct BrokerageAccountClassificationSheet: View {
                 // An existing margin annotation is shown, never inferred: the
                 // sheet reports what the record says, and moving an instrument
                 // to 融资账号 does not itself mark anything as margin-funded.
-                FundingSourceTag(source: item.positionAllocation?.portions.first?.fundingSource)
+                FundingSourceTag(source: item.positionAllocation?.portions.first?.fundingSource,
+                    account: item.positionAllocation?.portions.first?.brokerageAccountID ?? .unassigned)
 
                 Menu {
                     Button(accountCopy("整体账本", "Whole ledger")) {
@@ -663,7 +664,8 @@ struct BrokerageAccountClassificationSheet: View {
                         Text("\(PriceFormatter.quantity(transaction.quantity)) @ \(PriceFormatter.price(transaction.price, market: item.symbol.market))")
                             .font(.system(size: 10, design: .monospaced))
                         Spacer(minLength: 4)
-                        FundingSourceTag(source: transaction.fundingSource)
+                        FundingSourceTag(source: transaction.fundingSource,
+                            account: transaction.brokerageAccountID ?? .unassigned)
                     }
                     .contentShape(Rectangle())
                 }

@@ -83,7 +83,8 @@ struct MainInstrumentView: View {
     }
     private var symbolSupportsPosition: Bool {
         let type: InstrumentType?
-        if let resolved = item?.resolvedInstrumentType {
+        if let resolved = appState.sharedWatchlist.item(for: symbol)?.resolvedInstrumentType
+            ?? item?.resolvedInstrumentType {
             type = resolved
         } else if symbol.indexID != nil {
             type = .index
@@ -1539,7 +1540,8 @@ struct MainInstrumentView: View {
         guard appState.watchlist.item(for: symbol) == nil else { return }
         appState.watchlist.materializeItem(SymbolInfo(
             symbol: symbol,
-            name: quote?.name ?? appState.displayName(for: symbol)
+            name: quote?.name ?? appState.displayName(for: symbol),
+            type: appState.sharedWatchlist.item(for: symbol)?.resolvedInstrumentType ?? .equity
         ))
     }
 

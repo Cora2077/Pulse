@@ -507,7 +507,8 @@ struct DetailView: View {
         if appState.watchlist.item(for: symbol) == nil {
             appState.watchlist.materializeItem(SymbolInfo(
                 symbol: symbol,
-                name: appState.market.quote(for: symbol)?.name ?? appState.displayName(for: symbol)
+                name: appState.market.quote(for: symbol)?.name ?? appState.displayName(for: symbol),
+                type: appState.sharedWatchlist.item(for: symbol)?.resolvedInstrumentType ?? .equity
             ))
             appState.engine.poke()
         }
@@ -530,7 +531,8 @@ struct DetailView: View {
     }
 
     private var sharedInstrumentType: InstrumentType? {
-        if let type = item?.resolvedInstrumentType { return type }
+        if let type = appState.sharedWatchlist.item(for: symbol)?.resolvedInstrumentType
+            ?? item?.resolvedInstrumentType { return type }
         if symbol.indexID != nil { return .index }
         if symbol.metalID != nil { return .commodity }
         if symbol.cryptoPair != nil { return .crypto }
@@ -1187,7 +1189,8 @@ struct DetailView: View {
         if appState.watchlist.item(for: symbol) == nil {
             appState.watchlist.materializeItem(SymbolInfo(
                 symbol: symbol,
-                name: appState.market.quote(for: symbol)?.name ?? appState.displayName(for: symbol)
+                name: appState.market.quote(for: symbol)?.name ?? appState.displayName(for: symbol),
+                type: appState.sharedWatchlist.item(for: symbol)?.resolvedInstrumentType ?? .equity
             ))
             appState.engine.poke()
         }

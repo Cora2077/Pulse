@@ -451,7 +451,7 @@ struct MainHoldingsView: View {
         allocationItems.flatMap { item in
             item.plans.filter { $0.status == .active && $0.kind == .buy }
                 .compactMap { plan in
-                    let entry = TradePlanEntry(symbol: item.symbol, plan: plan, transactions: item.transactions)
+                    let entry = TradePlanEntry(symbol: item.symbol, plan: plan, transactions: appState.watchlist.transactionsForPlan(item.symbol))
                     return entry.remainingQuantity > 0 ? AllocationPlanChoice(item: item, plan: entry.remainingPlan) : nil
                 }
         }

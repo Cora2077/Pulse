@@ -442,11 +442,14 @@ struct WatchlistView: View {
                         .frame(width: 15, height: 11.5)
                         .frame(width: 17, height: 13, alignment: .trailing)
                         .accessibilityHidden(true)
-                    // Bundle display name: "Pulse Dev" in Debug builds, "Pulse" in Release
-                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Pulse")
+                    // Keep the development suffix supplied by the bundle.
+                    Text(AppBrand.displayName)
                         .font(.system(size: 12.5, weight: .semibold))
-                    Spacer()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    Spacer(minLength: 4)
                     actionButtons
+                        .fixedSize()
                 }
                 .overlay(alignment: .trailing) {
                     shareFeedbackOverlay

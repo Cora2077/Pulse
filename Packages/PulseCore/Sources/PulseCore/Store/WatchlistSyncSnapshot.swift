@@ -141,6 +141,14 @@ public enum WatchlistSyncMerge {
             if selected?.planExecution == nil {
                 selected?.planExecution = conflict.local?.planExecution ?? conflict.remote?.planExecution ?? conflict.base?.planExecution
             }
+            for candidate in [conflict.local, conflict.remote, conflict.base] {
+                let execution = selected?.planExecution?.preservingSourceAccount(from: candidate?.planExecution)
+                selected?.planExecution = execution
+            }
+            if selected?.brokerageAccountID == nil {
+                selected?.brokerageAccountID = conflict.local?.brokerageAccountID
+                    ?? conflict.remote?.brokerageAccountID ?? conflict.base?.brokerageAccountID
+            }
             if selected?.fundingSource == nil {
                 selected?.fundingSource = conflict.local?.fundingSource
                     ?? conflict.remote?.fundingSource
@@ -329,7 +337,31 @@ public enum WatchlistSyncMerge {
                 else if l[id] == b[id] { chosen = r[id] }
                 else if r[id] == b[id] { chosen = l[id] }
                 else { chosen = l[id]; disputed.append(id) }
-                if let chosen { merged.append(chosen) }
+                if var chosen {
+                    // Whole-portfolio conflict policy still preserves fields an
+                    // older peer never learned on surviving transactions.
+                    func preserveAnnotations(_ items: inout [WatchItem]) {
+                        for itemIndex in items.indices {
+                            let symbol = items[itemIndex].symbol
+                            let candidates = [l[id], r[id], b[id]].compactMap { $0 }
+                                .flatMap { $0.items + $0.retainedHistoryItems }
+                                .filter { $0.symbol == symbol }.flatMap(\.transactions)
+                            for transactionIndex in items[itemIndex].transactions.indices {
+                                var transaction = items[itemIndex].transactions[transactionIndex]
+                                for candidate in candidates where candidate.id == transaction.id {
+                                    if transaction.planExecution == nil { transaction.planExecution = candidate.planExecution }
+                                    else { transaction.planExecution = transaction.planExecution?.preservingSourceAccount(from: candidate.planExecution) }
+                                    if transaction.brokerageAccountID == nil { transaction.brokerageAccountID = candidate.brokerageAccountID }
+                                    if transaction.fundingSource == nil { transaction.fundingSource = candidate.fundingSource }
+                                }
+                                items[itemIndex].transactions[transactionIndex] = transaction
+                            }
+                        }
+                    }
+                    preserveAnnotations(&chosen.items)
+                    preserveAnnotations(&chosen.retainedHistoryItems)
+                    merged.append(chosen)
+                }
             }
             result.snapshot.brokerageAccounts = merged
             // Two devices can assign the same legacy trade to different accounts.
@@ -402,12 +434,18 @@ public enum WatchlistSyncMerge {
                 if chosen.planExecution == nil {
                     chosen.planExecution = l?.planExecution ?? r?.planExecution ?? b?.planExecution
                 }
+                for candidate in [l, r, b] {
+                    chosen.planExecution = chosen.planExecution?.preservingSourceAccount(from: candidate?.planExecution)
+                }
                 // A transaction that reached this device without the funding
                 // field must not erase one another device recorded. `nil` means
                 // "never learned", so it is the only value that gets filled;
                 // an explicit `.unmarked` is a real decision and stays put.
                 if chosen.fundingSource == nil {
                     chosen.fundingSource = l?.fundingSource ?? r?.fundingSource ?? b?.fundingSource
+                }
+                if chosen.brokerageAccountID == nil {
+                    chosen.brokerageAccountID = l?.brokerageAccountID ?? r?.brokerageAccountID ?? b?.brokerageAccountID
                 }
                 // The review's checkpoint fields fill the same way, one field at
                 // a time, so a peer that never learned `nextReviewDate` does not

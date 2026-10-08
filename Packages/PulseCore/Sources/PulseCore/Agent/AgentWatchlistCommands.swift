@@ -324,16 +324,24 @@ public struct AgentWatchlistCommands {
                     alreadyApplied: true
                 ))
             }
+            let funding = draft.kind == .buy ? (draft.fundingSource ?? (store.brokerageAccountsEnabled ? .own : nil)) : nil
+            if draft.kind == .buy, store.brokerageAccountsEnabled {
+                guard store.activeBrokerageAccountID != .unassigned else { return .failure(.invalidBuyAccount) }
+                guard store.activeBrokerageAccountID.permitsBuy(fundingSource: funding) else { return .failure(.invalidBuyMethod) }
+            }
+            let recordedID = draft.id ?? UUID()
             store.addTransaction(symbol, PositionTransaction(
-                id: draft.id ?? UUID(),
+                id: recordedID,
                 kind: draft.kind.positionKind,
                 price: draft.price,
                 quantity: draft.quantity,
                 date: draft.date,
-                fee: draft.fee
+                fee: draft.fee,
+                fundingSource: funding,
+                brokerageAccountID: draft.kind == .buy && store.brokerageAccountsEnabled ? store.activeBrokerageAccountID : nil
             ))
-            guard let updated = store.item(for: symbol) else {
-                return .failure(.itemNotOnWatchlist)
+            guard let updated = store.item(for: symbol), updated.transactions.contains(where: { $0.id == recordedID }) else {
+                return .failure(.invalidPrice)
             }
             return .success(mutation(
                 positionSnapshot(updated),
@@ -666,7 +674,7 @@ public struct AgentWatchlistCommands {
             transactions: item.transactions.map(transactionSnapshot),
             quote: quote.map(quoteSnapshot),
             thesis: item.thesis,
-            plans: item.plans.map { planSnapshot($0, quote: quote, transactions: item.transactions) },
+            plans: item.plans.map { planSnapshot($0, quote: quote, transactions: store.transactionsForPlan(item.symbol)) },
             tradingProfile: item.tradingProfile,
             events: item.events,
             positionAllocation: item.positionAllocation
@@ -726,7 +734,9 @@ public struct AgentWatchlistCommands {
             fee: transaction.fee,
             note: transaction.note,
             review: transaction.review,
-            planExecution: transaction.planExecution
+            planExecution: transaction.planExecution,
+            fundingSource: transaction.fundingSource,
+            brokerageAccountID: transaction.brokerageAccountID
         )
     }
 

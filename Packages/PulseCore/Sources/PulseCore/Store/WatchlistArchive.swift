@@ -18,7 +18,8 @@ import Foundation
 /// adds a verification condition array on a position portion, which is the
 /// condition list a block of actually-held shares is judged against; version 11
 /// scopes the archive to one brokerage account; version 12 adds a
-/// per-portion brokerage-account label.
+/// per-portion brokerage-account label; version 13 records the account selected
+/// for a buy on its transaction; version 14 identifies the source account of a cross-account plan fill.
 /// Exports use the oldest version that describes their data. Everything except `market` and
 /// `code` is optional. An entry as small as `{"market": "us", "code": "NVDA"}`
 /// imports correctly; the display name is then filled in by the first quote
@@ -26,7 +27,7 @@ import Foundation
 public struct WatchlistArchive: Codable, Sendable, Equatable {
     public static let formatIdentifier = "pulse.watchlist"
     /// Newest archive schema. Older data keeps its existing version.
-    public static let currentVersion = 12
+    public static let currentVersion = 14
     private static let reviewVersion = 3
     private static let tradingMetadataVersion = 4
     private static let allocationVersion = 5
@@ -43,6 +44,8 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
     /// The version a per-portion brokerage-account label requires. This is the
     /// newest field, so it outranks every other reason to raise the version.
     static let brokerageTagVersion = 12
+    private static let transactionAccountVersion = 13
+    private static let planSourceAccountVersion = 14
     private static let unixReferenceOffset: TimeInterval = 978_307_200
 
     public var format: String
@@ -226,7 +229,9 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         // change's before/after snapshots still counts: a payload that dropped
         // the change log's copy would lose the attribution the user recorded.
         let hasBrokerageTag = entries.contains { $0.positionAllocation?.hasBrokerageTagMetadata == true }
-        version = hasBrokerageTag ? Self.brokerageTagVersion
+        version = transactions.contains { $0.planExecution?.sourceAccountID != nil } ? Self.planSourceAccountVersion
+            : transactions.contains { $0.brokerageAccountID != nil } ? Self.transactionAccountVersion
+            : hasBrokerageTag ? Self.brokerageTagVersion
             : brokerageAccountID != nil ? Self.brokerageAccountVersion
             : hasVerification ? Self.verificationVersion
             : hasEventOrCheckpoint ? Self.eventCheckpointVersion
@@ -382,6 +387,12 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         }
         let entries = archive.lists.flatMap(\.entries)
         let transactions = entries.flatMap { $0.transactions ?? [] }
+        if archive.version < planSourceAccountVersion, transactions.contains(where: { $0.planExecution?.sourceAccountID != nil }) {
+            throw DecodingFailure.unsupportedVersion(planSourceAccountVersion)
+        }
+        if archive.version < transactionAccountVersion, transactions.contains(where: { $0.brokerageAccountID != nil }) {
+            throw DecodingFailure.unsupportedVersion(transactionAccountVersion)
+        }
         // A per-portion brokerage-account label is the newest field, and it can
         // sit in the live portion list or only in a change's before/after
         // snapshots. A payload claiming an older version while carrying either

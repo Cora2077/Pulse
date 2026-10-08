@@ -447,6 +447,7 @@ public enum PositionAllocationError: LocalizedError, Equatable {
     case sourceQuantityExceeded
     case noSingleTransferToRestore
     case sameFundingSource
+    case incompatibleAccountFunding
     case invalidConditions
     case tooManyConditions(limit: Int)
     /// A caller asked to clear a card's account label by passing the value it
@@ -478,6 +479,7 @@ public enum PositionAllocationError: LocalizedError, Equatable {
         case .sourceQuantityExceeded: chinese ? "同一买入来源的核对份额不能超过原始买入数量。" : "Reconciled shares from a buy cannot exceed its original quantity."
         case .noSingleTransferToRestore: chinese ? "这笔转移已不能单独撤销。" : "This transfer can no longer be undone by itself."
         case .sameFundingSource: chinese ? "这张份额卡已经使用该资金来源。" : "This portion already uses that funding source."
+        case .incompatibleAccountFunding: chinese ? "只有融资账户可以标记融资资金；请先核对账户与资金来源。" : "Margin funding requires the financing account. Check the account and funding attribution first."
         case .invalidConditions: chinese ? "持有判断无效：标题不能为空，且每条判断的编号必须唯一。" : "Invalid conditions: every condition needs a title and a unique id."
         case let .tooManyConditions(limit): chinese ? "持有判断最多 \(limit) 条。" : "At most \(limit) conditions are supported."
         case .retiredPool: chinese
@@ -531,22 +533,41 @@ public enum PositionVerificationBadge: String, Sendable, Equatable, CaseIterable
 
 }
 
+/// Facts that prevent treating allocation cards as the live position.
+public enum PositionAllocationReconciliationIssue: Equatable, Sendable {
+    case missingAllocation
+    case invalidAllocation
+    case ledgerChanged
+    case sourceMismatch
+    case quantityMismatch(actual: Double, allocated: Double)
+}
+
 extension WatchItem {
-    public var positionAllocationNeedsReconciliation: Bool {
+    public var positionAllocationReconciliationIssues: [PositionAllocationReconciliationIssue] {
         let quantity = positionQuantity
-        guard supportsPosition, quantity.isFinite, quantity > 0 else { return false }
-        guard let positionAllocation else { return true }
-        guard positionAllocation.isValid else { return true }
-        guard positionAllocation.basisFingerprint == PositionAllocation.basisFingerprint(for: self) else {
-            return true
+        guard supportsPosition, quantity.isFinite, quantity > 0 else { return [] }
+        guard let positionAllocation else { return [.missingAllocation] }
+        var issues: [PositionAllocationReconciliationIssue] = []
+        if !positionAllocation.isValid { issues.append(.invalidAllocation) }
+        if positionAllocation.basisFingerprint != PositionAllocation.basisFingerprint(for: self) {
+            issues.append(.ledgerChanged)
         }
-        guard positionAllocation.hasMatchingSources(for: self) else { return true }
-        guard positionAllocation.portions.allSatisfy({ $0.quantity.isFinite && $0.quantity > 0 }) else {
-            return true
+        if positionAllocation.isValid && !positionAllocation.hasMatchingSources(for: self) {
+            issues.append(.sourceMismatch)
         }
         let allocated = positionAllocation.portions.reduce(0) { $0 + $1.quantity }
-        return !allocated.isFinite
-            || abs(allocated - quantity) > PositionAllocation.quantityTolerance(allocated, quantity)
+        if allocated.isFinite {
+            if abs(allocated - quantity) > PositionAllocation.quantityTolerance(allocated, quantity) {
+                issues.append(.quantityMismatch(actual: quantity, allocated: allocated))
+            }
+        } else if !issues.contains(.invalidAllocation) {
+            issues.append(.invalidAllocation)
+        }
+        return issues
+    }
+
+    public var positionAllocationNeedsReconciliation: Bool {
+        !positionAllocationReconciliationIssues.isEmpty
     }
 }
 

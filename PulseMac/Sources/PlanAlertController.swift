@@ -182,7 +182,7 @@ final class PlanAlertController: NSObject, UNUserNotificationCenterDelegate {
         let portfolio = store.brokeragePortfolio(for: account)
         let followed = Set(portfolio.groups.flatMap(\.symbols))
         return portfolio.items.filter { followed.contains($0.symbol) }.flatMap { item in
-            item.plans.map { TradePlanEntry(symbol: item.symbol, plan: $0, transactions: item.transactions) }
+            item.plans.map { TradePlanEntry(symbol: item.symbol, plan: $0, transactions: store.transactionsForPlan(item.symbol, account: account)) }
         }
     }
 

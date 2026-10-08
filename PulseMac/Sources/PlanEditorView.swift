@@ -239,17 +239,28 @@ struct PlanEditorView: View {
     /// The intended funding. It is a plan *intention*, so it never touches a
     /// transaction: recording the fill asks separately what money actually
     /// moved, and answers can differ without anything being inconsistent.
+    ///
+    /// The picker is absent on the mengmeng account, which buys with its own
+    /// money by construction: there is no intention left to express, and the
+    /// `.own` a new plan is saved with is written by `save()` rather than asked
+    /// for here. The account still reaches the row wherever the row exists, so
+    /// its wording — 担保品 inside the financing account — is the one the
+    /// account actually uses.
+    @ViewBuilder
     private var fundingPicker: some View {
-        // Copy comes from the shared pool helpers rather than a new
-        // localizable key: this batch may not touch the string catalogs, and a
-        // missing key would surface as the raw identifier.
-        FundingSourcePickerRow(
-            label: poolCopy("拟用资金", "Intended funding"),
-            selection: $fundingSource,
-            help: poolCopy("计划意向，不产生成交；记录成交时会再确认实际资金来源。",
-                           "An intention, not a fill. Recording the fill confirms the money that actually moved."),
-            onChange: { clearError() }
-        )
+        if draftAccount != .mengmeng {
+            // Copy comes from the shared pool helpers rather than a new
+            // localizable key: this batch may not touch the string catalogs, and
+            // a missing key would surface as the raw identifier.
+            FundingSourcePickerRow(
+                label: poolCopy("拟用资金", "Intended funding"),
+                selection: $fundingSource,
+                help: poolCopy("计划意向，不产生成交；记录成交时会先选择账户，再确认买入方式。",
+                               "An intention, not a fill. Recording the fill confirms the money that actually moved."),
+                onChange: { clearError() },
+                account: draftAccount
+            )
+        }
     }
 
     // MARK: - Conditions
@@ -701,7 +712,14 @@ struct PlanEditorView: View {
         plan.positionPool = positionPool
         // `nil` means the plan never carried a funding intention; picking
         // "未标注" stores the explicit `.unmarked` that says the user cleared it.
+        //
+        // A new plan written into an account that does not ask the question is
+        // `.own`, which is what that account buys with. It is a statement about
+        // a plan being created, never about one already on disk: an edit writes
+        // back the intention it loaded, so correcting a price cannot become the
+        // moment a stored `.margin` (or a deliberate clearing) is rewritten.
         plan.fundingSource = fundingSource
+            ?? (existingPlan == nil && kind == .buy && draftAccount == .mengmeng ? .own : nil)
         // An empty list is an explicit "no conditions"; a plan that never had
         // the field keeps `nil` so the two stay distinguishable.
         plan.conditions = conditions.isEmpty && existingPlan?.conditions == nil ? nil : conditions

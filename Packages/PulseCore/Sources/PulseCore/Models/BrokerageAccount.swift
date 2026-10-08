@@ -7,6 +7,19 @@ public enum BrokerageAccountID: String, Codable, Sendable, CaseIterable, Identif
     case financing
     case mengmeng
     public var id: String { rawValue }
+
+    /// New purchases require a named account and its supported buy method.
+    public var buyFundingSources: [PositionFundingSource] {
+        switch self {
+        case .unassigned: []
+        case .financing: [.own, .margin]
+        case .mengmeng: [.own]
+        }
+    }
+
+    public func permitsBuy(fundingSource: PositionFundingSource?) -> Bool {
+        fundingSource.map(buyFundingSources.contains) ?? false
+    }
 }
 
 /// An independently replayed ledger and its account-local watchlists/metadata.

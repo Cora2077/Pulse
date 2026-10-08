@@ -348,6 +348,18 @@ struct PositionPoolsView: View {
         _showsPlanRail = State(initialValue: tactical.showsPlanRail)
     }
 
+#if DEBUG
+    /// Render the actual conditional undo control without changing fixture data.
+    func withUndoRenderFixture(_ item: WatchItem) -> Self {
+        var view = self
+        if let allocation = item.positionAllocation {
+            view._undo = State(initialValue: UndoState(symbol: item.symbol, previous: allocation,
+                expectedRevision: allocation.revision))
+        }
+        return view
+    }
+#endif
+
     private var boardRecords: [BrokerageBoardItem] { BrokerageBoardReader.records(store: appState.watchlist) }
     private var allBoardItems: [WatchItem] { boardRecords.map(\.item) }
     private var allPlanEntries: [TradePlanEntry] {
@@ -498,15 +510,21 @@ struct PositionPoolsView: View {
     /// Allocations that cannot be trusted yet: a stale revision, a mismatched
     /// ledger, a conflict, or no allocation at all on a live position.
     private var allocationReviewCount: Int {
-        eligibleItems.filter { item in
-            guard item.positionQuantity > 0 else { return false }
-            guard let allocation = item.positionAllocation else { return true }
-            let total = allocation.portions.reduce(0) { $0 + $1.quantity }
-            return item.positionAllocationNeedsReconciliation
-                || abs(total - item.positionQuantity) > PositionAllocation.quantityTolerance(total, item.positionQuantity)
-                || !allocation.hasMatchingSources(for: item)
-                || conflictedSymbols.contains(item.symbol)
+        allocationRecordsInScope.filter { record in
+            record.item.positionQuantity > 0
+                && (record.item.positionAllocationNeedsReconciliation || conflictedSymbols.contains(record.item.symbol))
         }.count
+    }
+
+    private var allocationRecordsInScope: [BrokerageBoardItem] {
+        boardRecords.filter { record in
+            let item = record.item
+            guard item.supportsPosition, item.hasPositionHistory || item.positionAllocation != nil,
+                  currencyFilter == "*" || currencyCode(for: item.symbol) == currencyFilter else { return false }
+            guard let accountFilter else { return true }
+            return record.accountID == accountFilter
+                || item.positionAllocation?.portions.contains(where: { ($0.brokerageAccountID ?? record.accountID) == accountFilter }) == true
+        }
     }
 
     /// A currency whose active buys exceed — or cannot be compared to — its
@@ -589,22 +607,23 @@ struct PositionPoolsView: View {
             ))
         }
 
-        let staleItems = eligibleItems.filter { item in
-            guard let allocation = item.positionAllocation else { return false }
-            return item.positionQuantity > 0 && allocationNeedsReview(item, allocation)
+        let staleRecords = allocationRecordsInScope.filter { record in
+            guard let allocation = record.item.positionAllocation else { return false }
+            return record.item.positionQuantity > 0 && allocationNeedsReview(record.item, allocation)
         }
-        for item in staleItems {
+        for record in staleRecords {
+            let item = record.item
             items.append(TacticalWarning(
-                id: "reconcile-\(item.symbol.description)",
+                id: "reconcile-\(record.accountID.rawValue)-\(item.symbol.description)",
                 systemImage: "arrow.triangle.2.circlepath",
-                text: poolCopy("\(item.symbol.displayCode) 的分账需要与账本核对。",
-                               "\(item.symbol.displayCode)'s allocation needs review against the ledger."),
+                text: poolCopy("\(item.symbol.displayCode) · \(AccountIdentity.title(record.accountID))：\(allocationReviewDescription(item: item))。",
+                               "\(item.symbol.displayCode) · \(AccountIdentity.title(record.accountID)): \(allocationReviewDescription(item: item))."),
                 actionTitle: poolCopy("核对", "Reconcile"),
                 help: poolCopy("按当前账本数量重新确认各池份额", "Reconfirm each pool's shares against the ledger"),
-                action: { activeSheet = .reconcile(item.symbol) }
+                action: { openSheet(.reconcile(item.symbol), in: record.accountID) }
             ))
         }
-        let missing = eligibleItems.filter { $0.positionAllocation == nil && $0.positionQuantity > 0 }
+        let missing = allocationRecordsInScope.filter { $0.item.positionAllocation == nil && $0.item.positionQuantity > 0 }
         if !missing.isEmpty {
             items.append(TacticalWarning(
                 id: "reconcile-missing",
@@ -816,7 +835,7 @@ struct PositionPoolsView: View {
     /// plan's intended pool.
     private func lineage(for entry: TradePlanEntry) -> (fills: [PlanFillLineage], unattributed: Double) {
         guard let item = storedItem(entry.symbol, in: entry.accountID ?? appState.watchlist.activeBrokerageAccountID) else { return ([], 0) }
-        let transactions = item.materializedTransactions()
+        let transactions = appState.watchlist.transactionsForPlan(entry.symbol, account: entry.accountID)
         let matched = transactions.filter { transaction in
             transaction.planExecution?.planID == entry.plan.id
                 || (entry.plan.filledTransactionID != nil && entry.plan.filledTransactionID == transaction.id)
@@ -834,7 +853,14 @@ struct PositionPoolsView: View {
         var usedPortionIDs = Set<UUID>()
         var fills: [PlanFillLineage] = []
         for transaction in matched {
-            let owned = portions.filter { $0.origin.transactionID == transaction.id }
+            let owner = transaction.brokerageAccountID ?? entry.accountID ?? appState.watchlist.activeBrokerageAccountID
+            let held = storedItem(entry.symbol, in: owner)
+            let ownerPortions = held.flatMap { value in
+                value.positionAllocation.flatMap { allocation in
+                    allocationNeedsReview(value, allocation) || conflictedSymbols.contains(value.symbol) ? nil : allocation.portions
+                }
+            } ?? []
+            let owned = ownerPortions.filter { $0.origin.transactionID == transaction.id && $0.quantity > 0 }
             usedPortionIDs.formUnion(owned.map(\.id))
             fills.append(PlanFillLineage(transaction: transaction, portions: owned))
         }
@@ -887,8 +913,7 @@ struct PositionPoolsView: View {
             let item = record.item
             guard currencyFilter == "*" || currencyCode(for: item.symbol) == currencyFilter,
                   item.positionQuantity > 0, let allocation = item.positionAllocation else { return [] }
-            let needsReview = item.positionAllocationNeedsReconciliation || !allocation.isValid
-                || !allocation.hasMatchingSources(for: item) || conflictedSymbols.contains(item.symbol)
+            let needsReview = item.positionAllocationNeedsReconciliation || conflictedSymbols.contains(item.symbol)
             return allocation.portions.compactMap { portion in
                 let card = PortionCard(item: item, portion: portion, needsReview: needsReview, ownerAccountID: record.accountID)
                 return accountFilter == nil || card.accountID == accountFilter ? card : nil
@@ -909,7 +934,11 @@ struct PositionPoolsView: View {
         // still shown, just marked as not part of the rehearsal. Reading the
         // active-plan list here would drop exactly those cards, which is the
         // opposite of what the preview is meant to demonstrate.
-        let symbols = Set((accountFilter == nil ? filteredItems.map(\.symbol) : cards.map(\.symbol)) + boardEntries.map(\.symbol))
+        let ownedSymbols = boardRecords.filter {
+            $0.accountID == accountFilter && $0.item.hasPositionHistory
+                && (currencyFilter == "*" || currencyCode(for: $0.item.symbol) == currencyFilter)
+        }.map { $0.item.symbol }
+        let symbols = Set((accountFilter == nil ? filteredItems.map(\.symbol) : cards.map(\.symbol) + ownedSymbols) + boardEntries.map(\.symbol))
         return Dictionary(grouping: allBoardItems.filter { symbols.contains($0.symbol) }, by: \.symbol).values.compactMap(\.first).sorted {
             $0.resolvedDisplayName.localizedStandardCompare($1.resolvedDisplayName) == .orderedAscending
         }
@@ -964,6 +993,26 @@ struct PositionPoolsView: View {
         return PositionPool.activeCases.filter { $0 != .unassigned || hasUnassignedContent }
     }
 
+    /// The purposes a real holding may be transferred *to*, given where it sits
+    /// now: the actual holding roles, in display order, minus the card's own.
+    ///
+    /// Unassigned is a backlog state, not a holding role, so it is never a
+    /// destination here even though `PositionPool.activeCases` lists it — that
+    /// list describes what a purpose may *be*, not where real shares may go.
+    /// Legacy portions that still read as unassigned keep being drawn in the
+    /// unassigned column and can still be moved *into* an actual role; this
+    /// helper only removes unassigned as a *target*. Plans are unaffected: a
+    /// plan may still be unfiled, which is a different operation with its own
+    /// path (`assignPlan`).
+    ///
+    /// Every holding-transfer entry point reads this one list — the card menu,
+    /// the split sheet, the drag resolver — so they cannot disagree about what
+    /// is on offer. Internal so the DEBUG harness can assert the real policy.
+    static func holdingTransferDestinations(from source: PositionPool) -> [PositionPool] {
+        let current = source.effectivePurpose
+        return [.strategic, .tactical].filter { $0 != current }
+    }
+
     static func planTotals(_ plans: [TradePlanEntry], currency: (SymbolID) -> String) -> [(currency: String, buy: Double, sell: Double)] {
         let valid = plans.filter { $0.plan.status == .active && $0.plan.price.isFinite && $0.plan.price > 0
             && $0.remainingQuantity.isFinite && $0.remainingQuantity > 0 && $0.remainingEstimatedAmount.isFinite }
@@ -1010,14 +1059,24 @@ struct PositionPoolsView: View {
     }
 
     // The pre-measured unassigned destination wins when it overlaps a pool.
-    private func target(at point: CGPoint, symbol: SymbolID, excluding pool: PositionPool? = nil) -> PoolDropTarget? {
+    //
+    // `allowsUnassigned` is false for a real holding drag: unassigned is a
+    // backlog state, not a holding role, so the fallback bar's frame — and the
+    // unassigned column's, when it is visible — must resolve to no target at
+    // all. Plan drags keep the default, because unfiling a plan is a real
+    // operation with its own path.
+    private func target(at point: CGPoint, symbol: SymbolID, excluding pool: PositionPool? = nil,
+                        allowsUnassigned: Bool = true) -> PoolDropTarget? {
         guard viewportFrame?.contains(point) == true else { return nil }
         let unassigned = PoolDropTarget(pool: .unassigned, symbol: nil)
-        if pool != .unassigned, dropFrames[unassigned]?.contains(point) == true {
+        if allowsUnassigned, pool != .unassigned, dropFrames[unassigned]?.contains(point) == true {
             return unassigned
         }
         return dropFrames.first { entry in
-            entry.key.pool != pool && (entry.key.symbol == nil || entry.key.symbol == symbol) && entry.value.contains(point)
+            entry.key.pool != pool
+                && (allowsUnassigned || entry.key.pool != .unassigned)
+                && (entry.key.symbol == nil || entry.key.symbol == symbol)
+                && entry.value.contains(point)
         }?.key
     }
 
@@ -1118,11 +1177,16 @@ struct PositionPoolsView: View {
                                 }
                                 // Measure the hidden destination before pickup so a
                                 // fast mouse-up can resolve it without a layout race.
+                                //
+                                // Plan drags only: the bar registers an unassigned
+                                // drop target, and unassigned is not a destination a
+                                // real holding may reach. Drawing it during a holding
+                                // drag would offer a target the commit path refuses.
                                 .overlay(alignment: .bottom) {
-                                    if isUnassignedHidden, !isPreviewing {
+                                    if isUnassignedHidden, !isPreviewing, planDrag != nil {
                                         unassignedDropBar
-                                            .opacity(drag != nil || planDrag != nil ? 1 : 0)
-                                            .accessibilityHidden(drag == nil && planDrag == nil)
+                                            .opacity(1)
+                                            .accessibilityHidden(false)
                                     }
                                 }
                             }
@@ -1215,12 +1279,12 @@ struct PositionPoolsView: View {
     // MARK: - Header
 
     private var wideHeader: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             titleBlock
             Spacer(minLength: 12)
             stancePicker
-            undoButton
             viewModePicker
+            undoButton
             railToggle
             currencyPicker.frame(width: 118)
         }
@@ -1273,7 +1337,9 @@ struct PositionPoolsView: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(width: 140)
+        .controlSize(.regular)
+        .frame(width: 196)
+        .fixedSize(horizontal: true, vertical: true)
         .help(copy("预演只做估算，不改动真实持仓", "The rehearsal only estimates; it never changes real positions"))
     }
 
@@ -1313,9 +1379,11 @@ struct PositionPoolsView: View {
             } label: {
                 Label(copy("撤销上次操作", "Undo last change"), systemImage: "arrow.uturn.backward")
                     .labelStyle(.iconOnly)
-                    .frame(width: PoolMetric.minimumTarget, height: PoolMetric.minimumTarget)
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 28, height: 24)
                     .contentShape(Rectangle())
             }
+            .buttonStyle(.borderless)
             .disabled(isWriteBlocked
                       || storedItem(undo.symbol, in: undo.accountID)?.positionAllocation?.revision != undo.expectedRevision)
             .help(isWriteBlocked
@@ -1332,7 +1400,9 @@ struct PositionPoolsView: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(width: 170)
+        .controlSize(.regular)
+        .frame(width: 144)
+        .fixedSize(horizontal: true, vertical: true)
     }
 
     private var railToggle: some View {
@@ -1721,7 +1791,7 @@ struct PositionPoolsView: View {
             code: card.symbol.displayCode,
             detail: "\(poolQuantity(card.quantity)) \(copy("份额", "shares"))",
             isSplit: state.shift,
-            fundingTag: fundingSourceTagTitle(card.portion.fundingSource),
+            fundingTag: fundingSourceTagTitle(card.portion.fundingSource, account: card.accountID),
             source: state.sourceFrame,
             grip: PositionPoolDragGeometry.normalizedGrip(state.grabOffset, sourceSize: state.sourceFrame.size))
     }
@@ -1734,7 +1804,8 @@ struct PositionPoolsView: View {
             code: entry.symbol.displayCode,
             detail: "\(entry.plan.kind == .buy ? copy("买入", "Buy") : copy("卖出", "Sell")) \(PriceFormatter.price(entry.plan.price, market: entry.symbol.market)) × \(poolQuantity(entry.remainingQuantity))",
             isSplit: false,
-            fundingTag: entry.plan.fundingSource == .margin ? poolCopy("拟融资", "Planned margin") : nil,
+            fundingTag: entry.accountID != .mengmeng && entry.plan.fundingSource == .margin
+                ? poolCopy("拟融资", "Planned margin") : nil,
             side: entry.plan.kind,
             source: moving.source,
             grip: PositionPoolDragGeometry.normalizedGrip(moving.grip, sourceSize: moving.source.size))
@@ -2096,12 +2167,26 @@ struct PositionPoolsView: View {
 
     private func symbolRow(_ item: WatchItem) -> some View {
         let rowCards = cards.filter { $0.symbol == item.symbol }
-        let allocated = item.positionAllocation?.portions.reduce(0) { $0 + $1.quantity } ?? 0
-        let consistent = item.positionAllocation != nil && item.positionQuantity > 0
-            && abs(allocated - item.positionQuantity) <= PositionAllocation.quantityTolerance(allocated, item.positionQuantity)
-        let needsReview = item.positionAllocationNeedsReconciliation || !consistent
-            || item.positionAllocation.map { !$0.hasMatchingSources(for: item) } == true
-            || conflictedSymbols.contains(item.symbol)
+        let records = boardRecords.filter { record in
+            guard record.item.symbol == item.symbol else { return false }
+            guard let accountFilter else { return true }
+            return record.accountID == accountFilter
+                || record.item.positionAccountQuantities(enclosingAccountID: record.accountID)[accountFilter] != nil
+                || rowCards.contains { $0.ownerAccountID == record.accountID }
+        }
+        let uncertainAttribution = accountFilter != nil && records.contains {
+            $0.item.positionAllocationNeedsReconciliation
+                && $0.accountID != accountFilter
+        }
+        let actual = records.reduce(0.0) { total, record in
+            if let accountFilter, !uncertainAttribution {
+                return total + (record.item.positionAccountQuantities(enclosingAccountID: record.accountID)[accountFilter] ?? 0)
+            }
+            return total + record.item.positionQuantity
+        }
+        let allocated = rowCards.reduce(0) { $0 + $1.quantity }
+        let reviewRecords = records.filter { $0.item.positionAllocationNeedsReconciliation }
+        let needsReview = !reviewRecords.isEmpty || conflictedSymbols.contains(item.symbol)
         return HStack(alignment: .top, spacing: 9) {
             VStack(alignment: .leading, spacing: 5) {
                 Button {
@@ -2112,17 +2197,24 @@ struct PositionPoolsView: View {
                 }
                 .buttonStyle(.plain)
                 Text(item.symbol.displayCode).font(PoolType.label.monospaced()).foregroundStyle(.secondary)
-                Text(copy("当前份额  \(poolQuantity(rowCards.reduce(0) { $0 + $1.quantity }))", "Shares  \(poolQuantity(rowCards.reduce(0) { $0 + $1.quantity }))"))
+                Text(uncertainAttribution
+                     ? copy("来源账本  \(poolQuantity(actual))", "Source ledger  \(poolQuantity(actual))")
+                     : copy("账本持仓  \(poolQuantity(actual))", "Ledger shares  \(poolQuantity(actual))"))
                     .font(PoolType.label.monospacedDigit()).foregroundStyle(.secondary)
-                if !item.hasPositionHistory {
+                Text(copy("分配卡合计  \(poolQuantity(allocated))", "Allocation cards  \(poolQuantity(allocated))"))
+                    .font(PoolType.label.monospacedDigit()).foregroundStyle(needsReview ? Color.orange : Color.secondary)
+                if !records.contains(where: { $0.item.hasPositionHistory }) {
                     Text(copy("尚无实仓", "No holding yet")).font(PoolType.label).foregroundStyle(.secondary)
                 } else if needsReview {
-                    Text(item.positionQuantity <= 0
-                         ? copy("空头或已平仓 · 暂不可转移", "Short or closed · moves unavailable")
-                         : copy("需要核对 · 已分配 \(poolQuantity(allocated))", "Review · allocated \(poolQuantity(allocated))"))
+                    Text(uncertainAttribution
+                         ? copy("账户标签待核对", "Account labels need review")
+                         : allocationReviewDescription(item: reviewRecords.first?.item ?? item,
+                                                       syncConflict: conflictedSymbols.contains(item.symbol)))
                         .font(PoolType.labelMedium).foregroundStyle(.orange)
-                    if item.positionQuantity > 0, item.positionAllocation != nil {
-                        Button(copy("核对分配…", "Reconcile…")) { openSheet(.reconcile(item.symbol), in: rowCards.first?.ownerAccountID ?? appState.watchlist.activeBrokerageAccountID) }
+                    ForEach(reviewRecords.filter { $0.item.positionAllocation != nil }, id: \.accountID) { record in
+                        Button(copy("核对\(AccountIdentity.title(record.accountID))分配…", "Reconcile \(AccountIdentity.title(record.accountID))…")) {
+                            openSheet(.reconcile(item.symbol), in: record.accountID)
+                        }
                             .controlSize(.small)
                             .disabled(isWriteBlocked)
                             .help(isWriteBlocked ? copy("切回当前后可操作", "Switch back to Current to act") : "")
@@ -2451,7 +2543,7 @@ struct PositionPoolsView: View {
             Text(copy("计划意图", "Intent"))
                 .font(PoolType.label).foregroundStyle(.secondary)
             Text(planIntentTitle(entry)).font(PoolType.labelMedium)
-            PlannedFundingTag(source: entry.plan.fundingSource)
+            PlannedFundingTag(source: entry.plan.fundingSource, account: entry.accountID ?? .unassigned)
             Spacer(minLength: 0)
             Text(railDestinationLabel(entry))
                 .font(PoolType.label)
@@ -2912,6 +3004,7 @@ struct PositionPoolsView: View {
                     PoolReconciliationSheet(
                         item: item,
                         allocation: allocation,
+                        account: appState.watchlist.activeBrokerageAccountID,
                         onCancel: { activeSheet = nil },
                         onSuccess: { activeSheet = nil; undo = nil },
                         isWriteBlocked: isWriteBlocked
@@ -2981,6 +3074,8 @@ struct PositionPoolsView: View {
 
     private func commitTransfer(_ card: PortionCard, quantity: Double, to destination: PositionPool, reason: String) {
         guard !isWriteBlocked else { return }
+        // Match the holding menu and drag resolver, including stale callbacks.
+        guard Self.holdingTransferDestinations(from: card.pool).contains(destination) else { return }
         guard let allocation = storedItem(card.symbol, in: card.ownerAccountID)?.positionAllocation,
               allocation.revision == card.allocationRevision,
               !conflictedSymbols.contains(card.symbol),
@@ -3037,7 +3132,8 @@ struct PositionPoolsView: View {
             drag = shifted
         }
         motion.move(to: value.location,
-                    target: target(at: value.location, symbol: card.symbol, excluding: card.pool))
+                    target: target(at: value.location, symbol: card.symbol, excluding: card.pool,
+                                   allowsUnassigned: false))
     }
 
     private func startDrag(_ card: PortionCard, value: DragGesture.Value) -> DragState? {
@@ -3058,7 +3154,8 @@ struct PositionPoolsView: View {
         let partial = NSEvent.modifierFlags.contains(.shift)
         // Resolve the final position, then leave the drag path in this same call.
         // Every guard runs before anything is cleared or committed.
-        let destination = target(at: value.location, symbol: card.symbol, excluding: card.pool)
+        let destination = target(at: value.location, symbol: card.symbol, excluding: card.pool,
+                                 allowsUnassigned: false)
         let current = storedItem(card.symbol, in: card.ownerAccountID)
         let isCurrent = current?.positionAllocation?.revision == card.allocationRevision
             && !conflictedSymbols.contains(card.symbol)
@@ -3241,17 +3338,24 @@ struct PortionCardFace: View {
                     .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                     .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                 // A real annotation earns a tag. `nil` renders nothing, so an
-                // old portion never grows a repeated "未标注" row.
-                FundingSourceTag(source: card.portion.fundingSource)
+                // old portion never grows a repeated "未标注" row. The account is
+                // the card's own displayed one — not the active ledger, which may
+                // be a different account entirely while a filter is on.
+                FundingSourceTag(source: card.portion.fundingSource, account: card.accountID)
                 Spacer(minLength: 0)
                 Menu {
-                    ForEach(PositionPool.activeCases.filter { $0 != card.pool }, id: \.self) { target in
+                    ForEach(PositionPoolsView.holdingTransferDestinations(from: card.pool), id: \.self) { target in
                         Button(copy("全部转入\(target.title)", "Move all to \(target.title)")) { onWholeTransfer(target) }
                     }
                     Divider()
                     Button(copy("部分转移…", "Split quantity…")) { onPartialTransfer(nil) }
                     Divider()
-                    Button(copy("标记资金来源…", "Mark funding source…")) { onMarkFunding() }
+                    // Mengmeng buys are ordinary by construction: the account
+                    // admits no funding method, so there is nothing this entry
+                    // could label there. Every other action stays.
+                    if offersFundingMark {
+                        Button(copy("标记资金来源…", "Mark funding source…")) { onMarkFunding() }
+                    }
                     Button(copy("编辑验证…", "Edit verification…")) { onEditVerification() }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -3274,9 +3378,10 @@ struct PortionCardFace: View {
                     .font(PoolType.label).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 if card.needsReview {
-                    Text(card.item.positionAllocationNeedsReconciliation
-                         ? copy("待核对", "Review") : copy("同步冲突", "Sync conflict"))
+                    Text(allocationReviewDescription(item: card.item, syncConflict: !card.item.positionAllocationNeedsReconciliation))
                         .font(PoolType.labelMedium).foregroundStyle(.orange)
+                        .lineLimit(1)
+                        .help(allocationReviewDescription(item: card.item, syncConflict: !card.item.positionAllocationNeedsReconciliation))
                         .padding(.horizontal, 6).padding(.vertical, 3)
                         .background(Color.orange.opacity(0.1), in: Capsule())
                 } else {
@@ -3299,6 +3404,11 @@ struct PortionCardFace: View {
             // nil when there are no conditions.
             HStack(spacing: 5) {
                 PositionAccountTag(account: card.accountID, isEnabled: !isWriteBlocked && !card.needsReview, onSelect: onSetAccount)
+                if card.accountID != card.ownerAccountID {
+                    Text(copy("账本：\(AccountIdentity.title(card.ownerAccountID))", "Ledger: \(AccountIdentity.title(card.ownerAccountID))"))
+                        .font(PoolType.label).foregroundStyle(.secondary)
+                        .help(copy("这张卡的账户标签与成交账本不同；修改标签不会迁移成交记录。", "This card's account label differs from its trade ledger. Changing the label does not move trades."))
+                }
                 Text(originText)
                     .font(PoolType.label).foregroundStyle(.secondary).lineLimit(1)
                 if let verificationBadge {
@@ -3336,13 +3446,33 @@ struct PortionCardFace: View {
             including: isDraggable ? .all : .none
         )
         .accessibilityElement(children: .contain)
-        .accessibilityAction(named: Text(copy("部分转移…", "Split quantity…"))) { if canWrite { onPartialTransfer(nil) } }
-        .accessibilityAction(named: Text(copy("标记资金来源…", "Mark funding source…"))) { if canWrite { onMarkFunding() } }
-        .accessibilityAction(named: Text(copy("编辑验证…", "Edit verification…"))) { if canWrite { onEditVerification() } }
-        .accessibilityAction(named: Text(copy("移动到未分配", "Move to Unassigned"))) { if canWrite { onWholeTransfer(.unassigned) } }
-        .accessibilityAction(named: Text(copy("移动到战略底仓", "Move to Strategic"))) { if canWrite { onWholeTransfer(.strategic) } }
-        .accessibilityAction(named: Text(copy("移动到机动仓", "Move to Tactical"))) { if canWrite { onWholeTransfer(.tactical) } }
+        .accessibilityActions {
+            Button(copy("部分转移…", "Split quantity…")) { if canWrite { onPartialTransfer(nil) } }
+            Button(copy("编辑验证…", "Edit verification…")) { if canWrite { onEditVerification() } }
+            // The whole-transfer actions are emitted only for purposes the card
+            // may actually move to, so assistive technology is never offered a
+            // destination the commit path would refuse. Unassigned is
+            // deliberately absent: it is a backlog state, not a holding role.
+            if PositionPoolsView.holdingTransferDestinations(from: card.pool).contains(.strategic) {
+                Button(copy("移动到战略底仓", "Move to Strategic")) { if canWrite { onWholeTransfer(.strategic) } }
+            }
+            if PositionPoolsView.holdingTransferDestinations(from: card.pool).contains(.tactical) {
+                Button(copy("移动到机动仓", "Move to Tactical")) { if canWrite { onWholeTransfer(.tactical) } }
+            }
+            // The funding action follows the visible menu exactly: a hidden entry
+            // that still answered to assistive technology would be the same control
+            // under a different name.
+            if offersFundingMark {
+                Button(copy("标记资金来源…", "Mark funding source…")) { if canWrite { onMarkFunding() } }
+            }
+        }
     }
+
+    /// Whether this card offers a funding annotation at all. The account that
+    /// would receive the label is the card's own displayed account — the same
+    /// one the tag and the write path use — so a card whose label says Mengmeng
+    /// cannot offer a choice its ledger would refuse.
+    private var offersFundingMark: Bool { card.accountID != .mengmeng }
 
     /// Every entry point on the card — menu, drag, accessibility — reads this
     /// single gate, so preview cannot reach a single ledger write.
@@ -3378,7 +3508,21 @@ private struct PoolPlanEditorSheet: View {
     }
 }
 
-private struct PoolTransferSheet: View {
+/// Splits one real portion and moves the named quantity into an actual holding
+/// role.
+///
+/// The destination starts deliberately empty. A sheet that pre-picked a target
+/// would let a stray Return move real shares into a purpose nobody chose, so
+/// the placeholder is the only initial state and only an explicit pick enables
+/// the confirmation. Unassigned is never on offer: it is a backlog state, not a
+/// holding role, and legacy unassigned shares enter this sheet as its *source*,
+/// not as its target.
+///
+/// Internal rather than private so the DEBUG harness can instantiate the actual
+/// production form instead of a look-alike.
+struct PoolTransferSheet: View {
+    private static let placeholderTag: PositionPool? = nil
+
     let item: WatchItem
     let portion: PositionPortion
     let allocation: PositionAllocation
@@ -3389,16 +3533,21 @@ private struct PoolTransferSheet: View {
     var isWriteBlocked = false
 
     @Environment(AppState.self) private var appState
-    @State private var destination: PositionPool
-    @State private var amount = ""
+    /// Optional by design: `nil` is the placeholder, not a hidden default.
+    @State private var destination: PositionPool?
+    @State private var amount: String
     @State private var reason = ""
     @State private var errorMessage: String?
 
+    /// `initialAmount` exists for the synthetic native renders, which need the
+    /// field pre-filled to exercise the enabled confirmation. Production callers
+    /// leave it empty and type the quantity, exactly as before.
     init(item: WatchItem, portion: PositionPortion, allocation: PositionAllocation,
          initialDestination: PositionPool?,
          onCancel: @escaping () -> Void,
          onSuccess: @escaping (PositionAllocation, PositionAllocation) -> Void,
-         isWriteBlocked: Bool = false) {
+         isWriteBlocked: Bool = false,
+         initialAmount: String = "") {
         self.item = item
         self.portion = portion
         self.allocation = allocation
@@ -3406,14 +3555,28 @@ private struct PoolTransferSheet: View {
         self.onCancel = onCancel
         self.onSuccess = onSuccess
         self.isWriteBlocked = isWriteBlocked
-        _destination = State(initialValue: initialDestination ?? PositionPool.activeCases.first { $0 != portion.pool.effectivePurpose } ?? .unassigned)
+        // A destination handed in by a drag is accepted only when it is one this
+        // sheet would itself offer. Anything else — unassigned, the current
+        // role, a retired purpose, or a stale drop that no longer matches the
+        // portion — falls back to the placeholder rather than silently aiming
+        // real shares somewhere the user did not choose.
+        let offered = Self.destinations(for: portion)
+        _destination = State(initialValue: initialDestination.flatMap { offered.contains($0) ? $0 : nil })
+        _amount = State(initialValue: initialAmount)
+    }
+
+    /// The offered destinations for the portion captured when the sheet opened.
+    private static func destinations(for portion: PositionPortion) -> [PositionPool] {
+        PositionPoolsView.holdingTransferDestinations(from: portion.pool.effectivePurpose)
     }
 
     private var parsedAmount: Double? { Double(amount.trimmingCharacters(in: .whitespacesAndNewlines)) }
     private var canSubmit: Bool {
-        guard let parsedAmount, parsedAmount.isFinite, parsedAmount > 0,
+        guard let destination,
+              PositionPoolsView.holdingTransferDestinations(from: portion.pool.effectivePurpose).contains(destination),
+              let parsedAmount, parsedAmount.isFinite, parsedAmount > 0,
               parsedAmount <= portion.quantity,
-              destination != portion.pool else { return false }
+              destination != portion.pool.effectivePurpose else { return false }
         return true
     }
 
@@ -3429,7 +3592,10 @@ private struct PoolTransferSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: amount) { _, _ in errorMessage = nil }
             Picker(copy("目标用途", "Destination"), selection: $destination) {
-                ForEach(PositionPool.activeCases.filter { $0 != portion.pool.effectivePurpose }, id: \.self) { pool in Text(pool.title).tag(pool) }
+                Text(copy("请选择目标用途", "Choose destination")).tag(Self.placeholderTag).disabled(true)
+                ForEach(Self.destinations(for: portion), id: \.self) { pool in
+                    Text(pool.title).tag(Optional(pool))
+                }
             }
             TextField(copy("转移原因（选填）", "Reason (optional)"), text: $reason, axis: .vertical)
                 .textFieldStyle(.roundedBorder).lineLimit(2...4)
@@ -3450,7 +3616,10 @@ private struct PoolTransferSheet: View {
         // The sheet is already withheld in preview; this is the last line of
         // defence if a stale presentation ever survives a mode switch.
         guard !isWriteBlocked else { return }
-        guard let amount = parsedAmount, canSubmit else { return }
+        guard let amount = parsedAmount, canSubmit, let destination else { return }
+        // Keep the submit path consistent with the picker; revision validation
+        // in the store rejects a portion that changed while this sheet was open.
+        guard Self.destinations(for: portion).contains(destination) else { return }
         guard !appState.folderSync.positionAllocationConflicts.contains(where: { $0.symbol == item.symbol }) else {
             errorMessage = copy("该标的刚出现同步冲突，请先核对两个版本。", "This symbol now has a sync conflict. Review both candidates first.")
             return
@@ -3499,6 +3668,7 @@ struct FundingSourceSheet: View {
     /// state rather than a fabricated `.unmarked`; choosing `.unmarked` then
     /// reads as the explicit clearing it is.
     @State private var source: PositionFundingSource?
+    @State private var draftAccount: BrokerageAccountID?
     @State private var amount: String
     @State private var reason = ""
     @State private var errorMessage: String?
@@ -3527,12 +3697,25 @@ struct FundingSourceSheet: View {
         return value
     }
 
+    /// The account this marking will land on: the card's own label when it has
+    /// one, otherwise the ledger the draft was opened against. Mengmeng holds no
+    /// funding annotation and only ever makes ordinary buys, so this sheet
+    /// neither offers a choice nor accepts a submission there.
+    private var targetAccount: BrokerageAccountID {
+        portion.brokerageAccountID ?? draftAccount ?? .unassigned
+    }
+
+    private var offersFundingChoice: Bool {
+        targetAccount != .mengmeng
+    }
+
     /// A partial annotation must be a real, positive number of shares that
     /// fits inside this card. Zero and negatives are refused rather than
     /// silently clamped, and the tolerance mirrors the store's own comparison
     /// so "the whole card" cannot be rejected by a floating-point hair.
     private var canSubmit: Bool {
-        guard !isWriteBlocked, let source else { return false }
+        guard !isWriteBlocked, offersFundingChoice, let source,
+              draftAccount == appState.watchlist.activeBrokerageAccountID else { return false }
         guard let parsedAmount, parsedAmount.isFinite, parsedAmount > 0 else { return false }
         let tolerance = PositionAllocation.quantityTolerance(parsedAmount, portion.quantity)
         guard parsedAmount <= portion.quantity + tolerance else { return false }
@@ -3541,6 +3724,7 @@ struct FundingSourceSheet: View {
         // from blocking a change the store would accept — explicitly clearing a
         // legacy card to `.unmarked` is a real edit.
         return portion.fundingSource != source
+            && (source != .margin || targetAccount == .financing)
     }
 
     private var isPartial: Bool {
@@ -3556,13 +3740,19 @@ struct FundingSourceSheet: View {
                 Text("\(item.resolvedDisplayName) · \(item.symbol.displayCode) · \(copy("当前", "Current")) \(poolQuantity(portion.quantity))")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            Picker(copy("资金来源", "Funding source"), selection: $source) {
-                Text(fundingSourceTitle(nil)).tag(nil as PositionFundingSource?)
-                ForEach(fundingSourcePickerOptions, id: \.self) { value in
-                    Text(fundingSourceTitle(value)).tag(Optional(value))
+            // Mengmeng buys are ordinary buys: there is no method to choose, so
+            // the control is withheld rather than shown with one real option.
+            if offersFundingChoice {
+                Picker(copy("资金来源", "Funding source"), selection: $source) {
+                    Text(fundingSourceTitle(nil, account: targetAccount)).tag(nil as PositionFundingSource?)
+                    ForEach(fundingSourcePickerOptions.filter {
+                        $0 != .margin || targetAccount == .financing || portion.fundingSource == .margin
+                    }, id: \.self) { value in
+                        Text(fundingSourceTitle(value, account: targetAccount)).tag(Optional(value))
+                    }
                 }
+                .onChange(of: source) { _, _ in errorMessage = nil }
             }
-            .onChange(of: source) { _, _ in errorMessage = nil }
             HStack {
                 Text(copy("标记数量", "Quantity to mark"))
                     .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -3595,10 +3785,19 @@ struct FundingSourceSheet: View {
         }
         .padding(22).frame(width: 410)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { if draftAccount == nil { draftAccount = appState.watchlist.activeBrokerageAccountID } }
     }
 
     private func submit() {
         guard !isWriteBlocked else { return }
+        // A draft opened before a retag, or surviving an account switch, can
+        // point at Mengmeng. Refuse it here rather than letting the store turn an
+        // account-dependent write into a source-dependent one.
+        guard offersFundingChoice else {
+            errorMessage = copy("萌萌账号的买入不使用资金来源标注。",
+                                "Mengmeng buys are ordinary and carry no funding annotation.")
+            return
+        }
         guard let parsedAmount, let source, canSubmit else { return }
         // A conflict that landed while the sheet was open makes the revision
         // below stale; refuse here so the message is about the conflict rather
@@ -3625,7 +3824,7 @@ struct FundingSourceSheet: View {
     }
 }
 
-private struct PoolReconciliationSheet: View {
+struct PoolReconciliationSheet: View {
     let item: WatchItem
     let allocation: PositionAllocation
     let onCancel: () -> Void
@@ -3636,14 +3835,20 @@ private struct PoolReconciliationSheet: View {
     @State private var values: [UUID: String]
     @State private var reason = ""
     @State private var errorMessage: String?
+    /// The ledger this draft was opened against. Quantities describe one
+    /// account's holding, so a save must land on that same ledger — switching
+    /// accounts mid-edit keeps the draft visible but never redirects the write.
+    @State private var frozenAccount: BrokerageAccountID
 
-    init(item: WatchItem, allocation: PositionAllocation, onCancel: @escaping () -> Void,
+    init(item: WatchItem, allocation: PositionAllocation, account: BrokerageAccountID,
+         onCancel: @escaping () -> Void,
          onSuccess: @escaping () -> Void, isWriteBlocked: Bool = false) {
         self.item = item
         self.allocation = allocation
         self.onCancel = onCancel
         self.onSuccess = onSuccess
         self.isWriteBlocked = isWriteBlocked
+        _frozenAccount = State(initialValue: account)
         _values = State(initialValue: Dictionary(uniqueKeysWithValues: allocation.portions.map { ($0.id, poolQuantityInput($0.quantity)) }))
     }
 
@@ -3651,6 +3856,7 @@ private struct PoolReconciliationSheet: View {
         var result: [UUID: Double] = [:]
         for portion in allocation.portions {
             let text = (values[portion.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: ",", with: "")
             let number = text.isEmpty ? 0 : (Double(text) ?? .nan)
             guard number.isFinite, number >= 0 else { return nil }
             result[portion.id] = number
@@ -3658,14 +3864,70 @@ private struct PoolReconciliationSheet: View {
         return result
     }
 
-    private var enteredTotal: Double { parsed?.values.reduce(0, +) ?? .nan }
-    private var residual: Double { max(0, item.positionQuantity - enteredTotal) }
+    private var trimmedReason: String { reason.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// The core validates `reasonRequired`, so a blank field is filled with a
+    /// fixed audit string rather than blocking the save: the reason is optional
+    /// for the user, not for the store.
+    private var submittedReason: String {
+        trimmedReason.isEmpty
+            ? copy("仓位分配核对", "Position allocation reconciled")
+            : trimmedReason
+    }
+
+    private var enteredTotal: Double {
+        guard let parsed else { return .nan }
+        return allocation.portions.reduce(0) { $0 + (parsed[$1.id] ?? 0) }
+    }
+    private var residual: Double {
+        guard enteredTotal.isFinite else { return .nan }
+        return max(0, item.positionQuantity - enteredTotal)
+    }
     private var hasInvalidSources: Bool {
         !allocation.hasMatchingSources(for: item)
     }
+    private var hasAccountSwitched: Bool {
+        appState.watchlist.activeBrokerageAccountID != frozenAccount
+    }
+    /// Over the ledger's holding, by more than the store's own tolerance. The
+    /// comparison is written as an excess so a sum near `Double.greatestFiniteMagnitude`
+    /// cannot overflow on the way to the check.
+    private var exceedsHeld: Bool {
+        guard parsed != nil else { return false }
+        let total = enteredTotal
+        guard total.isFinite else { return true }
+        let held = item.positionQuantity
+        guard held.isFinite else { return true }
+        let excess = total - held
+        return excess > PositionAllocation.quantityTolerance(total, held)
+    }
+    /// Why the save is unavailable, in the order the user should read them. The
+    /// optional reason is deliberately absent: a blank field is never a block.
+    private var validationMessage: String? {
+        if parsed == nil || !enteredTotal.isFinite {
+            return copy("份额必须是 0 或更大的有效数字。", "Quantities must be finite numbers of 0 or more.")
+        }
+        if !item.positionQuantity.isFinite || item.positionQuantity <= 0 {
+            return copy("当前账本没有可核对的持仓。", "The ledger has no holding to reconcile.")
+        }
+        if exceedsHeld {
+            return copy("合计份额超过当前账本总量 \(poolQuantity(item.positionQuantity))。",
+                        "The total exceeds the ledger holding of \(poolQuantity(item.positionQuantity)).")
+        }
+        if hasAccountSwitched {
+            return copy("当前账号已切换。请切回该账号账本后再保存，草稿会保留。",
+                        "The selected account changed. Switch back to that ledger to save; your draft is kept.")
+        }
+        if isWriteBlocked {
+            return copy("预演模式下不会写入。", "Preview mode does not write.")
+        }
+        return nil
+    }
     private var canSubmit: Bool {
-        guard let parsed, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        return parsed.values.reduce(0, +) <= item.positionQuantity
+        guard !isWriteBlocked, !hasAccountSwitched else { return false }
+        guard let parsed, enteredTotal.isFinite, item.positionQuantity.isFinite,
+              item.positionQuantity > 0 else { return false }
+        return !exceedsHeld && parsed.count == allocation.portions.count
     }
 
     var body: some View {
@@ -3677,7 +3939,7 @@ private struct PoolReconciliationSheet: View {
             }
             if hasInvalidSources {
                 Label(
-                    copy("买入来源与当前账本不一致。保存会保留你确认的数量、用途、备注与历史；来源将更新为当前账本快照，旧成交价不再作为精确来源展示。", "A buy source no longer matches the ledger. Saving preserves your confirmed quantities, pools, notes, and history; sources become a current ledger snapshot, so old trade prices are no longer shown as exact origins."),
+                    copy("买入来源与当前账本不一致。份额仍可逐行编辑；保存会保留你确认的数量、用途、备注与历史，来源将更新为当前账本快照，旧成交价不再作为精确来源展示。", "A buy source no longer matches the ledger. Quantities stay editable per row; saving preserves your confirmed quantities, pools, notes, and history. Sources become a current ledger snapshot, so old trade prices are no longer shown as exact origins."),
                     systemImage: "exclamationmark.triangle.fill"
                 )
                 .font(.system(size: 11)).foregroundStyle(.orange)
@@ -3685,37 +3947,55 @@ private struct PoolReconciliationSheet: View {
             }
             ScrollView {
                 VStack(spacing: 8) {
-                    ForEach(allocation.portions) { portion in
-                        HStack {
+                    ForEach(Array(allocation.portions.enumerated()), id: \.element.id) { index, portion in
+                        VStack(alignment: .leading, spacing: 3) {
                             // The funding annotation is part of what the user
                             // is confirming: reconciliation fixes quantities,
                             // and if it also rebuilds sources the row must say
                             // what it is starting from rather than letting the
-                            // composition change invisibly.
-                            Text("\(portion.pool.title) · \(originLabel(portion)) · \(fundingSourceTitle(portion.fundingSource))")
+                            // composition change invisibly. Mengmeng has no
+                            // funding axis, so its rows end at the origin.
+                            Text(fundingReconciliationLine(portion))
                                 .font(.system(size: 10)).lineLimit(1)
-                            Spacer(minLength: 8)
-                            TextField("0", text: valueBinding(portion.id))
-                                .textFieldStyle(.roundedBorder).frame(width: 110)
-                                .multilineTextAlignment(.trailing)
+                            HStack {
+                                Text(copy("份额", "Quantity"))
+                                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                                Spacer(minLength: 8)
+                                TextField("0", text: valueBinding(portion.id))
+                                    .textFieldStyle(.roundedBorder).frame(width: 110)
+                                    .multilineTextAlignment(.trailing)
+                                    .accessibilityLabel(copy("第 \(index + 1) 行份额，当前 \(values[portion.id] ?? "")",
+                                                             "Row \(index + 1) quantity, currently \(values[portion.id] ?? "")"))
+                            }
                         }
                     }
                 }
             }
-            .frame(maxHeight: 250)
+            .frame(maxHeight: 220)
+            Text(copy("数量填 0 可移除这张分配卡，不会删除成交记录。",
+                      "Set quantity to 0 to remove this allocation card; trades are kept."))
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Text(copy("录入份额", "Entered portions"))
                 Spacer()
-                Text(poolQuantity(enteredTotal)).monospacedDigit()
+                Text(enteredTotal.isFinite ? poolQuantity(enteredTotal) : "—").monospacedDigit()
             }
             HStack {
                 Text(copy("剩余记入未分配快照", "Residual to unassigned snapshot"))
                 Spacer()
-                Text(poolQuantity(residual)).monospacedDigit().foregroundStyle(.secondary)
+                Text(residual.isFinite ? poolQuantity(residual) : "—").monospacedDigit().foregroundStyle(.secondary)
             }
-            TextField(copy("核对原因", "Reason for reconciliation"), text: $reason)
+            TextField(copy("核对原因（可选）", "Reason (optional)"), text: $reason)
                 .textFieldStyle(.roundedBorder)
-            if let errorMessage { Text(errorMessage).font(.system(size: 10)).foregroundStyle(.red) }
+                .onChange(of: reason) { _, _ in errorMessage = nil }
+            if hasAccountSwitched { AccountDraftNotice(account: frozenAccount) }
+            if let message = validationMessage ?? errorMessage {
+                Text(message)
+                    .font(.system(size: 10))
+                    .foregroundStyle(validationMessage == nil ? .red : .orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Button(copy("取消", "Cancel"), action: onCancel).keyboardShortcut(.cancelAction)
                 Spacer()
@@ -3723,7 +4003,22 @@ private struct PoolReconciliationSheet: View {
                     .keyboardShortcut(.defaultAction).disabled(!canSubmit)
             }
         }
-        .padding(22).frame(width: 500, height: 470)
+        .padding(22).frame(width: 500, height: 500)
+    }
+
+    /// The card's own account label when it carries one, otherwise the ledger
+    /// that encloses it — never a guess at a new owner.
+    private func portionAccountLabel(_ portion: PositionPortion) -> String {
+        AccountIdentity.title(portion.brokerageAccountID ?? frozenAccount)
+    }
+
+    /// A reconciliation row's description. The funding suffix is dropped for a
+    /// Mengmeng row, whose only method is the ordinary buy: printing a source
+    /// beside it would invent an axis that account does not have.
+    private func fundingReconciliationLine(_ portion: PositionPortion) -> String {
+        let head = "\(portion.pool.title) · \(portionAccountLabel(portion)) · \(originLabel(portion))"
+        guard (portion.brokerageAccountID ?? frozenAccount) != .mengmeng else { return head }
+        return "\(head) · \(fundingSourceTitle(portion.fundingSource, account: portion.brokerageAccountID ?? frozenAccount))"
     }
 
     private func valueBinding(_ id: UUID) -> Binding<String> {
@@ -3737,18 +4032,28 @@ private struct PoolReconciliationSheet: View {
 
     private func submit() {
         guard !isWriteBlocked else { return }
+        // The ledger guard is re-checked here and not only in `canSubmit`: a
+        // switch can land between the last render and the click, and the write
+        // must never follow it to a different account.
+        guard appState.watchlist.activeBrokerageAccountID == frozenAccount else {
+            errorMessage = copy("当前账号已切换。请切回该账号账本后再保存，草稿会保留。",
+                                "The selected account changed. Switch back to that ledger to save; your draft is kept.")
+            return
+        }
         guard canSubmit else { return }
         guard !appState.folderSync.positionAllocationConflicts.contains(where: { $0.symbol == item.symbol }) else {
             errorMessage = copy("该标的刚出现同步冲突，请先核对两个版本。", "This symbol now has a sync conflict. Review both candidates first.")
             return
         }
         do {
-            _ = try appState.watchlist.reconcilePositionAllocation(
-                symbol: item.symbol,
-                quantities: parsed ?? [:],
-                reason: reason.trimmingCharacters(in: .whitespacesAndNewlines),
-                expectedRevision: allocation.revision
-            )
+            _ = try appState.watchlist.withBrokerageAccount(frozenAccount) {
+                try appState.watchlist.reconcilePositionAllocation(
+                    symbol: item.symbol,
+                    quantities: parsed ?? [:],
+                    reason: submittedReason,
+                    expectedRevision: allocation.revision
+                )
+            }
             onSuccess()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -3881,6 +4186,24 @@ private extension String {
 
 private func positionPoolCopy(_ chinese: String, _ english: String) -> String {
     PulseLocalization.currentLanguageIdentifier.hasPrefix("zh") ? chinese : english
+}
+
+private func allocationReviewDescription(item: WatchItem, syncConflict: Bool = false) -> String {
+    let issues = item.positionAllocationReconciliationIssues
+    if let mismatch = issues.first(where: {
+        if case .quantityMismatch = $0 { return true }
+        return false
+    }), case let .quantityMismatch(actual, allocated) = mismatch {
+        let difference = allocated - actual
+        return difference > 0
+            ? positionPoolCopy("分配多 \(poolQuantity(difference)) 份", "Overallocated by \(poolQuantity(difference))")
+            : positionPoolCopy("少分配 \(poolQuantity(-difference)) 份", "Underallocated by \(poolQuantity(-difference))")
+    }
+    if issues.contains(.sourceMismatch) { return positionPoolCopy("买入来源待核对", "Buy sources need review") }
+    if issues.contains(.invalidAllocation) { return positionPoolCopy("分配记录无效", "Invalid allocation") }
+    if issues.contains(.ledgerChanged) { return positionPoolCopy("账本变更待核对", "Ledger changed") }
+    if issues.contains(.missingAllocation) { return positionPoolCopy("尚未分配", "Allocation missing") }
+    return syncConflict ? positionPoolCopy("同步冲突", "Sync conflict") : positionPoolCopy("待核对", "Review")
 }
 
 private func poolQuantity(_ value: Double) -> String {

@@ -74,6 +74,7 @@ final class AppState {
     /// match this install against Longbridge's authorization-management list before
     /// revoking anything there.
     private(set) var longbridgeOAuthClientID: String?
+    @ObservationIgnored private var longbridgeOAuthFingerprint: String?
     var longbridgeHasDelayedQuoteAccess: Bool { !longbridgeDelayedMarkets.isEmpty }
     var longbridgeNeedsAuthorizationRefresh: Bool {
         longbridgeAuthState == .oauth && longbridgeHasDelayedQuoteAccess
@@ -122,11 +123,12 @@ final class AppState {
         let sectorLimits = SectorLimitSettings(defaults: storeDefaults)
         // Image-rendering self-tests do not need live credentials. Skipping Keychain access
         // also keeps the headless test from waiting on an authorization prompt.
-        let authContext: (LongbridgeAuth?, LongbridgeAuthState) = isOfflinePreview
+        let authContext: StoredLongbridgeAuth = isOfflinePreview
             || CommandLine.arguments.contains("--share-selftest")
-            ? (nil, .none)
+            ? StoredLongbridgeAuth(auth: nil, state: .none)
             : Self.loadLongbridgeAuth()
-        let (auth, authState) = authContext
+        let auth = authContext.auth
+        let authState = authContext.state
         let longbridge = LongbridgeProvider(auth: auth)
         let fuyaoKey = isOfflinePreview || CommandLine.arguments.contains("--share-selftest")
             ? nil
@@ -180,16 +182,15 @@ final class AppState {
         self.fuyao = fuyao
         self.fuyaoConfigured = fuyaoKey != nil
         self.longbridgeAuthState = authState
-        self.longbridgeOAuthClientID = authState == .oauth
-            ? LongbridgeCredentialStore.loadOAuthTokens()?.clientID
-            : nil
+        self.longbridgeOAuthClientID = authContext.clientID
+        self.longbridgeOAuthFingerprint = authContext.clientFingerprint
         // Distinct registration names keep the two clients tellable-apart in
         // Longbridge's authorization-management list; a user once revoked the active
         // production grant because both entries were just called "Pulse". Existing
         // registrations keep their original name until they re-register.
         self.longbridgeOAuth = LongbridgeOAuthAuthenticator(
             redirectScheme: Bundle.main.bundleIdentifier ?? "app.pulse.mac",
-            clientName: Bundle.main.bundleIdentifier == "app.pulse.mac.dev" ? "Pulse Dev" : "Pulse"
+            clientName: AppBrand.displayName
         )
         self.engine = RefreshEngine(provider: provider, store: market, watchlist: watchlist,
                                     pollOverrides: settings.providerPollIntervals)
@@ -257,14 +258,22 @@ final class AppState {
     }
 
     /// OAuth tokens win over pasted API-key credentials when both exist.
-    private static func loadLongbridgeAuth() -> (LongbridgeAuth?, LongbridgeAuthState) {
+    private struct StoredLongbridgeAuth {
+        let auth: LongbridgeAuth?
+        let state: LongbridgeAuthState
+        var clientID: String? = nil
+        var clientFingerprint: String? = nil
+    }
+
+    private static func loadLongbridgeAuth() -> StoredLongbridgeAuth {
         if let tokens = LongbridgeCredentialStore.loadOAuthTokens() {
-            return (.oauth(Self.makeOAuthSession(tokens)), .oauth)
+            return StoredLongbridgeAuth(auth: .oauth(Self.makeOAuthSession(tokens)), state: .oauth,
+                clientID: tokens.clientID, clientFingerprint: tokens.clientFingerprint)
         }
         if let credentials = LongbridgeCredentialStore.load(), credentials.isComplete {
-            return (.apiKey(credentials), .apiKey)
+            return StoredLongbridgeAuth(auth: .apiKey(credentials), state: .apiKey)
         }
-        return (nil, .none)
+        return StoredLongbridgeAuth(auth: nil, state: .none)
     }
 
     /// Save and read back an independent snapshot before classifying legacy holdings.
@@ -368,6 +377,7 @@ final class AppState {
         LongbridgeCredentialStore.clear() // OAuth replaces any pasted API-key credentials
         longbridgeAuthState = .oauth
         longbridgeOAuthClientID = tokens.clientID
+        longbridgeOAuthFingerprint = tokens.clientFingerprint
         // Connecting is the strongest possible "turn this on" signal — flip the
         // switch that was locked off while unconfigured.
         setProvider(LongbridgeProvider.providerID, enabled: true)
@@ -391,6 +401,7 @@ final class AppState {
         LongbridgeCredentialStore.clearOAuthTokens() // manual credentials replace OAuth
         longbridgeAuthState = .apiKey
         longbridgeOAuthClientID = nil
+        longbridgeOAuthFingerprint = nil
         setProvider(LongbridgeProvider.providerID, enabled: true)
         await refreshLongbridgeQuoteAccess()
     }
@@ -400,7 +411,7 @@ final class AppState {
         do {
             try await longbridge.validateConnection()
         } catch {
-            await longbridge.updateAuth(Self.loadLongbridgeAuth().0)
+            await longbridge.updateAuth(Self.loadLongbridgeAuth().auth)
             throw error
         }
     }
@@ -442,6 +453,7 @@ final class AppState {
         longbridgeDelayedMarkets = []
         longbridgeDowngradedMarkets = []
         longbridgeOAuthClientID = nil
+        longbridgeOAuthFingerprint = nil
         Task {
             await longbridge.updateAuth(nil)
         }
@@ -480,7 +492,7 @@ final class AppState {
             })
 
             let packageKeys = packages.map(\.key).filter { !$0.isEmpty }.sorted()
-            guard let fingerprint = LongbridgeCredentialStore.loadOAuthTokens()?.clientFingerprint else {
+            guard let fingerprint = longbridgeOAuthFingerprint else {
                 longbridgeDowngradedMarkets = []
                 Self.longbridgeLogger.notice(
                     "Quote access packages=\(packageKeys.joined(separator: ","), privacy: .public) auth=api-key"
@@ -600,7 +612,7 @@ final class AppState {
     }
 
     var menuBarText: String {
-        guard let item = menuBarItem else { return "Pulse" }
+        guard let item = menuBarItem else { return AppBrand.name }
         guard let quote = market.quote(for: item.symbol) else {
             return shortName(for: item)
         }

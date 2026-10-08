@@ -736,6 +736,12 @@ private struct AccountCard: View {
     @State private var hovering = false
     @State private var showsBreakdown = false
 
+    /// Mengmeng buys are ordinary by construction, so its card has no funding
+    /// split to disclose: the toggle and the breakdown are both withheld, while
+    /// the aggregate planned-buy figure and the cash/holding composition stay.
+    /// This reads the card's own account, never a global selection.
+    private var offersFundingBreakdown: Bool { account != .mengmeng }
+
     private enum AccountCardError: Error { case refused }
 
     private var row: BrokerageAccountOverviewRow {
@@ -757,7 +763,7 @@ private struct AccountCard: View {
         VStack(alignment: .leading, spacing: 8) {
             identityRow
             moneyRow
-            if showsBreakdown { breakdownRow }
+            if showsBreakdown && offersFundingBreakdown { breakdownRow }
             compositionBar
             actionRow
         }
@@ -838,7 +844,7 @@ private struct AccountCard: View {
                     .foregroundStyle(.orange)
             }
 
-            if row.plannedBuy > 0 {
+            if row.plannedBuy > 0 && offersFundingBreakdown {
                 Button {
                     showsBreakdown.toggle()
                 } label: {
@@ -874,10 +880,14 @@ private struct AccountCard: View {
     /// own / margin / unmarked are three different answers to "where will this
     /// money come from", and the card keeps them apart. It never guesses how
     /// much borrowing is available: these are the user's own annotations.
+    ///
+    /// The `.own` row is named through the same account-aware helper the rest of
+    /// the funding language uses — 担保品 inside the financing account, 普通买入
+    /// elsewhere — so one stored value does not acquire two vocabularies.
     private var breakdownRow: some View {
         VStack(alignment: .leading, spacing: 3) {
             if row.ownBuy > 0 {
-                breakdownLine(overviewCopy("自有资金", "Own capital"), row.ownBuy, .secondary)
+                breakdownLine(fundingSourceTitle(.own, account: account), row.ownBuy, .secondary)
             }
             if row.marginBuy > 0 {
                 breakdownLine(overviewCopy("融资", "Margin"), row.marginBuy, .orange)

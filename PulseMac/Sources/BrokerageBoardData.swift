@@ -44,7 +44,7 @@ enum BrokerageBoardReader {
                 TradePlanEntry(
                     symbol: record.item.symbol,
                     plan: plan,
-                    transactions: record.item.transactions,
+                    transactions: store.transactionsForPlan(record.item.symbol, account: record.accountID),
                     accountID: record.accountID
                 )
             }

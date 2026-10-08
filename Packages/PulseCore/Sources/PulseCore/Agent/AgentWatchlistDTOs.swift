@@ -178,6 +178,8 @@ public struct AgentTransaction: Hashable, Codable, Sendable {
     /// recorded from a plan. Lets a reader pair the trade back to the plan
     /// without re-deriving it from the current (possibly edited) plan.
     public var planExecution: TradePlanExecution?
+    public var fundingSource: PositionFundingSource?
+    public var brokerageAccountID: BrokerageAccountID?
 
     public init(
         id: UUID,
@@ -188,7 +190,9 @@ public struct AgentTransaction: Hashable, Codable, Sendable {
         fee: Double? = nil,
         note: String? = nil,
         review: PositionTransactionReview? = nil,
-        planExecution: TradePlanExecution? = nil
+        planExecution: TradePlanExecution? = nil,
+        fundingSource: PositionFundingSource? = nil,
+        brokerageAccountID: BrokerageAccountID? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -199,6 +203,8 @@ public struct AgentTransaction: Hashable, Codable, Sendable {
         self.note = note
         self.review = review
         self.planExecution = planExecution
+        self.fundingSource = fundingSource
+        self.brokerageAccountID = brokerageAccountID
     }
 }
 
@@ -249,6 +255,7 @@ public struct AgentTradeDraft: Sendable {
     public var fee: Double?
     public var date: Date
     public var id: UUID?
+    public var fundingSource: PositionFundingSource?
 
     public init(
         symbol: AgentSymbolRef,
@@ -257,7 +264,8 @@ public struct AgentTradeDraft: Sendable {
         price: Double,
         fee: Double? = nil,
         date: Date,
-        id: UUID? = nil
+        id: UUID? = nil,
+        fundingSource: PositionFundingSource? = nil
     ) {
         self.symbol = symbol
         self.kind = kind
@@ -266,6 +274,7 @@ public struct AgentTradeDraft: Sendable {
         self.fee = fee
         self.date = date
         self.id = id
+        self.fundingSource = fundingSource
     }
 }
 
