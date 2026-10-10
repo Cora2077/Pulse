@@ -324,8 +324,10 @@ enum WorkbenchSelfTest {
         expect(missingEvent?.verifications.map(\.id) == Array(portions.prefix(3)).map(\.id),
                "verification: missing event, pending, and due conditions must reach their exact portion")
         expect(missingEvent?.plans.isEmpty == true, "verification: a holding task must not invent a plan")
-        expect(missingEvent?.reasons.contains("持仓判断待验证") == true
-            && missingEvent?.reasons.contains("持仓判断需复查") == true,
+        let pendingTitle = PulseLocalization.localizedString("workbench.verification.pending")
+        let dueTitle = PulseLocalization.localizedString("workbench.verification.needsReview")
+        expect(pendingTitle != dueTitle && missingEvent?.reasons.contains(pendingTitle) == true
+            && missingEvent?.reasons.contains(dueTitle) == true,
             "verification: pending and due states must remain distinct")
         let liveEvent = board(items: [item], entries: [], events: [eventEntry(symbol, event)]).tasks.first
         expect(liveEvent?.verifications.count == 2, "verification: an unchanged future event must remain verified")

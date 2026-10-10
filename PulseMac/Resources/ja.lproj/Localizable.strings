@@ -465,8 +465,8 @@
 "plan.price" = "価格";
 "plan.note" = "メモ（任意）";
 "plan.status" = "状態";
-"plan.status.active" = "進行中";
-"plan.status.done" = "終了";
+"plan.status.active" = "約定待ち";
+"plan.status.done" = "待機停止";
 "plan.status.cancelled" = "取りやめ";
 "plan.delete" = "プランを削除";
 "plan.useCurrentPrice" = "クリックで現在値を入力";
@@ -475,14 +475,28 @@
 /* Trade plans: the cross-symbol overview and its entry point on the home bar */
 "plan.list.title" = "トレード計画";
 "plan.list.summary" = "全 %d 件 · %d 件が到達";
-"plan.list.empty" = "まだ計画がありません。銘柄の詳細ページで、どの価格で何をいくら売買するつもりかを書いておくと、その価格に届いたときにこのページが知らせます。";
+"plan.list.empty" = "取引計画はまだありません。右上の「新規計画」から追加できます。";
 "plan.menu.edit" = "価格と数量を変更";
 "plan.menu.drop" = "放棄として記録";
 "plan.menu.revive" = "待機に戻す";
+"plans.delete.title" = "この取引計画を削除しますか？";
+"plans.delete.help" = "削除されるのはこの計画だけです。記録済みの約定と保有は残ります。";
+"plans.delete.confirm" = "計画を削除";
+"plans.delete.changed" = "計画または口座が変化しました。キャンセルして確認を開き直してください。";
+"plans.delete.pendingDraft" = "保存されていない計画の変更は破棄されます。";
+"plans.delete.targetPrice" = "目標価格 %@";
+"plans.delete.remaining" = "残り %@";
 "plan.entry.empty" = "計画";
 "plan.entry.waiting" = "%d 件";
 "plan.entry.reached" = "%d 件 · %d 件が到達";
 "plan.entry.help" = "書いておいた計画のすべてと、その価格に届いているかどうか";
+
+/* Trade plans: the new-plan chooser sheet */
+"plan.newPlan" = "計画を追加";
+"plan.new.account" = "作成先の口座：%@";
+"plan.new.empty" = "コードか名称を入力して銘柄を検索します。ウォッチリストの銘柄は下に並びます。";
+"plan.new.noMatches" = "一致する銘柄がありません。名前またはコードをお試しください。";
+"plan.new.searchError" = "検索に失敗しました：%@";
 
 /* Trade plans: the editor's condition list and the plan workflow pages */
 "plan.conditions" = "条件";
@@ -1176,6 +1190,8 @@
 "trade.quantityUnitHelp" = "数量を %@ 単位で入力します。";
 "trade.quantityWithUnit" = "数量（%@）";
 "trade.unit.shares" = "株";
+"plans.unit.fund" = "口";
+"plans.unit.generic" = "単位";
 "main.holdings.costBasis.title" = "取得原価";
 "position.realizedPnLHelp" = "実現損益はコスト基準とは独立しています。希釈後コストでの保有損益に加算しないでください。同じ損益を二重計上することになります。";
 
@@ -1387,8 +1403,13 @@
 "plans.status.progress" = "約定済 %@/未約定 %@";
 "plans.noQuote" = "有効な気配値なし";
 "plans.action.recordFill" = "約定を記録";
+"plans.action.backfill" = "約定を後から記録";
+"plans.backfill.title" = "過去の約定を後から記録";
+"plans.backfill.help" = "実際に成立した価格・数量・日付を入力します。キャンセルや記録失敗で計画が待機に戻ることはありません。";
 "plans.action.logicHistory" = "根拠と変更履歴";
 "plans.action.snooze" = "価格アラートを 15 分保留";
+"plans.layout.showCompact" = "コンパクト表示に切り替え";
+"plans.layout.showComfortable" = "ゆったり表示に切り替え";
 
 "alerts.settings.planToggle" = "取引計画の価格アラート";
 "alerts.settings.sectorToggle" = "セクター露出の上限超過アラート";
@@ -1429,3 +1450,34 @@
 "journal.strategy.event" = "イベント";
 
 "main.holdings.empty.accountHint" = "現在は「%@」を表示しています。タイトル横で口座を切り替えられます。他の口座の保有銘柄は保持されています。";
+"settings.mcp.keychain.noninteractive" = "キーチェーンの認証が必要です。ローカルビルドではパスワード画面を表示せず、元のトークンを保持します。キーチェーンアクセスで FFF の権限を確認してください。";
+
+/* Plan state is derived from recorded fills, separate from stored intent. */
+"plans.display.waiting" = "約定待ち";
+"plans.display.filled" = "約定済み";
+"plans.display.abandoned" = "取りやめ";
+"plans.display.unrecorded" = "約定記録なし";
+"plans.display.incomplete" = "一部約定・停止";
+"plans.display.incompleteRecords" = "不完全な記録";
+"plans.display.waitingCount" = "約定待ち %d";
+"plans.display.historyCount" = "履歴 %d";
+"plans.display.noWaiting" = "約定待ちの計画はありません。";
+"plans.display.noHistory" = "履歴はまだありません。";
+"plans.display.actualFill" = "約定 %@ × %@";
+"plans.display.target" = "目標 %@ × %@";
+"plans.display.current" = "現在 %@";
+"plans.display.priceColumn" = "目標 / 平均約定価格";
+"plans.display.fillPrice" = "平均約定価格";
+"plans.display.missingFillHelp" = "約定記録が揃わないまま停止しました。実際の約定を後から記録できます。待機には戻りません。";
+"plans.display.recordHelp" = "実際の価格・数量・日付は「約定を記録」から保存してください。";
+"plans.display.saveBeforeFill" = "約定を記録する前に計画の変更を保存してください。";
+"plans.status.closedProgress" = "約定 %@ / 未約定 %@";
+
+/* Menu-bar panel height grip. */
+"popover.resize.help" = "上下にドラッグして高さを変更。ダブルクリックで自動の高さに戻します。";
+"popover.resize.label" = "パネルの高さを調整";
+"popover.resize.value" = "高さ %@ ポイント";
+
+/* Trade plans: backfill mode and an unidentifiable quote currency. */
+"plans.backfill.date" = "実際の約定日";
+"plans.unit.unknownCurrency" = "通貨不明";

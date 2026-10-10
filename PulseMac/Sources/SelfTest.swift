@@ -48,6 +48,26 @@ enum SelfTest {
     @MainActor
     static func runIfRequested() {
         #if DEBUG
+        if CommandLine.arguments.contains("--plan-usability-selftest") {
+            guard CommandLine.arguments.contains("--main-window-demo") else {
+                print("PULSE_PLAN_USABILITY_SELFTEST failed: isolated demo required")
+                fflush(stdout)
+                exit(1)
+            }
+            let passed = TradePlanUsabilitySelfTest.run()
+            fflush(stdout)
+            exit(passed ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--popover-resize-selftest") {
+            guard CommandLine.arguments.contains("--main-window-demo") else {
+                print("PULSE_POPOVER_RESIZE_SELFTEST failed: isolated demo required")
+                fflush(stdout)
+                exit(1)
+            }
+            let passed = PopoverResizeSelfTest.run()
+            fflush(stdout)
+            exit(passed ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--brokerage-account-selftest") {
             Task { @MainActor in
                 let passed = await BrokerageAccountSelfTest.run()
@@ -666,12 +686,28 @@ enum SelfTest {
         let expectedPinnedOrder = [apple.symbol, tesla.symbol, microsoft.symbol, ondas.symbol]
         let expectedMetricOrder = [microsoft.symbol, ondas.symbol, apple.symbol, tesla.symbol]
         let expectedCustomPinnedOrder = [tesla.symbol, apple.symbol, microsoft.symbol, ondas.symbol]
+        var metricReads = 0
+        let finiteOrder = WatchlistSortResolver.sortedSymbols(items: items, pinnedSymbols: []) { item in
+            metricReads += 1
+            switch item.symbol {
+            case apple.symbol: return .nan
+            case microsoft.symbol: return 5
+            case ondas.symbol: return .infinity
+            default: return nil
+            }
+        }
+        let changedOrder = WatchlistSortResolver.sortedSymbols(items: items, pinnedSymbols: []) { item in
+            item.symbol == apple.symbol ? 10 : value(for: item)
+        }
         let passed = pinnedOrder == expectedPinnedOrder
             && metricOrder == expectedMetricOrder
             && customPinnedOrder == expectedCustomPinnedOrder
+            && finiteOrder == [microsoft.symbol, apple.symbol, tesla.symbol, ondas.symbol]
+            && metricReads == items.count
+            && changedOrder == [apple.symbol, microsoft.symbol, ondas.symbol, tesla.symbol]
 
         if passed {
-            print("WATCHLIST_SORT_SELFTEST: ✅ pinned-first custom and metric ordering, missing values, stable ties")
+            print("WATCHLIST_SORT_SELFTEST: ✅ pinned/custom/metric ordering, live values, finite metrics, one read per item, stable ties")
         } else {
             print(
                 "WATCHLIST_SORT_SELFTEST: ❌ pinned=\(pinnedOrder) " +

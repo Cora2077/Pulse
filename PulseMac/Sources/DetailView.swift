@@ -1074,8 +1074,12 @@ struct DetailView: View {
 
     /// The active plan whose price condition holds right now, if any.
     private var reachedPlan: TradePlan? {
-        guard let quote, let item else { return nil }
-        return item.reachedPlan(at: quote.price)
+        guard let quote, TradingQuoteHealth.isCurrent(quote), let item else { return nil }
+        let transactions = appState.watchlist.transactionsForPlan(symbol)
+        return item.plans.first {
+            TradePlanEntry(symbol: symbol, plan: $0, transactions: transactions).displayState == .waiting
+                && $0.isReached(at: quote.price)
+        }
     }
 
     /// Lists at most `PlanSection.visibleRowCount` plans. The page is a fixed
@@ -1083,8 +1087,14 @@ struct DetailView: View {
     /// position hub makes with its six most recent transactions.
     @ViewBuilder
     private func planRows(_ item: WatchItem) -> some View {
-        ForEach(item.plans.prefix(PlanSection.visibleRowCount)) { plan in
-            planRow(plan)
+        let entries = item.plans.map {
+            TradePlanEntry(symbol: symbol, plan: $0, transactions: appState.watchlist.transactionsForPlan(symbol))
+        }
+        let ordered = entries.filter { $0.displayState == .waiting }
+            + entries.filter { $0.displayState != .waiting }
+                .sorted { ($0.lastFillDate ?? $0.plan.updatedAt) > ($1.lastFillDate ?? $1.plan.updatedAt) }
+        ForEach(ordered.prefix(PlanSection.visibleRowCount)) { entry in
+            planRow(entry)
         }
         if item.plans.count > PlanSection.visibleRowCount {
             Text(PulseLocalization.localizedString(
@@ -1096,9 +1106,26 @@ struct DetailView: View {
         }
     }
 
-    private func planRow(_ plan: TradePlan) -> some View {
-        let reached = quote.map { plan.isReached(at: $0.price) } ?? false
-        let isWaiting = plan.status == .active
+    private func planRow(_ entry: TradePlanEntry) -> some View {
+        let plan = entry.plan
+        let isWaiting = entry.displayState == .waiting
+        let reached = isWaiting && (quote.map { TradingQuoteHealth.isCurrent($0) && plan.isReached(at: $0.price) } ?? false)
+        let currencyCode = quote?.currencyCode ?? symbol.currencyCode
+        let instrumentType = item?.resolvedInstrumentType
+            ?? appState.sharedWatchlist.item(for: symbol)?.resolvedInstrumentType
+        // The row names real money and real units. A filled row shows what the
+        // linked trades actually paid; a waiting or settled row shows the
+        // plan's own target and the size still open, never a bare number that
+        // could be read as another market's currency or another asset's count.
+        let valueText = entry.displayState == .filled
+            ? entry.actualFillText(currencyCode: currencyCode, instrumentType: instrumentType) ?? "—"
+            : PlanValueText.priceQuantity(
+                price: plan.price,
+                quantity: isWaiting ? entry.remainingQuantity : plan.quantity,
+                symbol: symbol,
+                currencyCode: currencyCode,
+                instrumentType: instrumentType
+            )
         return Button {
             openPlanEditor(plan.id)
         } label: {
@@ -1114,60 +1141,37 @@ struct DetailView: View {
                     kind: plan.kind == .buy ? .buy : .sell,
                     palette: appState.palette
                 )
-                Text("\(PriceFormatter.price(plan.price, market: symbol.market)) × \(PriceFormatter.quantity(plan.quantity))")
+                Text(valueText)
                     .font(.system(size: 10.5, weight: .medium).monospacedDigit())
                     .foregroundStyle(isWaiting ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
-                    .strikethrough(plan.status == .cancelled, color: .secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                     .allowsTightening(true)
                 Spacer(minLength: 4)
-                planTrailingLabel(plan, reached: reached)
+                planTrailingLabel(entry, reached: reached)
             }
             .padding(.vertical, 3)
             .contentShape(Rectangle())
         }
         .buttonStyle(.pressable)
-        .help(plan.note ?? PulseLocalization.localizedString("plan.rowHelp"))
+        .help(entry.displayState == .stopped ? PulseLocalization.localizedString("plans.display.missingFillHelp")
+              : [entry.fillDateText, plan.note].compactMap { $0 }.joined(separator: " · "))
     }
 
     @ViewBuilder
-    private func planTrailingLabel(_ plan: TradePlan, reached: Bool) -> some View {
-        switch plan.status {
-        case .done:
-            planStatusLabel("plan.status.done")
-        case .cancelled:
-            planStatusLabel("plan.status.cancelled")
-        case .active:
+    private func planTrailingLabel(_ entry: TradePlanEntry, reached: Bool) -> some View {
+        if entry.displayState != .waiting {
+            PlanStatusBadge(entry: entry)
+        } else {
             HStack(spacing: 5) {
-                if reached {
-                    Text(PulseLocalization.localizedString("plan.reached"))
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(PlanSideStyle.color(for: plan.kind))
-                } else if let quote {
-                    Text(PulseLocalization.localizedString(
-                        "plan.gap",
-                        PriceFormatter.percentMagnitude(plan.gapPercent(from: quote.price))
-                    ))
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-                }
-                // The percentage says how far the price still has to travel;
-                // the money says what it is worth when it gets there. Both sit
-                // on the same line because the row has no height to spare.
-                if let cost = PlanCostText.string(for: plan, current: quote?.price, symbol: symbol) {
-                    Text(cost)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                Text(reached ? PulseLocalization.localizedString("plan.reached") : entry.displayStatusTitle)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(reached ? PlanSideStyle.color(for: entry.plan.kind) : .secondary)
+                if let cost = PlanCostText.string(for: entry.remainingPlan, current: quote?.price, symbol: symbol) {
+                    Text(cost).font(.system(size: 9)).foregroundStyle(.tertiary)
                 }
             }
         }
-    }
-
-    private func planStatusLabel(_ key: String) -> some View {
-        Text(PulseLocalization.localizedString(key))
-            .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(.tertiary)
     }
 
     private var planEmptyRow: some View {

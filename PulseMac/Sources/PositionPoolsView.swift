@@ -164,9 +164,14 @@ struct PositionPoolsView: View {
         case transfer(TransferDraft)
         case funding(FundingDraft)
         case verification(VerificationDraft)
+        case buySource(FundingDraft)
         case reconcile(SymbolID)
         case syncConflict(String)
         case plan(SymbolID, UUID?)
+        /// A brand-new sell plan bound to one exact position card. It carries
+        /// the portion id so the editor cannot fall back to "some card of this
+        /// symbol": the binding is the whole point of the sheet.
+        case portionPlan(SymbolID, UUID)
         case execution(SymbolID, UUID)
         case workflow(SymbolID, UUID)
         case scenario
@@ -176,9 +181,11 @@ struct PositionPoolsView: View {
             case .transfer(let draft): draft.id
             case .funding(let draft): draft.id
             case .verification(let draft): draft.id
+            case .buySource(let draft): "buy-source-\(draft.symbol.description)-\(draft.portionID)"
             case .reconcile(let symbol): "reconcile-\(symbol.description)"
             case .syncConflict(let peerID): "sync-\(peerID)"
             case .plan(let symbol, let id): "plan-\(symbol.description)-\(id?.uuidString ?? "new")"
+            case .portionPlan(let symbol, let portionID): "portion-plan-\(symbol.description)-\(portionID.uuidString)"
             case .execution(let symbol, let id): "execution-\(symbol.description)-\(id)"
             case .workflow(let symbol, let id): "workflow-\(symbol.description)-\(id)"
             case .scenario: "scenario"
@@ -200,7 +207,7 @@ struct PositionPoolsView: View {
         var blocksPreviewWrites: Bool {
             switch self {
             case .scenario: false
-            case .transfer, .funding, .verification, .reconcile, .syncConflict, .plan, .execution, .workflow: true
+            case .transfer, .funding, .verification, .buySource, .reconcile, .syncConflict, .plan, .portionPlan, .execution, .workflow: true
             }
         }
     }
@@ -399,6 +406,24 @@ struct PositionPoolsView: View {
         }
         openSheet(.plan(item.symbol, nil), in: account)
     }
+    /// Opens a new sell plan bound to one exact card.
+    ///
+    /// The account is always `card.ownerAccountID` — the ledger that owns the
+    /// trade — never `card.accountID`, which is a display-only label the user
+    /// may have set differently. Writing through the label would file the plan
+    /// in an account that does not hold the shares.
+    private func newSalePlan(for card: PortionCard) {
+        guard !isWriteBlocked, !card.needsReview, card.item.positionQuantity > 0,
+              card.item.availableSalePlanQuantity(for: card.portion.id) > 0 else { return }
+        openSheet(.portionPlan(card.symbol, card.portion.id), in: card.ownerAccountID)
+    }
+
+    /// Edits the plan that already carries this card's binding. Same account
+    /// invariant as `newSalePlan`: the owner ledger, not the display label.
+    private func editSalePlan(_ planID: UUID, on card: PortionCard) {
+        openSheet(.plan(card.symbol, planID), in: card.ownerAccountID)
+    }
+
     private func openScenario() {
         let accounts = Set(previewCandidates.compactMap(\.accountID))
         guard accounts.count <= 1 || accountFilter != nil else {
@@ -1241,9 +1266,11 @@ struct PositionPoolsView: View {
                         if symbols.contains(draft.symbol) { self.activeSheet = nil }
                     case .verification(let draft):
                         if symbols.contains(draft.symbol) { self.activeSheet = nil }
+                    case .buySource(let draft):
+                        if symbols.contains(draft.symbol) { self.activeSheet = nil }
                     case .reconcile(let symbol):
                         if symbols.contains(symbol) { self.activeSheet = nil }
-                    case .syncConflict, .plan, .workflow, .scenario:
+                    case .syncConflict, .plan, .portionPlan, .workflow, .scenario:
                         break
                     case .execution(let symbol, _):
                         if symbols.contains(symbol) { self.activeSheet = nil }
@@ -1357,7 +1384,7 @@ struct PositionPoolsView: View {
                 if next == .preview {
                     // Entering the rehearsal never keeps a write sheet open.
                     switch activeSheet {
-                    case .transfer, .funding, .execution, .workflow, .plan, .syncConflict:
+                    case .transfer, .funding, .buySource, .execution, .workflow, .plan, .portionPlan, .syncConflict:
                         activeSheet = nil
                     default: break
                     }
@@ -2281,7 +2308,10 @@ struct PositionPoolsView: View {
             onPartialTransfer: { target in openSheet(.transfer(TransferDraft(symbol: card.symbol, portionID: card.portion.id, destination: target)), in: card.ownerAccountID) },
             onMarkFunding: { openSheet(.funding(FundingDraft(symbol: card.symbol, portionID: card.portion.id)), in: card.ownerAccountID) },
             onEditVerification: { openSheet(.verification(VerificationDraft(symbol: card.symbol, portionID: card.portion.id)), in: card.ownerAccountID) },
+            onAddSalePlan: { newSalePlan(for: card) },
+            onEditSalePlan: { editSalePlan($0, on: card) },
             onSetAccount: { setAccount($0, on: card) },
+            onLinkBuySource: { openSheet(.buySource(FundingDraft(symbol: card.symbol, portionID: card.portion.id)), in: card.ownerAccountID) },
             onDragChanged: { value, shift in updateDrag(card, value: value, shift: shift) },
             onDragEnded: { value in endDrag(card, value: value) },
             isDraggable: !isWriteBlocked && !card.needsReview && card.item.positionQuantity > 0,
@@ -2791,7 +2821,7 @@ struct PositionPoolsView: View {
     private func updatePlanDrag(_ entry: TradePlanEntry, inPool: Bool, value: DragGesture.Value) {
         // Belt and braces: the card's gesture is already disabled in preview,
         // but the drag state itself must refuse to start.
-        guard !isWriteBlocked else { return }
+        guard !isWriteBlocked, entry.plan.positionPortionID == nil else { return }
         guard drag == nil else { return }
         if planDrag == nil {
             guard let source = planFrames[PoolPlanFrameKey.id(entry.id, inPool: inPool)],
@@ -2817,7 +2847,7 @@ struct PositionPoolsView: View {
         guard !isWriteBlocked else { return }
         let owner = entry.accountID ?? appState.watchlist.activeBrokerageAccountID
         guard var latest = storedItem(entry.symbol, in: owner)?.plans.first(where: { $0.id == entry.plan.id }),
-              latest.status == .active else { return }
+              latest.status == .active, latest.positionPortionID == nil else { return }
         guard latest.positionPool != pool else { return }
         latest.positionPool = pool
         if appState.watchlist.withBrokerageAccount(owner, { appState.watchlist.setTradePlan(latest, for: entry.symbol) }) {
@@ -2968,6 +2998,19 @@ struct PositionPoolsView: View {
                     unavailableSheet(copy("这份份额待核对或已变化，请先核对仓位分账。",
                                           "This portion needs reconciliation or has changed. Reconcile the allocation first."))
                 }
+            case .buySource(let draft):
+                if let item = appState.watchlist.item(for: draft.symbol),
+                   let allocation = item.positionAllocation,
+                   !item.positionAllocationNeedsReconciliation,
+                   !conflictedSymbols.contains(item.symbol),
+                   let portion = allocation.portions.first(where: { $0.id == draft.portionID }) {
+                    PositionBuySourceSheet(item: item, portion: portion, allocation: allocation,
+                        account: appState.watchlist.activeBrokerageAccountID,
+                        onCancel: { activeSheet = nil },
+                        onSuccess: { activeSheet = nil }, isWriteBlocked: isWriteBlocked)
+                } else {
+                    unavailableSheet(copy("这份仓位待核对或已变化，请先核对仓位。", "Reconcile this position before linking its buy source."))
+                }
             case .verification(let draft):
                 // Same refusals the funding sheet makes, for the same reasons: a
                 // portion that has disappeared, needs reconciliation, or sits
@@ -3014,6 +3057,18 @@ struct PositionPoolsView: View {
                 }
             case .plan(let symbol, let planID):
                 PoolPlanEditorSheet(symbol: symbol, planID: planID, onClose: { activeSheet = nil })
+            case .portionPlan(let symbol, let portionID):
+                // The card must still exist before a binding may be written for
+                // it; a vanished portion would otherwise open an editor that
+                // could only ever save an unbound plan under a bound identity.
+                if let item = appState.watchlist.item(for: symbol),
+                   let allocation = item.positionAllocation,
+                   allocation.portions.contains(where: { $0.id == portionID }) {
+                    PoolPlanEditorSheet(symbol: symbol, planID: nil, positionPortionID: portionID,
+                                        onClose: { activeSheet = nil })
+                } else {
+                    unavailableSheet(copy("这份份额已变化，请重新打开操作。", "This portion changed. Reopen the action."))
+                }
             case .execution(let symbol, let planID):
                 if let entry = appState.watchlist.tradePlanEntries.first(where: { $0.symbol == symbol && $0.id == planID }) {
                     PlanExecutionSheet(entry: entry, account: appState.watchlist.activeBrokerageAccountID,
@@ -3256,7 +3311,12 @@ struct PortionCardFace: View {
     /// Opens the verification editor. Verification is a per-card state, so it is
     /// offered wherever the card already offers its other per-card edits.
     let onEditVerification: () -> Void
+    /// Creates a sell plan bound to this exact card, or edits the plan that is
+    /// already bound to it. Defaults are no-ops so existing fixtures compile.
+    var onAddSalePlan: () -> Void = {}
+    var onEditSalePlan: (UUID) -> Void = { _ in }
     var onSetAccount: (BrokerageAccountID) -> Void = { _ in }
+    var onLinkBuySource: () -> Void = {}
     let onDragChanged: (DragGesture.Value, Bool) -> Void
     let onDragEnded: (DragGesture.Value) -> Void
     let isDraggable: Bool
@@ -3268,8 +3328,11 @@ struct PortionCardFace: View {
     private let space = "position-pools-board"
 
     private var quote: Quote? { appState.market.quote(for: card.symbol) }
+    private var buyOrigin: PositionPortion.Origin? {
+        card.item.positionAllocation?.resolvedBuyOrigins(for: card.item)[card.portion.id]
+    }
     private var transaction: PositionTransaction? {
-        guard let id = card.portion.origin.transactionID else { return nil }
+        guard let id = buyOrigin?.transactionID else { return nil }
         return card.item.transactions.first { $0.id == id }
     }
     private var strategy: String? {
@@ -3277,11 +3340,9 @@ struct PortionCardFace: View {
     }
     private var thesis: String? { card.item.thesis?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty }
     private var originText: String {
-        if card.portion.origin.kind == .snapshot {
-            return copy("现有持仓快照", "Existing position snapshot")
-        }
-        let date = card.portion.origin.date?.formatted(date: .abbreviated, time: .omitted)
-        let price = card.portion.origin.price.map { PriceFormatter.price($0, market: card.symbol.market) }
+        guard let buyOrigin else { return copy("关联买入成交…", "Link recorded buy…") }
+        let date = buyOrigin.date?.formatted(date: .abbreviated, time: .omitted)
+        let price = buyOrigin.price.map { PriceFormatter.price($0, market: card.symbol.market) }
         let details = [date, price.map { "\(copy("成交价", "Trade price")) \($0)" }]
             .compactMap { $0 }.joined(separator: " · ")
         return details.isEmpty ? copy("买入来源", "Buy source") : details
@@ -3343,31 +3404,15 @@ struct PortionCardFace: View {
                 // be a different account entirely while a filter is on.
                 FundingSourceTag(source: card.portion.fundingSource, account: card.accountID)
                 Spacer(minLength: 0)
-                Menu {
-                    ForEach(PositionPoolsView.holdingTransferDestinations(from: card.pool), id: \.self) { target in
-                        Button(copy("全部转入\(target.title)", "Move all to \(target.title)")) { onWholeTransfer(target) }
-                    }
-                    Divider()
-                    Button(copy("部分转移…", "Split quantity…")) { onPartialTransfer(nil) }
-                    Divider()
-                    // Mengmeng buys are ordinary by construction: the account
-                    // admits no funding method, so there is nothing this entry
-                    // could label there. Every other action stays.
-                    if offersFundingMark {
-                        Button(copy("标记资金来源…", "Mark funding source…")) { onMarkFunding() }
-                    }
-                    Button(copy("编辑验证…", "Edit verification…")) { onEditVerification() }
-                } label: {
+                Menu { menuContent } label: {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: 14)).foregroundStyle(.secondary)
                         .frame(width: 22, height: 22).contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .disabled(isWriteBlocked || card.needsReview || card.item.positionQuantity <= 0)
-                .help(isWriteBlocked
-                      ? copy("预演模式下不能转移或标记来源", "Moves and funding marks are unavailable in preview")
-                      : (card.needsReview ? copy("请先核对这张份额卡", "Reconcile this portion first") : ""))
+                .disabled(!canWrite)
+                .help(menuHelp)
                 .accessibilityLabel(copy("仓位卡片操作", "Position portion actions"))
             }
             HStack(alignment: .firstTextBaseline, spacing: 5) {
@@ -3409,18 +3454,29 @@ struct PortionCardFace: View {
                         .font(PoolType.label).foregroundStyle(.secondary)
                         .help(copy("这张卡的账户标签与成交账本不同；修改标签不会迁移成交记录。", "This card's account label differs from its trade ledger. Changing the label does not move trades."))
                 }
-                Text(originText)
-                    .font(PoolType.label).foregroundStyle(.secondary).lineLimit(1)
                 if let verificationBadge {
                     VerificationBadge(badge: verificationBadge, compact: true)
                 }
                 Spacer(minLength: 0)
+            }
+            if buyOrigin != nil {
+                Text(originText)
+                    .font(PoolType.label).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Button(originText) { if canLinkBuySource { onLinkBuySource() } }
+                    .buttonStyle(.plain).font(PoolType.label).foregroundStyle(Color.accentColor)
+                    .disabled(!canLinkBuySource)
+                    .help(copy("选择已录入的买入成交，显示该笔日期与成交价。", "Choose a recorded buy to show its date and trade price."))
             }
             if let summary {
                 Label(summary, systemImage: "text.alignleft")
                     .font(PoolType.label).foregroundStyle(.secondary).lineLimit(1)
                     .help(summary)
             }
+            // A summary of plans already bound to this card — never a new claim
+            // on shares, and never a card of its own when nothing is linked.
+            linkedPlanSummary
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3447,6 +3503,9 @@ struct PortionCardFace: View {
         )
         .accessibilityElement(children: .contain)
         .accessibilityActions {
+            if canLinkBuySource {
+                Button(copy("关联买入成交…", "Link recorded buy…"), action: onLinkBuySource)
+            }
             Button(copy("部分转移…", "Split quantity…")) { if canWrite { onPartialTransfer(nil) } }
             Button(copy("编辑验证…", "Edit verification…")) { if canWrite { onEditVerification() } }
             // The whole-transfer actions are emitted only for purposes the card
@@ -3465,6 +3524,265 @@ struct PortionCardFace: View {
             if offersFundingMark {
                 Button(copy("标记资金来源…", "Mark funding source…")) { if canWrite { onMarkFunding() } }
             }
+            // The sell-plan actions mirror the menu's write checks exactly: the
+            // create entry only when a bound plan is actually writable, and one
+            // edit entry per plan already bound to this card.
+            if canAddSalePlan {
+                Button(copy("新增卖出计划…", "Add sell plan…")) { onAddSalePlan() }
+            }
+            if canEditSalePlan, let plan = linkedPlanRows.first?.id {
+                Button(copy("编辑卖出计划…", "Edit sell plan…")) { if canWrite { onEditSalePlan(plan) } }
+            }
+        }
+        // The same menu the ellipsis offers, on the whole card.
+        .contextMenu { menuContent.disabled(!canWrite) }
+    }
+
+    /// One shared menu for the ellipsis and the context menu, so a right-click
+    /// can never offer an action the button does not, or skip a guard.
+    @ViewBuilder
+    private var menuContent: some View {
+        Button(copy("关联买入成交…", "Link recorded buy…")) { if canLinkBuySource { onLinkBuySource() } }
+            .disabled(!canLinkBuySource)
+        Divider()
+        // First, because a right-click on a card is most often "sell this one".
+        // It stays disabled rather than hidden so the absence is legible.
+        Button(copy("新增卖出计划…", "Add sell plan…")) { if canAddSalePlan { onAddSalePlan() } }
+        .disabled(!canAddSalePlan)
+        if canEditSalePlan {
+            if linkedPlanRows.count == 1, let only = linkedPlanRows.first {
+                Button(copy("编辑卖出计划…", "Edit sell plan…")) { if canWrite { onEditSalePlan(only.id) } }
+            } else if linkedPlanRows.count > 1 {
+                Menu(copy("编辑卖出计划…", "Edit sell plan…")) {
+                    ForEach(linkedPlanRows) { row in
+                        Button(row.menuTitle) { if canWrite { onEditSalePlan(row.id) } }
+                    }
+                }
+            }
+        }
+        Divider()
+        ForEach(PositionPoolsView.holdingTransferDestinations(from: card.pool), id: \.self) { target in
+            Button(copy("全部转入\(target.title)", "Move all to \(target.title)")) { if canWrite { onWholeTransfer(target) } }
+        }
+        Divider()
+        Button(copy("部分转移…", "Split quantity…")) { if canWrite { onPartialTransfer(nil) } }
+        Divider()
+        // Mengmeng buys are ordinary by construction: the account
+        // admits no funding method, so there is nothing this entry
+        // could label there. Every other action stays.
+        if offersFundingMark {
+            Button(copy("标记资金来源…", "Mark funding source…")) { if canWrite { onMarkFunding() } }
+        }
+        Button(copy("编辑验证…", "Edit verification…")) { if canWrite { onEditVerification() } }
+    }
+
+    private var menuHelp: String {
+        if isWriteBlocked { return copy("预演模式下不能转移或标记来源", "Moves and funding marks are unavailable in preview") }
+        return card.needsReview ? copy("请先核对这张份额卡", "Reconcile this portion first") : ""
+    }
+
+    /// Whether this card still has shares no other active sell plan claims.
+    /// Reads the store's own answer, so the button and the save path agree.
+    private var availableSalePlanQuantity: Double {
+        card.item.availableSalePlanQuantity(for: card.portion.id)
+    }
+
+    private var canAddSalePlan: Bool {
+        canWrite && !card.needsReview && card.item.positionQuantity > 0 && availableSalePlanQuantity > 0
+    }
+
+    private var canLinkBuySource: Bool { canWrite && !card.needsReview }
+
+    /// The write gate for editing a bound plan: reconciliation and preview
+    /// block it, but a plan whose source has moved must stay *editable* — that
+    /// is the only way the user can repair or cancel it.
+    private var canEditSalePlan: Bool { canWrite }
+
+    // MARK: Linked sell plans
+
+    /// One plan bound to this exact card, flattened for display.
+    ///
+    /// The row carries the plan's own `TradePlanEntry` rather than a raw
+    /// `TradePlan.Status`, so the card's face and the plan pages report the same
+    /// derived state through the same shared presentation. A stale `active`
+    /// whose real fills already used it up therefore cannot read as live here.
+    private struct LinkedPlanRow: Identifiable {
+        var id: UUID
+        var price: Double
+        var quantity: Double
+        var isReached: Bool
+        var sourceChanged: Bool
+        var entry: TradePlanEntry
+
+        var displayState: TradePlanEntry.DisplayState { entry.displayState }
+
+        var menuTitle: String
+    }
+
+    /// Only plans whose `positionPortionID` is *this* card, and only sells.
+    /// A plan matched by symbol or by pool would put a sibling card's intention
+    /// on this card's face.
+    private var boundSellPlans: [TradePlan] {
+        card.item.plans.filter { $0.kind == .sell && $0.positionPortionID == card.portion.id }
+    }
+
+    /// The bindings that still read as waiting, off the derived state rather
+    /// than the raw status: a plan fully used up by its own counted fills is
+    /// history even while its stored status still says active.
+    private var waitingSellPlanEntries: [TradePlanEntry] {
+        boundSellPlanEntries.filter { $0.displayState == .waiting }
+    }
+
+    private func boundSellPlanEntry(_ plan: TradePlan) -> TradePlanEntry {
+        TradePlanEntry(symbol: card.symbol, plan: plan,
+                       transactions: card.item.transactions, accountID: card.accountID)
+    }
+
+    /// `card.item.plans` is the card's own instrument's stored order, so a flat
+    /// map keeps the entry order the row list has always used.
+    private var boundSellPlanEntries: [TradePlanEntry] {
+        boundSellPlans.map(boundSellPlanEntry)
+    }
+
+    /// The rows the card shows: up to three waiting plans, or — when none is
+    /// waiting — the most recently updated settled plan, so a cancelled or
+    /// filled intention leaves one trace instead of vanishing.
+    ///
+    /// The split follows `displayState`, so "a plan is done" is the same
+    /// question here as on every other surface: a stale-active plan whose fills
+    /// closed it counts as settled and never shows price arrival.
+    private var linkedPlanRows: [LinkedPlanRow] {
+        let waiting = waitingSellPlanEntries.sorted { $0.plan.updatedAt > $1.plan.updatedAt }
+        if waiting.isEmpty {
+            guard let latest = boundSellPlanEntries
+                .filter({ $0.displayState != .waiting })
+                .max(by: { $0.plan.updatedAt < $1.plan.updatedAt }) else { return [] }
+            return [row(for: latest)]
+        }
+        return waiting.prefix(3).map { row(for: $0) }
+    }
+
+    private func row(for entry: TradePlanEntry) -> LinkedPlanRow {
+        let plan = entry.plan
+        // Only a waiting plan still claims shares, so only a waiting plan keeps
+        // its remaining size; a settled one is a record of what was intended.
+        let isWaiting = entry.displayState == .waiting
+        let remaining = entry.remainingQuantity
+        let closed = !isWaiting || !(remaining.isFinite && remaining > 0)
+        let quantity = closed ? plan.quantity : remaining
+        // A waiting plan must still resolve its own binding on the same card,
+        // and must not claim more than the shares left after its siblings. A
+        // settled plan has no live claim to make, so it is never flagged.
+        let available = card.item.availableSalePlanQuantity(for: card.portion.id, excludingPlanID: plan.id)
+        let overClaim = !closed && quantity.isFinite
+            && quantity > available + PositionAllocation.quantityTolerance(quantity, available)
+        let sourceChanged = !closed && (card.item.salePlanSource(for: plan) == nil || overClaim)
+        // The linked plan's own instruments type, resolved from the card's item
+        // rather than guessed: a sell plan on a fund or an ETF counts units, not
+        // shares, and a crypto pair counts its base asset.
+        let instrumentType = card.item.resolvedInstrumentType
+        return LinkedPlanRow(
+            id: plan.id,
+            price: plan.price,
+            quantity: quantity,
+            isReached: isWaiting && isReached(plan),
+            sourceChanged: sourceChanged,
+            entry: entry,
+            menuTitle: PlanValueText.priceQuantity(
+                price: plan.price,
+                quantity: quantity,
+                symbol: card.symbol,
+                currencyCode: quote?.currencyCode,
+                instrumentType: instrumentType
+            )
+        )
+    }
+
+    /// Price arrival only — a reached trigger is not a fill, and this never
+    /// claims the shares moved.
+    private func isReached(_ plan: TradePlan) -> Bool {
+        guard let quote, quote.price.isFinite, quote.price > 0,
+              TradingQuoteHealth.isCurrent(quote) else { return false }
+        return plan.isReached(at: quote.price)
+    }
+
+    /// The row's headline status. Price arrival and source-changed warnings stay
+    /// on the waiting rows, which are the only rows that can still act on them;
+    /// everything settled borrows the plan pages' own wording, so a plan the
+    /// fills already closed never reads as live here.
+    private func statusText(_ row: LinkedPlanRow) -> String {
+        if row.displayState != .waiting { return row.entry.displayStatusTitle }
+        if row.sourceChanged { return copy("源仓位已变化，请修改计划", "Position changed — edit the plan") }
+        return row.isReached ? copy("已到价", "At price") : copy("等待目标价", "Waiting for price")
+    }
+
+    /// Actual partial fills remain visible even when waiting stops. A full fill
+    /// already names its actual price in the headline, so only its date repeats.
+    /// The fill carries its own currency and unit rather than the plan's target.
+    private func detailText(_ row: LinkedPlanRow) -> String? {
+        let instrumentType = card.item.resolvedInstrumentType
+        let parts = row.displayState == .filled
+            ? [row.entry.fillDateText]
+            : [row.entry.actualFillText(currencyCode: quote?.currencyCode, instrumentType: instrumentType),
+               row.entry.fillDateText]
+        let text = parts.compactMap { $0 }.joined(separator: " · ")
+        return text.isEmpty ? nil : text
+    }
+
+    @ViewBuilder
+    private var linkedPlanSummary: some View {
+        let rows = linkedPlanRows
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Image(systemName: "tag.fill").font(.system(size: 8))
+                    Text(copy("卖出计划", "Sell plan")).font(.system(size: 9, weight: .semibold))
+                    if waitingSellPlanEntries.count > rows.count {
+                        Text("+\(waitingSellPlanEntries.count - rows.count)").font(.system(size: 9))
+                    }
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(PlanSideStyle.color(for: TradePlan.Kind.sell))
+                ForEach(rows) { row in
+                    Button { if canWrite { onEditSalePlan(row.id) } } label: {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(row.displayState == .filled
+                                 ? row.entry.actualFillText(
+                                     currencyCode: quote?.currencyCode,
+                                     instrumentType: card.item.resolvedInstrumentType) ?? "—"
+                                 : PlanValueText.priceQuantity(
+                                     price: row.price,
+                                     quantity: row.quantity,
+                                     symbol: card.symbol,
+                                     currencyCode: quote?.currencyCode,
+                                     instrumentType: card.item.resolvedInstrumentType))
+                                .font(.system(size: 10, weight: .medium).monospacedDigit())
+                                .foregroundStyle(row.sourceChanged ? Color.orange : .primary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                            Text(statusText(row))
+                                .font(.system(size: 9))
+                                .foregroundStyle(row.sourceChanged ? Color.orange : .secondary)
+                            if let detail = detailText(row) {
+                                Text(detail)
+                                    .font(.system(size: 9).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(5)
+                        .background(PlanSideStyle.color(for: TradePlan.Kind.sell).opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canWrite)
+                    .help(copy("编辑这项绑定到该仓位份额卡的卖出计划", "Edit the sell plan bound to this position portion"))
+                }
+            }
+            .padding(.top, 1)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(copy("绑定到该份额的卖出计划 \(rows.count) 项", "\(rows.count) sell plan(s) bound to this portion"))
         }
     }
 
@@ -3475,8 +3793,13 @@ struct PortionCardFace: View {
     private var offersFundingMark: Bool { card.accountID != .mengmeng }
 
     /// Every entry point on the card — menu, drag, accessibility — reads this
-    /// single gate, so preview cannot reach a single ledger write.
-    private var canWrite: Bool { isDraggable && !isWriteBlocked }
+    /// single gate, so preview cannot reach a single ledger write. Reconciliation
+    /// and a position with no shares are refusals too: both mean the card's
+    /// shares are unknown, and neither the menu nor the create callback may
+    /// write against that.
+    private var canWrite: Bool {
+        isDraggable && !isWriteBlocked && !card.needsReview && card.item.positionQuantity > 0
+    }
 
     private var quoteStatus: String? {
         guard let quote, quote.price.isFinite, quote.price > 0,
@@ -3495,14 +3818,24 @@ struct PortionCardFace: View {
 private struct PoolPlanEditorSheet: View {
     let symbol: SymbolID
     let planID: UUID?
+    /// Set only when creating a new plan bound to one exact position card.
+    /// Editing an existing plan keeps `nil`: the editor already reads that
+    /// plan's own binding, and re-supplying it would let a stale sheet argue
+    /// with the stored row.
+    var positionPortionID: UUID? = nil
     let onClose: () -> Void
     @Environment(AppState.self) private var appState
     @State private var route: PopoverRoute = .planList
 
+    /// A linked editor needs room for the binding notice and the sell fields;
+    /// an unbound edit keeps the height it has always had.
+    private var height: CGFloat { positionPortionID == nil ? 420 : 520 }
+
     var body: some View {
         PlanEditorView(symbol: symbol, planID: planID, returnRoute: .planList, route: $route,
-                       account: appState.watchlist.activeBrokerageAccountID)
-            .frame(width: 520, height: 420)
+                       account: appState.watchlist.activeBrokerageAccountID,
+                       positionPortionID: positionPortionID)
+            .frame(width: 520, height: height)
             .onAppear { route = .plan(symbol, planID, .planList) }
             .onChange(of: route) { _, value in if value == .planList { onClose() } }
     }

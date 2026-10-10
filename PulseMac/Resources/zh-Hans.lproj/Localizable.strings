@@ -465,8 +465,8 @@
 "plan.price" = "价位";
 "plan.note" = "备注（可选）";
 "plan.status" = "状态";
-"plan.status.active" = "进行中";
-"plan.status.done" = "已结束";
+"plan.status.active" = "待成交";
+"plan.status.done" = "停止等待";
 "plan.status.cancelled" = "已放弃";
 "plan.delete" = "删除计划";
 "plan.useCurrentPrice" = "点击填入当前价格";
@@ -475,14 +475,28 @@
 /* Trade plans: the cross-symbol overview and its entry point on the home bar */
 "plan.list.title" = "交易计划";
 "plan.list.summary" = "共 %d 条 · %d 条到价";
-"plan.list.empty" = "还没有写过计划。到某个标的的详情页里，写下你打算在什么价位买或卖多少 —— 市场走到那里时，这一页会告诉你。";
+"plan.list.empty" = "还没有交易计划，点击右上角“新增计划”开始。";
 "plan.menu.edit" = "改点位与数量";
 "plan.menu.drop" = "标记为已放弃";
 "plan.menu.revive" = "恢复为等待中";
+"plans.delete.title" = "删除交易计划？";
+"plans.delete.help" = "只删除这条计划，真实成交记录和仓位不会删除。";
+"plans.delete.confirm" = "删除计划";
+"plans.delete.changed" = "计划或账号已变化，请取消并重新打开删除确认。";
+"plans.delete.pendingDraft" = "未保存的计划修改会被丢弃。";
+"plans.delete.targetPrice" = "目标价 %@";
+"plans.delete.remaining" = "剩余 %@";
 "plan.entry.empty" = "计划";
 "plan.entry.waiting" = "%d 条";
 "plan.entry.reached" = "%d 条 · %d 到价";
 "plan.entry.help" = "你写下的全部计划，以及市场有没有走到";
+
+/* Trade plans: the new-plan chooser sheet */
+"plan.newPlan" = "新增计划";
+"plan.new.account" = "写入账户：%@";
+"plan.new.empty" = "输入代码或名称搜索标的。自选里的标的会直接列在下面。";
+"plan.new.noMatches" = "暂无匹配标的，请尝试名称或代码。";
+"plan.new.searchError" = "搜索失败：%@";
 
 /* Trade plans: the editor's condition list and the plan workflow pages */
 "plan.conditions" = "前提条件";
@@ -525,7 +539,7 @@
 "plan.error.conditions" = "请先修正标红的条件再保存。";
 "plan.error.stale" = "编辑期间这条计划已被改动。请重新载入后再改一次。";
 "plan.error.rejected" = "这条计划未被接受。请检查价位、数量、链接和条件。";
-"plan.execution.title" = "记录已成交";
+"plan.execution.title" = "记录成交";
 "plan.execution.planned" = "计划";
 "plan.execution.filled" = "已成交";
 "plan.execution.remaining" = "剩余";
@@ -1176,6 +1190,8 @@
 "trade.quantityUnitHelp" = "输入以 %@ 为单位的数量。";
 "trade.quantityWithUnit" = "数量（%@）";
 "trade.unit.shares" = "股";
+"plans.unit.fund" = "份";
+"plans.unit.generic" = "单位";
 "main.holdings.costBasis.title" = "成本口径";
 "position.realizedPnLHelp" = "已实现盈亏独立于成本口径；不要与摊薄成本下的持仓盈亏相加，以免重复计算。";
 "main.chart.tool.browse" = "浏览";
@@ -1385,9 +1401,14 @@
 "plans.quantity.help" = "待执行 %@ · 计划 %@ · 已成 %@";
 "plans.status.progress" = "已成 %@/待执行 %@";
 "plans.noQuote" = "无有效报价";
-"plans.action.recordFill" = "记录已成交";
+"plans.action.recordFill" = "记录成交";
+"plans.action.backfill" = "补录成交";
+"plans.backfill.title" = "补录历史成交";
+"plans.backfill.help" = "填写实际成交价、数量和日期。取消或记录失败不会恢复计划等待。";
 "plans.action.logicHistory" = "逻辑与修改记录";
 "plans.action.snooze" = "暂缓到价提醒 15 分钟";
+"plans.layout.showCompact" = "切换为紧凑模式";
+"plans.layout.showComfortable" = "切换为舒适模式";
 
 "alerts.settings.planToggle" = "交易计划到价提醒";
 "alerts.settings.sectorToggle" = "板块暴露超限提醒";
@@ -1428,3 +1449,34 @@
 "journal.strategy.event" = "事件";
 
 "main.holdings.empty.accountHint" = "当前查看「%@」。可在标题旁切换账户；其他账户的持仓仍保留。";
+"settings.mcp.keychain.noninteractive" = "钥匙串访问需要授权；调试版已阻止密码弹窗，原令牌未更改。请在钥匙串访问中检查 FFF 的权限。";
+
+/* Plan state is derived from recorded fills, separate from stored intent. */
+"plans.display.waiting" = "待成交";
+"plans.display.filled" = "已成交";
+"plans.display.abandoned" = "已放弃";
+"plans.display.unrecorded" = "未记录成交";
+"plans.display.incomplete" = "未全部成交";
+"plans.display.incompleteRecords" = "未完成记录";
+"plans.display.waitingCount" = "待成交 %d";
+"plans.display.historyCount" = "历史记录 %d";
+"plans.display.noWaiting" = "没有待成交计划。";
+"plans.display.noHistory" = "还没有历史计划。";
+"plans.display.actualFill" = "成交 %@ × %@";
+"plans.display.target" = "目标 %@ × %@";
+"plans.display.current" = "现价 %@";
+"plans.display.priceColumn" = "计划价 / 成交均价";
+"plans.display.fillPrice" = "成交均价";
+"plans.display.missingFillHelp" = "该计划已停止等待，但缺少完整成交记录。可直接补录实际成交，不会恢复计划等待。";
+"plans.display.recordHelp" = "成交请使用“记录成交”，保存实际价格、数量和日期。";
+"plans.display.saveBeforeFill" = "请先保存计划修改，再记录成交。";
+"plans.status.closedProgress" = "已成 %@ / 未成交 %@";
+
+/* Menu-bar panel height grip. */
+"popover.resize.help" = "上下拖动调整窗口高度，双击恢复自动高度。";
+"popover.resize.label" = "调整小窗口高度";
+"popover.resize.value" = "高度 %@ 点";
+
+/* Trade plans: backfill mode and an unidentifiable quote currency. */
+"plans.backfill.date" = "实际成交日期";
+"plans.unit.unknownCurrency" = "币种未知";

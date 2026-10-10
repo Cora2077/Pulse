@@ -44,6 +44,8 @@ struct WatchlistView: View {
     /// on macOS 26 never accepts the drop (the drag image slides back and `onMove`
     /// is never called), while the same List works in the pinned window.
     @State private var reorderDrag: ReorderDrag?
+    /// Freeze the visible arrangement while the user adjusts it.
+    @State private var reorderSymbols: [SymbolID]?
     /// Measured from the first row; every watch row lays out to the same height.
     @State private var reorderRowHeight: CGFloat = 46
     @State private var shareFeedback: ShareFeedback?
@@ -121,6 +123,7 @@ struct WatchlistView: View {
                     window: hostWindow
                 )
             } else {
+                reorderSymbols = nil
                 watchlistReorderLogger.info("Reorder mode exited")
                 ReorderDiagnostics.shared.reorderModeExited()
             }
@@ -754,12 +757,25 @@ struct WatchlistView: View {
         return widths.max() ?? 48
     }
 
+    private var automaticSortValue: ((WatchItem) -> Double?)? {
+        guard listOrderMode == WatchlistOrderMode.automatic.rawValue,
+              let option = WatchlistSortOption(rawValue: listSortOption) else { return nil }
+        return { WatchlistDisplayOrder.value(for: $0, option: option, appState: appState) }
+    }
+
     private func displayedItems(at date: Date = .now) -> [WatchItem] {
-        WatchlistDisplayOrder.items(
+        if isReordering, let reorderSymbols {
+            let base = appState.sharedWatchlist.items
+            let bySymbol = Dictionary(uniqueKeysWithValues: base.map { ($0.symbol, $0) })
+            let staged = Set(reorderSymbols)
+            return reorderSymbols.compactMap { bySymbol[$0] } + base.filter { !staged.contains($0.symbol) }
+        }
+        return WatchlistDisplayOrder.items(
             from: appState.sharedWatchlist,
             prioritizeOpenMarkets: appState.settings.prioritizeOpenMarkets,
             at: date,
-            bypass: isReordering
+            bypass: isReordering,
+            sortValue: automaticSortValue
         )
     }
 
@@ -1472,7 +1488,7 @@ struct WatchlistView: View {
     /// Reorder always edits the persisted baseline. Session grouping is bypassed
     /// while `isReordering`, so the indices match `group.symbols`.
     private func commitReorder(from origin: Int, to target: Int) {
-        let currentSymbols = appState.sharedWatchlist.items.map(\.symbol)
+        let currentSymbols = displayedItems().map(\.symbol)
         guard currentSymbols.indices.contains(origin), currentSymbols.indices.contains(target) else { return }
         watchlistReorderLogger.info(
             "Reorder gesture ended; from=\(origin, privacy: .public) to=\(target, privacy: .public)"
@@ -1494,6 +1510,7 @@ struct WatchlistView: View {
             committed: committed
         )
         if committed {
+            reorderSymbols = appState.sharedWatchlist.items.map(\.symbol)
             listOrderMode = WatchlistOrderMode.manual.rawValue
         }
     }
@@ -1561,6 +1578,7 @@ struct WatchlistView: View {
     /// without dragging changes nothing.
     private func beginAdjustingOrder() {
         searchSession.text = ""
+        reorderSymbols = displayedItems().map(\.symbol)
         withAnimation(.snappy(duration: 0.25)) { isReordering = true }
     }
 
@@ -1569,24 +1587,12 @@ struct WatchlistView: View {
             appState.sharedWatchlist.rememberManualOrder()
         }
 
-        let sortedSymbols = WatchlistSortResolver.sortedSymbols(
-            items: appState.sharedWatchlist.items,
-            pinnedSymbols: appState.sharedWatchlist.selectedGroup?.pinnedSymbols ?? []
-        ) { item in
-            sortValue(for: item, option: option)
-        }
-
         searchSession.text = ""
         isReordering = false
         listOrderMode = WatchlistOrderMode.automatic.rawValue
         listSortOption = option.rawValue
-        if animated {
-            withAnimation(.snappy(duration: 0.16)) {
-                appState.sharedWatchlist.reorder(sortedSymbols)
-            }
-        } else {
-            appState.sharedWatchlist.reorder(sortedSymbols)
-        }
+        // Quotes are observed by displayedItems. Automatic order is never
+        // written back into the shared watchlist or its remembered custom order.
     }
 
     private func metricModeBinding(_ mode: WatchRowMetricMode) -> Binding<Bool> {
@@ -1628,91 +1634,9 @@ struct WatchlistView: View {
         )
     }
 
-    private func sortValue(for item: WatchItem, option: WatchlistSortOption) -> Double? {
-        guard let quote = appState.market.quote(for: item.symbol) else { return nil }
-        if option == .changePercent { return quote.changePercent }
-        let held = appState.sharedWatchlist.records(for: item.symbol).filter { $0.hasPosition }
-        guard !held.isEmpty else { return nil }
-        let valuations = held.compactMap {
-            PositionValuation(item: $0, quote: quote, basis: appState.settings.positionCostBasis)
-        }
-        guard valuations.count == held.count else { return nil }
-        let value = valuations.reduce(0) { total, position in
-            switch option {
-            case .changePercent: return total
-            case .todayPnL: return total + position.todayPnL
-            case .totalPnL: return total + position.holdingPnL
-            case .marketValue: return total + position.marketValue
-            }
-        }
-        return value.isFinite ? value : nil
-    }
-
 }
 
 // MARK: - Components
-
-enum WatchlistSortResolver {
-    static func pinnedFirstSymbols(
-        items: [WatchItem],
-        pinnedSymbols: [SymbolID]
-    ) -> [SymbolID] {
-        let itemsBySymbol = Dictionary(uniqueKeysWithValues: items.map { ($0.symbol, $0) })
-        let pinned = Set(pinnedSymbols)
-        return pinnedSymbols.filter { itemsBySymbol[$0] != nil }
-            + items.filter { !pinned.contains($0.symbol) }.map(\.symbol)
-    }
-
-    static func sortedSymbols(
-        items: [WatchItem],
-        pinnedSymbols: [SymbolID],
-        value: (WatchItem) -> Double?
-    ) -> [SymbolID] {
-        let pinned = Set(pinnedSymbols)
-        return items.enumerated().sorted { lhs, rhs in
-            let leftIsPinned = pinned.contains(lhs.element.symbol)
-            let rightIsPinned = pinned.contains(rhs.element.symbol)
-            if leftIsPinned != rightIsPinned { return leftIsPinned }
-
-            let left = value(lhs.element)
-            let right = value(rhs.element)
-            switch (left, right) {
-            case let (left?, right?):
-                if left == right { return lhs.offset < rhs.offset }
-                return left > right
-            case (_?, nil):
-                return true
-            case (nil, _?):
-                return false
-            case (nil, nil):
-                return lhs.offset < rhs.offset
-            }
-        }.map { $0.element.symbol }
-    }
-}
-
-private enum WatchlistOrderMode: String {
-    case manual
-    case automatic
-}
-
-private enum WatchlistSortOption: String, CaseIterable, Identifiable {
-    case changePercent
-    case todayPnL
-    case totalPnL
-    case marketValue
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .changePercent: PulseLocalization.localizedString("sort.changePercent")
-        case .todayPnL: PulseLocalization.localizedString("sort.todayPnL")
-        case .totalPnL: PulseLocalization.localizedString("sort.totalPnL")
-        case .marketValue: PulseLocalization.localizedString("sort.marketValue")
-        }
-    }
-}
 
 /// Compact icon button for popover chrome.
 struct IconButton: View {

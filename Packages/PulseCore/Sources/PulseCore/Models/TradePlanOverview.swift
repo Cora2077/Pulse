@@ -7,12 +7,70 @@ import CryptoKit
 /// its own has no way to say which symbol it belongs to. The overview is
 /// cross-symbol, so the pair travels together.
 public struct TradePlanEntry: Identifiable, Hashable, Sendable {
+    /// Display-only status; recorded fills and the decision to keep waiting are distinct.
+    public enum DisplayState: CaseIterable, Hashable, Sendable {
+        /// Still short of its size with nothing settled against it.
+        case waiting
+        /// Fully filled by real trades.
+        case filled
+        /// The user gave it up.
+        case abandoned
+        /// The user called it settled.
+        case stopped
+    }
+
     public let symbol: SymbolID
     public let plan: TradePlan
     public let filledQuantity: Double
     public let remainingQuantity: Double
+    /// What the linked fills actually paid per unit, and when the last one
+    /// landed. Both are read-only views of the same counted trades behind
+    /// `filledQuantity`; neither is the plan's target price nor a quote.
+    public let averageFillPrice: Double?
+    public let lastFillDate: Date?
     /// Read-only board scope. The stored plan keeps its original id.
     public let accountID: BrokerageAccountID?
+
+    /// Complete linked fills take precedence over a stale raw status.
+    public var displayState: DisplayState {
+        if remainingQuantity == 0, filledQuantity > 0 { return .filled }
+        switch plan.status {
+        case .cancelled: return .abandoned
+        case .done: return .stopped
+        case .active: return .waiting
+        }
+    }
+
+    /// Whether this row may have an already-happened fill recorded straight
+    /// into its history.
+    ///
+    /// A plan the user stopped carries no promise of a future trade, so the
+    /// ordinary "record fill" route — which records against a live intention —
+    /// has nothing to attach to. What it can still need is the opposite: the
+    /// trade already happened, and the plan was closed before anyone wrote it
+    /// down. Backfill is that one direction, and it is deliberately narrow.
+    ///
+    /// Three conditions, each of which rules out a different mistake:
+    ///
+    /// - The raw status must be `.done`. `.cancelled` plans are given up on,
+    ///   and reviving one to file a fill is exactly the round trip this
+    ///   entrance exists to avoid; an `.active` plan is not stopped at all, so
+    ///   it takes the ordinary route rather than this one.
+    /// - The derived state must be `.stopped`, which is what a `.done` plan
+    ///   *with size left over* reads as. A fully filled row derives `.filled`
+    ///   and has nothing to backfill — its record is already complete.
+    /// - The payload must be the same one every write path requires, so a
+    ///   malformed plan never becomes fillable just because it is stopped.
+    ///
+    /// This is a question, not a permission: the store repeats the status and
+    /// completeness checks on its own values, so a caller that renders this
+    /// button against a stale entry still cannot write through it.
+    public var canBackfillFill: Bool {
+        plan.status == .done
+            && displayState == .stopped
+            && remainingQuantity > 0
+            && plan.hasValidPayload
+    }
 
     /// The plan's own id, which is unique across the whole watchlist — the
     /// store refuses to persist a duplicate. Safe to use as a list identity.
@@ -41,6 +99,8 @@ public struct TradePlanEntry: Identifiable, Hashable, Sendable {
         let progress = TradePlanExecutionProgress(plan: plan, transactions: transactions)
         self.filledQuantity = progress.filledQuantity
         self.remainingQuantity = progress.remainingQuantity
+        self.averageFillPrice = progress.averageFillPrice
+        self.lastFillDate = progress.lastFillDate
     }
 }
 
@@ -104,10 +164,17 @@ public enum TradePlanOverview {
     }
 
     /// Whether this row's price condition holds right now.
+    ///
+    /// Two questions, asked in the order that matters: the row must still be
+    /// live, *and* the price must be there. A plan whose raw status is `active`
+    /// but which real fills have already closed is not live, so it is never
+    /// reported as reached — a finished plan sitting inside its band reads as a
+    /// buy signal for a trade that no longer exists.
     public static func isReached(
         _ entry: TradePlanEntry,
         currentPrice: (SymbolID) -> Double?
     ) -> Bool {
+        guard entry.displayState == .waiting else { return false }
         guard let price = currentPrice(entry.symbol) else { return false }
         return entry.plan.isReached(at: price)
     }
@@ -136,7 +203,11 @@ public enum TradePlanOverview {
     ) -> Summary {
         var summary = Summary()
         for entry in entries {
-            guard entry.plan.status == .active else {
+            // Counted off `displayState` rather than the raw status, so the
+            // header and the rows below it are the same list: an entry whose
+            // status is stale counts as settled here exactly where the order
+            // sorts it, and `reached` stays a subset of `live`.
+            guard entry.displayState == .waiting else {
                 summary.settled += 1
                 continue
             }
@@ -152,7 +223,13 @@ public enum TradePlanOverview {
         _ entry: TradePlanEntry,
         currentPrice: (SymbolID) -> Double?
     ) -> (tier: Tier, gap: Double) {
-        guard entry.plan.status == .active else { return (.settled, 0) }
+        // The live question is asked of the derived state, not `plan.status`:
+        // otherwise a fully filled entry left `active` sorts into the reached
+        // band and sits at the very top of the list, which is the one place a
+        // reader is least likely to check whether the trade is still open.
+        // Status is the fallback, not the answer: the derived state preserves
+        // its verdict for every entry whose fills do not close it.
+        guard entry.displayState == .waiting else { return (.settled, 0) }
         guard let price = currentPrice(entry.symbol) else { return (.waiting, .infinity) }
         if entry.plan.isReached(at: price) { return (.reached, 0) }
         return (.waiting, entry.plan.gapPercent(from: price))

@@ -488,7 +488,10 @@ struct PlanAccountFillTests {
         )
         let wire = try WatchlistSyncWireCodec.encode(deviceID: "fixture", snapshot: snapshot)
         let plainVersion = try WatchlistSyncWireCodec.decode(wire).version
-        #expect(plainVersion < WatchlistSyncWireCodec.currentVersion,
+        // Source accounts first appeared in wire v16; later unrelated fields
+        // must not raise this payload's minimum version.
+        let sourceAccountVersion = 16
+        #expect(plainVersion < sourceAccountVersion,
                 "a same-account fill must not claim the source-account version")
 
         // And a cross-account fill raises it and claims the newer version.
@@ -500,12 +503,12 @@ struct PlanAccountFillTests {
             items: [.init(symbol: symbol, displayName: "Apple", transactions: [crossAccount])],
             groups: [.init(name: "Test", symbols: [symbol])]
         ))
-        #expect(try WatchlistSyncWireCodec.decode(raised).version == WatchlistSyncWireCodec.currentVersion)
+        #expect(try WatchlistSyncWireCodec.decode(raised).version == sourceAccountVersion)
 
         // Claiming the older version while carrying the source field is refused.
         var object = try #require(JSONSerialization.jsonObject(with: raised) as? [String: Any])
-        object["version"] = WatchlistSyncWireCodec.currentVersion - 1
-        #expect(throws: WatchlistSyncWireCodec.CodecError.unsupportedVersion(WatchlistSyncWireCodec.currentVersion)) {
+        object["version"] = sourceAccountVersion - 1
+        #expect(throws: WatchlistSyncWireCodec.CodecError.unsupportedVersion(sourceAccountVersion)) {
             try WatchlistSyncWireCodec.decode(JSONSerialization.data(withJSONObject: object))
         }
     }
@@ -526,15 +529,16 @@ struct PlanAccountFillTests {
         #expect(fill.planExecution?.sourceAccountID == .unassigned)
 
         let archive = store.withBrokerageAccount(.financing) { store.archive() }
-        #expect(archive.version >= WatchlistArchive.currentVersion)
+        let sourceAccountVersion = 14
+        #expect(archive.version == sourceAccountVersion)
         let decoded = try WatchlistArchive.decoded(from: archive.encoded())
         let transaction = try #require(decoded.lists.flatMap(\.entries).flatMap { $0.transactions ?? [] }.first { $0.id == fill.id })
         #expect(transaction.planExecution?.sourceAccountID == .unassigned)
         #expect(transaction.brokerageAccountID == .financing)
 
         var lowered = archive
-        lowered.version = WatchlistArchive.currentVersion - 1
-        #expect(throws: WatchlistArchive.DecodingFailure.unsupportedVersion(WatchlistArchive.currentVersion)) {
+        lowered.version = sourceAccountVersion - 1
+        #expect(throws: WatchlistArchive.DecodingFailure.unsupportedVersion(sourceAccountVersion)) {
             try WatchlistArchive.decoded(from: lowered.encoded())
         }
     }

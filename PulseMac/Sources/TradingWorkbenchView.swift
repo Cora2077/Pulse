@@ -1043,7 +1043,8 @@ struct WorkbenchBoard {
                       price: quote(item.symbol).flatMap { WorkbenchBoard.usablePrice($0.price) },
                       currencyCode: item.symbol.currencyCode,
                       sector: item.tradingProfile?.sector,
-                      poolQuantities: WorkbenchBoard.poolQuantities(for: item))
+                      poolQuantities: WorkbenchBoard.poolQuantities(for: item),
+                      portions: item.positionAllocationNeedsReconciliation ? [] : (item.positionAllocation?.portions ?? []))
             },
             entries: active,
             cash: cash.balances,

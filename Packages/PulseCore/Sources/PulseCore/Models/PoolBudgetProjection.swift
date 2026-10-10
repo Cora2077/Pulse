@@ -47,6 +47,19 @@ public enum PoolBudgetProjection {
         /// legacy position's shares keep adding up instead of disappearing from
         /// the active distribution.
         public let poolQuantities: [PositionPool: Double]
+        /// The exact cards this holding is actually made of, when the caller
+        /// has them.
+        ///
+        /// A sell plan may be *bound* to one card (`positionPortionID`), and
+        /// this is the only place that binding can be resolved: `poolQuantities`
+        /// is a per-pool sum and cannot tell two cards of the same pool apart.
+        /// Pass **verified current portions only** — the allocation's live
+        /// array after reconciliation and source matching — because a stale or
+        /// guessed card would let the projection rehearse a sale against shares
+        /// that are not there. The default `[]` is the honest answer for a
+        /// caller that has no verified cards to offer: a bound plan then reads
+        /// as having no source rather than falling back to a sibling card.
+        public let portions: [PositionPortion]
 
         /// The caller's shares with every retired purpose folded into its active
         /// equivalent. The stored dictionary is left as given so a caller can
@@ -66,7 +79,8 @@ public enum PoolBudgetProjection {
             price: Double?,
             currencyCode: String? = nil,
             sector: String? = nil,
-            poolQuantities: [PositionPool: Double] = [:]
+            poolQuantities: [PositionPool: Double] = [:],
+            portions: [PositionPortion] = []
         ) {
             self.symbol = symbol
             self.name = name
@@ -75,6 +89,7 @@ public enum PoolBudgetProjection {
             self.currencyCode = currencyCode
             self.sector = sector
             self.poolQuantities = poolQuantities
+            self.portions = portions
         }
     }
 
@@ -140,6 +155,10 @@ public enum PoolBudgetProjection {
             case position
             /// The named pool's verified share cannot cover the sale.
             case pool(PositionPool)
+            /// The one position card the plan is bound to cannot cover it —
+            /// either because that card is gone or has moved to another pool,
+            /// or because the plans naming it ask for more than it holds.
+            case portion(UUID)
         }
 
         public let planID: UUID
@@ -362,7 +381,7 @@ public enum PoolBudgetProjection {
                !(abs(position.quantity) * price).isFinite { overflowCodes.insert(code) }
         }
         var seenPlans = Set<UUID>()
-        let pending = entries.filter { entry in
+        var pending = entries.filter { entry in
             guard seenPlans.insert(entry.id).inserted, entry.plan.status == .active else { return false }
             guard entry.plan.price.isFinite, entry.plan.price > 0,
                   entry.plan.quantity.isFinite, entry.plan.quantity > 0,
@@ -372,6 +391,16 @@ public enum PoolBudgetProjection {
             }
             return entry.remainingQuantity > 0
         }
+        // Bound sales are checked *first* and in isolation. A plan that names an
+        // exact card is making a narrower claim than a plan that merely names a
+        // pool, so it is judged against that card and nothing else: a sibling
+        // card in the same pool never rescues it, and a future buy never backs
+        // it. Plans that fail here are removed from `pending` before the
+        // aggregate and per-pool passes run, so one broken binding cannot make
+        // its valid neighbours look over-committed — and, just as important, its
+        // proceeds never reach the accepted sell estimate.
+        let invalidBound = validateBoundSales(pending, positions: unique, result: &result)
+        if !invalidBound.isEmpty { pending.removeAll { invalidBound.contains($0.id) } }
         var afterQuantity = unique.mapValues(\.quantity)
         var beforePools: [SymbolID: [PositionPool: Double]] = [:]
         for position in unique.values where position.quantity >= 0 {
@@ -557,6 +586,112 @@ public enum PoolBudgetProjection {
         }
         result.unresolvedPoolPositions.sort { $0.description < $1.description }
         return result
+    }
+
+    /// Judges every sell plan that names an exact position card, and returns
+    /// the ids of the plans that must be dropped.
+    ///
+    /// The rule is the narrowest one that is still honest:
+    ///
+    /// * Plans are grouped by **symbol and exact portion id**, so "two plans,
+    ///   one card" is one question: do their remaining requests together fit
+    ///   in the card?
+    /// * The source has to be **unique** — exactly one portion in the position
+    ///   carries that id — and **live**: finite, positive quantity, and a pool
+    ///   that reads as the plan's pool through `effectivePurpose`. A card that
+    ///   was deleted, emptied, or refiled under another bucket is *missing*,
+    ///   never silently replaced by a sibling card of the same pool.
+    /// * A missing or moved source reports `available: 0`. A source that exists
+    ///   but is over-committed reports its real quantity, so the shortfall the
+    ///   reader sees is the true one.
+    /// * A bound plan is never counted against a future buy. The card is
+    ///   whatever the current position actually holds, and no more.
+    ///
+    /// Every affected plan gets its own warning; the whole group is dropped
+    /// rather than letting the first plan in and refusing the rest, because
+    /// there is no non-arbitrary order in which to spend one card twice.
+    private static func validateBoundSales(
+        _ pending: [TradePlanEntry],
+        positions unique: [SymbolID: Position],
+        result: inout Result
+    ) -> Set<UUID> {
+        var invalid = Set<UUID>()
+        let boundSales = pending.filter { $0.plan.kind == .sell && $0.plan.positionPortionID != nil }
+        guard !boundSales.isEmpty else { return invalid }
+        let grouped = Dictionary(grouping: boundSales) { entry in
+            BoundSaleKey(symbol: entry.symbol, portionID: entry.plan.positionPortionID!)
+        }
+        for (key, plans) in grouped {
+            let requested = plans.reduce(0) { $0 + $1.remainingQuantity }
+            // Two plans naming the same card must also agree on the pool that
+            // card lives in. Disagreement means the inputs contradict each
+            // other, and picking either plan's pool would be a guess.
+            let pools = Set(plans.map { ($0.plan.positionPool ?? .unassigned).effectivePurpose })
+            let planPool = pools.count == 1 ? pools.first : nil
+            let source = boundSource(key, in: unique[key.symbol], planPool: planPool)
+            switch source {
+            case .missing:
+                for entry in plans {
+                    invalid.insert(entry.id)
+                    result.overSellWarnings.append(.init(planID: entry.id, symbol: key.symbol,
+                        currencyCode: key.symbol.currencyCode, scope: .portion(key.portionID),
+                        requested: entry.remainingQuantity, available: 0))
+                }
+            case .available(let portion):
+                let tolerance = PositionAllocation.quantityTolerance(requested, portion.quantity)
+                // A non-finite total is the caller's overflow, not proof of a
+                // shortfall, but it still cannot be backed by a finite card, so
+                // the group is refused and the aggregate pass keeps the
+                // overflow accounting it already owned.
+                guard requested.isFinite, requested <= portion.quantity + tolerance else {
+                    for entry in plans {
+                        invalid.insert(entry.id)
+                        result.overSellWarnings.append(.init(planID: entry.id, symbol: key.symbol,
+                            currencyCode: key.symbol.currencyCode, scope: .portion(key.portionID),
+                            requested: requested.isFinite ? requested : .greatestFiniteMagnitude,
+                            available: portion.quantity))
+                    }
+                    continue
+                }
+            }
+        }
+        return invalid
+    }
+
+    /// One (instrument, card) pair. Grouping by the id alone would let two
+    /// instruments that happen to share a card id — a malformed or hand-edited
+    /// payload — compete for a source neither of them owns.
+    private struct BoundSaleKey: Hashable {
+        let symbol: SymbolID
+        let portionID: UUID
+    }
+
+    private enum BoundSource {
+        /// No position, no verified cards, no card with that id, more than one
+        /// card with that id, or a card in a different pool. All of these read
+        /// as "the source the plan named is not here".
+        case missing
+        case available(PositionPortion)
+    }
+
+    /// The one card `key.portionID` names on `position`, if it is really there.
+    ///
+    /// Defensive on purpose: the caller promises verified portions, but a
+    /// projection that trusted a duplicate id would pick an arbitrary card and
+    /// report a number that looks authoritative. Anything ambiguous here is
+    /// treated as missing, which is the safe reading.
+    private static func boundSource(_ key: BoundSaleKey, in position: Position?,
+                                    planPool: PositionPool?) -> BoundSource {
+        guard let position,
+              // A binding is only meaningful against an explicitly named active
+              // pool; anything else is a malformed claim, not a source.
+              let planPool, planPool.isActivePurpose,
+              position.quantity.isFinite, position.quantity >= 0 else { return .missing }
+        let matches = position.portions.filter { $0.id == key.portionID }
+        guard matches.count == 1, let portion = matches.first,
+              portion.quantity.isFinite, portion.quantity > 0,
+              portion.pool.effectivePurpose == planPool.effectivePurpose else { return .missing }
+        return .available(portion)
     }
 
     private static func allocation(unique: [SymbolID: Position], quantities: [SymbolID: Double]) -> PortfolioAllocation.Result {

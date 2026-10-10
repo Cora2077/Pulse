@@ -465,8 +465,8 @@
 "plan.price" = "가격";
 "plan.note" = "메모(선택)";
 "plan.status" = "상태";
-"plan.status.active" = "진행 중";
-"plan.status.done" = "종료됨";
+"plan.status.active" = "체결 대기";
+"plan.status.done" = "대기 중지";
 "plan.status.cancelled" = "포기";
 "plan.delete" = "계획 삭제";
 "plan.useCurrentPrice" = "클릭하여 현재가 입력";
@@ -475,14 +475,28 @@
 /* Trade plans: the cross-symbol overview and its entry point on the home bar */
 "plan.list.title" = "거래 계획";
 "plan.list.summary" = "총 %d건 · %d건 도달";
-"plan.list.empty" = "아직 계획이 없습니다. 종목 상세 페이지에서 어느 가격에 무엇을 얼마나 사거나 팔지 적어 두면, 그 가격에 닿았을 때 이 페이지가 알려 줍니다.";
+"plan.list.empty" = "거래 계획이 없습니다. 오른쪽 위의 새 계획을 눌러 시작하세요.";
 "plan.menu.edit" = "가격과 수량 수정";
 "plan.menu.drop" = "포기로 표시";
 "plan.menu.revive" = "대기로 되돌리기";
+"plans.delete.title" = "이 거래 계획을 삭제할까요?";
+"plans.delete.help" = "이 계획만 삭제됩니다. 기록된 체결과 보유는 그대로 남습니다.";
+"plans.delete.confirm" = "계획 삭제";
+"plans.delete.changed" = "계획 또는 계좌가 변경되었습니다. 취소하고 삭제 확인을 다시 여세요.";
+"plans.delete.pendingDraft" = "저장하지 않은 계획 수정 내용은 삭제됩니다.";
+"plans.delete.targetPrice" = "목표가 %@";
+"plans.delete.remaining" = "남은 수량 %@";
 "plan.entry.empty" = "계획";
 "plan.entry.waiting" = "%d건";
 "plan.entry.reached" = "%d건 · %d건 도달";
 "plan.entry.help" = "적어 둔 모든 계획과 그 가격에 닿았는지 여부";
+
+/* Trade plans: the new-plan chooser sheet */
+"plan.newPlan" = "계획 추가";
+"plan.new.account" = "작성 계좌: %@";
+"plan.new.empty" = "코드나 이름을 입력해 종목을 검색하세요. 관심 목록의 종목은 아래에 바로 표시됩니다.";
+"plan.new.noMatches" = "일치하는 종목이 없습니다. 이름이나 코드를 검색하세요.";
+"plan.new.searchError" = "검색 실패: %@";
 
 /* Trade plans: the editor's condition list and the plan workflow pages */
 "plan.conditions" = "조건";
@@ -1176,6 +1190,8 @@
 "trade.quantityUnitHelp" = "수량을 %@ 단위로 입력하세요.";
 "trade.quantityWithUnit" = "수량 (%@)";
 "trade.unit.shares" = "주";
+"plans.unit.fund" = "좌";
+"plans.unit.generic" = "단위";
 "main.holdings.costBasis.title" = "원가 기준";
 "position.realizedPnLHelp" = "실현 손익은 원가 기준과 별개입니다. 희석 원가 기준 보유 손익에 더하지 마세요. 같은 결과를 중복 계산하게 됩니다.";
 
@@ -1387,8 +1403,13 @@
 "plans.status.progress" = "체결 %@/미체결 %@";
 "plans.noQuote" = "유효한 시세 없음";
 "plans.action.recordFill" = "체결 기록";
+"plans.action.backfill" = "체결 소급 기록";
+"plans.backfill.title" = "지난 체결 소급 기록";
+"plans.backfill.help" = "실제로 체결된 가격, 수량, 날짜를 입력하세요. 취소하거나 기록에 실패해도 계획이 대기로 돌아가지 않습니다.";
 "plans.action.logicHistory" = "근거와 변경 기록";
 "plans.action.snooze" = "가격 알림 15분 미루기";
+"plans.layout.showCompact" = "간결 모드로 전환";
+"plans.layout.showComfortable" = "편안 모드로 전환";
 
 "alerts.settings.planToggle" = "거래 계획 가격 알림";
 "alerts.settings.sectorToggle" = "섹터 노출 상한 초과 알림";
@@ -1429,3 +1450,34 @@
 "journal.strategy.event" = "이벤트";
 
 "main.holdings.empty.accountHint" = "현재 %@을 보고 있습니다. 제목 옆에서 계좌를 전환할 수 있으며 다른 계좌의 보유 내역은 유지됩니다.";
+"settings.mcp.keychain.noninteractive" = "키체인 접근 권한이 필요합니다. 로컬 빌드에서는 암호 창을 표시하지 않으며 기존 토큰을 유지합니다. 키체인 접근에서 FFF 권한을 확인하세요.";
+
+/* Plan state is derived from recorded fills, separate from stored intent. */
+"plans.display.waiting" = "체결 대기";
+"plans.display.filled" = "체결 완료";
+"plans.display.abandoned" = "포기";
+"plans.display.unrecorded" = "체결 기록 없음";
+"plans.display.incomplete" = "일부 체결 · 중지";
+"plans.display.incompleteRecords" = "미완료 기록";
+"plans.display.waitingCount" = "체결 대기 %d";
+"plans.display.historyCount" = "기록 %d";
+"plans.display.noWaiting" = "대기 중인 계획이 없습니다.";
+"plans.display.noHistory" = "지난 계획이 없습니다.";
+"plans.display.actualFill" = "체결 %@ × %@";
+"plans.display.target" = "목표 %@ × %@";
+"plans.display.current" = "현재 %@";
+"plans.display.priceColumn" = "목표 / 평균 체결가";
+"plans.display.fillPrice" = "평균 체결가";
+"plans.display.missingFillHelp" = "체결 기록이 완료되지 않은 채 중지되었습니다. 실제 체결을 소급 기록할 수 있으며 대기로 돌아가지 않습니다.";
+"plans.display.recordHelp" = "실제 가격, 수량, 날짜는 체결 기록에서 저장하세요.";
+"plans.display.saveBeforeFill" = "체결을 기록하기 전에 계획 변경 사항을 저장하세요.";
+"plans.status.closedProgress" = "체결 %@ / 미체결 %@";
+
+/* Menu-bar panel height grip. */
+"popover.resize.help" = "위아래로 드래그하여 높이를 조절하세요. 두 번 클릭하면 자동 높이로 복원됩니다.";
+"popover.resize.label" = "패널 높이 조절";
+"popover.resize.value" = "높이 %@ 포인트";
+
+/* Trade plans: backfill mode and an unidentifiable quote currency. */
+"plans.backfill.date" = "실제 체결일";
+"plans.unit.unknownCurrency" = "통화 불명";

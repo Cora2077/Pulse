@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import MCP
 import Observation
 import PulseCore
@@ -76,7 +77,16 @@ final class MCPAgentServer {
             self.listener = listener
             status = .running(port: Self.port)
         } catch {
+            #if DEBUG
+            if let failure = error as? MCPTokenStore.KeychainFailure,
+               [errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled].contains(failure.status) {
+                status = .failed(PulseLocalization.localizedString("settings.mcp.keychain.noninteractive"))
+            } else {
+                status = .failed(String(describing: error))
+            }
+            #else
             status = .failed(String(describing: error))
+            #endif
         }
     }
 

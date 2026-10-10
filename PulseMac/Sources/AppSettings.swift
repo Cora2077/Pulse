@@ -129,6 +129,28 @@ final class AppSettings {
     /// dragged it to is on us.
     var pinnedWindowTopLeft: CGPoint? { didSet { save() } }
 
+    /// Total menu-bar panel height the user dragged the resize grip to, including
+    /// the grip strip itself. `nil` — the default, and the value an older snapshot
+    /// decodes to — keeps the automatic per-route height. This is a local display
+    /// preference: it is not watchlist data and is never synced.
+    private(set) var menuBarPanelHeight: CGFloat? {
+        didSet {
+            guard oldValue != menuBarPanelHeight else { return }
+            save()
+        }
+    }
+
+    /// Writes only a height a drag can legitimately produce. Rejecting NaN and
+    /// infinities here keeps a corrupt plist value from becoming a window size.
+    func setMenuBarPanelHeight(_ height: CGFloat?) {
+        guard let height else {
+            menuBarPanelHeight = nil
+            return
+        }
+        guard height.isFinite, height > 0 else { return }
+        menuBarPanelHeight = height
+    }
+
     /// Provider ids disabled by the user (all enabled by default)
     var disabledProviderIDs: Set<String> = [] { didSet { save() } }
 
@@ -137,6 +159,15 @@ final class AppSettings {
 
     /// Most-recent-first market search queries, capped, user-clearable from the search panel.
     var recentSearchQueries: [String] = [] { didSet { save() } }
+
+    /// Whether plan cards draw at the compact height (on by default).
+    ///
+    /// A plan list is a queue to scan, not a page to read, so the default is
+    /// the dense one and the comfortable layout is the opt-out. Like the panel
+    /// height this is a local display preference: it is not watchlist data and
+    /// is never synced, and the height it exists to save is off the same panel
+    /// the menu-bar grip measures.
+    var compactPlanCards: Bool = true { didSet { save() } }
 
     private static let recentSearchLimit = 8
 
@@ -213,8 +244,18 @@ final class AppSettings {
             disabledProviderIDs = snapshot.disabledProviderIDs ?? []
             mcpEnabled = snapshot.mcpEnabled ?? false
             recentSearchQueries = snapshot.recentSearchQueries ?? []
+            // An older snapshot has no key at all, and the default the user
+            // never chose is the compact one — the same `true` a fresh install
+            // gets, so upgrading does not silently reflow every plan row.
+            compactPlanCards = snapshot.compactPlanCards ?? true
             pinnedWindowVisible = snapshot.pinnedWindowVisible ?? false
             pinnedWindowTopLeft = snapshot.pinnedWindowTopLeft
+            // A rejected (non-finite or nonpositive) stored value decodes as nil,
+            // which is the same automatic sizing an absent key gets.
+            if let storedHeight = snapshot.menuBarPanelHeight,
+               storedHeight.isFinite, storedHeight > 0 {
+                menuBarPanelHeight = storedHeight
+            }
             showPriceInMenuBar = snapshot.showPriceInMenuBar ?? false
             languagePreference = snapshot.languagePreference ?? .system
             positionCostBasis = snapshot.positionCostBasis ?? .average
@@ -244,8 +285,10 @@ final class AppSettings {
         var disabledProviderIDs: Set<String>?
         var mcpEnabled: Bool?
         var recentSearchQueries: [String]?
+        var compactPlanCards: Bool?
         var pinnedWindowVisible: Bool?
         var pinnedWindowTopLeft: CGPoint?
+        var menuBarPanelHeight: CGFloat?
         var showPriceInMenuBar: Bool?
         var languagePreference: PulseLanguagePreference?
         var positionCostBasis: PositionCostBasis?
@@ -265,8 +308,10 @@ final class AppSettings {
                                 disabledProviderIDs: disabledProviderIDs,
                                 mcpEnabled: mcpEnabled,
                                 recentSearchQueries: recentSearchQueries,
+                                compactPlanCards: compactPlanCards,
                                 pinnedWindowVisible: pinnedWindowVisible,
                                 pinnedWindowTopLeft: pinnedWindowTopLeft,
+                                menuBarPanelHeight: menuBarPanelHeight,
                                 showPriceInMenuBar: showPriceInMenuBar,
                                 languagePreference: languagePreference,
                                 positionCostBasis: positionCostBasis,

@@ -16,6 +16,11 @@ struct PlanEditorView: View {
     @State private var quantityText = ""
     @State private var noteText = ""
     @State private var status: TradePlan.Status = .active
+    @State private var executionEntry: TradePlanEntry?
+    /// The plan a delete is being requested for. The delete button assigns here
+    /// rather than writing: nothing is removed until the confirmation sheet
+    /// accepts, and `didSave` is set only by that accepted route.
+    @State private var deletionRequest: PlanDeletionRequest?
     /// `nil` is "unassigned" — a plan with no intended bucket. The picker
     /// offers it explicitly; an empty tag would be indistinguishable from
     /// "nothing selected".
@@ -51,14 +56,32 @@ struct PlanEditorView: View {
     /// exists in the new account would otherwise be edited by a form filled in
     /// for the old one.
     @State private var draftAccount: BrokerageAccountID
+    @State private var boundPortionID: UUID?
+    @State private var loadedAllocationRevision: UUID?
+    /// The instrument a caller picked for a brand-new plan, when the watchlist
+    /// does not hold it yet. Read only while `planID == nil` and only for the
+    /// symbol it names: it stands in for a missing watchlist row so the form
+    /// can be filled in *before* the symbol is a member. The membership itself
+    /// is written by a successful save, never by opening this form.
+    private let newSymbolInfo: SymbolInfo?
+    /// Reports a plan the store accepted. A caller that hosts this editor can
+    /// use it to make the new record visible; with no callback the only signal
+    /// remains the route change.
+    private let onSaved: ((TradePlan) -> Void)?
 
     init(symbol: SymbolID, planID: UUID?, returnRoute: PositionReturnRoute,
-         route: Binding<PopoverRoute>, account: BrokerageAccountID) {
+         route: Binding<PopoverRoute>, account: BrokerageAccountID,
+         newSymbolInfo: SymbolInfo? = nil,
+         onSaved: ((TradePlan) -> Void)? = nil,
+         positionPortionID: UUID? = nil) {
         self.symbol = symbol
         self.planID = planID
         self.returnRoute = returnRoute
         self._route = route
-        _draftAccount = State(initialValue: account)
+        self._draftAccount = State(initialValue: account)
+        self.newSymbolInfo = newSymbolInfo
+        self.onSaved = onSaved
+        self._boundPortionID = State(initialValue: positionPortionID)
     }
 
     private var accountMatchesDraft: Bool {
@@ -69,9 +92,49 @@ struct PlanEditorView: View {
     /// refused until the user returns to the source account.
     private var showsAccountNotice: Bool { !accountMatchesDraft }
 
-    private var item: WatchItem? { appState.watchlist.draftItem(for: symbol, account: draftAccount) }
+    /// The watchlist row this draft is written into, or — for a new plan whose
+    /// symbol the watchlist does not hold yet — a stand-in carrying just the
+    /// metadata the form needs. The stand-in never names a stored plan, so a
+    /// new plan can only ever be created from it.
+    private var item: WatchItem? {
+        appState.watchlist.draftItem(for: symbol, account: draftAccount) ?? standInItem
+    }
+
+    /// The item the store would build if the chosen symbol were added. `nil`
+    /// unless this is a new plan for exactly the symbol the caller picked.
+    private var standInItem: WatchItem? {
+        guard planID == nil, let newSymbolInfo, newSymbolInfo.symbol == symbol else { return nil }
+        return WatchItem(
+            symbol: symbol,
+            displayName: newSymbolInfo.name,
+            displayNameSource: newSymbolInfo.displayNameSource,
+            instrumentType: newSymbolInfo.type
+        )
+    }
+
     private var quote: Quote? { appState.market.quote(for: symbol) }
     private var currencyCode: String? { quote?.currencyCode ?? symbol.currencyCode }
+
+    /// The price label's money, resolved through the one shared rule the plan
+    /// row and the fill sheet already use.
+    ///
+    /// The editor used to say only "Price", which is the same bare number the
+    /// plan row was fixed for: a crypto plan's quote is its pair's asset, not
+    /// the symbol's market currency, and a label that names no money leaves the
+    /// reader to guess which one the field is in. A `nil` here — a crypto pair
+    /// whose quote asset did not survive sanitization — keeps the label generic
+    /// rather than inventing a currency for it.
+    private var priceCurrencyLabel: String? {
+        PlanValueText.normalizedQuoteCurrency(currencyCode, symbol: symbol)
+    }
+
+    /// The unit the quantity field is counted in, resolved through the shared
+    /// helper so the editor, the row that opened it, and the fill sheet cannot
+    /// disagree. A brand-new plan whose symbol is not on the watchlist yet reads
+    /// the caller's `newSymbolInfo` through `item`'s stand-in.
+    private var quantityUnitLabel: String {
+        PlanValueText.quantityUnit(symbol: symbol, instrumentType: item?.resolvedInstrumentType)
+    }
 
     private var existingPlan: TradePlan? {
         guard let planID else { return nil }
@@ -86,6 +149,7 @@ struct PlanEditorView: View {
         VStack(spacing: 0) {
             PositionPageHeader(
                 symbol: symbol,
+                displayName: planID == nil ? newSymbolInfo?.resolvedDisplayName : nil,
                 title: (PulseLocalization.localizedString(
                     planID == nil ? "plan.title.add" : "plan.title.edit"
                 ), sideColor),
@@ -97,16 +161,16 @@ struct PlanEditorView: View {
                 .padding(.bottom, accountMatchesDraft ? 0 : 6)
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    kindPicker
+                    if boundPortionID != nil { sourcePositionRow } else { kindPicker }
                     HStack(spacing: 8) {
                         PositionInputCell(
-                            label: PulseLocalization.localizedString("plan.price"),
+                            label: priceLabel,
                             text: $priceText,
                             suggestion: currentPriceSuggestion,
                             autofocus: planID == nil
                         )
                         PositionInputCell(
-                            label: PulseLocalization.localizedString("position.quantity"),
+                            label: quantityLabel,
                             text: $quantityText
                         )
                     }
@@ -115,8 +179,10 @@ struct PlanEditorView: View {
                         text: $noteText
                     )
                     statusPicker
-                    poolPicker
-                    fundingPicker
+                    if boundPortionID == nil {
+                        poolPicker
+                        fundingPicker
+                    }
                     conditionSection
                     summaryRow
                 }
@@ -132,9 +198,11 @@ struct PlanEditorView: View {
             HStack {
                 if planID != nil {
                     // `.destructive` alone doesn't color a bordered macOS
-                    // button; the label carries the red itself.
+                    // button; the label carries the red itself. Pressing it
+                    // only *requests* the deletion — the confirmation sheet
+                    // owns the write and the route change.
                     Button(role: .destructive) {
-                        deletePlan()
+                        requestDeletion()
                     } label: {
                         Text(PulseLocalization.localizedString("plan.delete"))
                             .foregroundStyle(.red)
@@ -153,9 +221,99 @@ struct PlanEditorView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onSubmit { save() }
         .task { load() }
+        .sheet(item: $executionEntry) { entry in
+            PlanExecutionSheet(entry: entry, account: draftAccount) {
+                let current = existingPlan.map {
+                    TradePlanEntry(symbol: symbol, plan: $0,
+                        transactions: appState.watchlist.transactionsForPlan(symbol, account: draftAccount))
+                }
+                executionEntry = nil
+                if (current?.filledQuantity ?? 0) > entry.filledQuantity {
+                    route = returnRoute.popoverRoute
+                }
+            }
+        }
+        // The editor leaves the page only on a deletion the shared modifier
+        // actually performed. Requesting or cancelling the confirmation keeps
+        // the draft open, so a cancelled delete never looks like a saved one.
+        .modifier(PlanDeletionConfirmation(request: $deletionRequest, onDeleted: {
+            didSave = true
+            route = returnRoute.popoverRoute
+        }))
     }
 
     // MARK: - Form rows
+
+    /// The price field's label: "Price (USD)", or the plain key when no usable
+    /// code exists. Both are existing localizable keys, so every language keeps
+    /// the wording it already shipped and only gains the currency.
+    private var priceLabel: String {
+        guard let priceCurrencyLabel else {
+            return PulseLocalization.localizedString("plan.price")
+        }
+        return PulseLocalization.localizedString("trade.priceWithCurrency", priceCurrencyLabel)
+    }
+
+    /// The quantity field's label: "Quantity (shares)", "Quantity (BTC)".
+    /// `PlanValueText.quantityUnit` always answers — the neutral unit is the
+    /// fallback — so this is never a bare number either.
+    private var quantityLabel: String {
+        PulseLocalization.localizedString("trade.quantityWithUnit", quantityUnitLabel)
+    }
+
+    private var boundSource: PositionPortion? {
+        guard let boundPortionID, let item, !item.positionAllocationNeedsReconciliation,
+              item.positionQuantity > 0, let allocation = item.positionAllocation,
+              allocation.isValid, allocation.hasMatchingSources(for: item) else { return nil }
+        return allocation.portions.first { $0.id == boundPortionID && $0.quantity.isFinite && $0.quantity > 0 }
+    }
+
+    private var availableSourceQuantity: Double {
+        guard let boundPortionID, let item else { return 0 }
+        return item.availableSalePlanQuantity(for: boundPortionID, excludingPlanID: planID)
+    }
+
+    private var filledQuantity: Double {
+        guard let existingPlan, let item else { return 0 }
+        return TradePlanExecutionProgress(plan: existingPlan, transactions: item.transactions).filledQuantity
+    }
+
+    private var sourceIsValid: Bool {
+        guard boundPortionID != nil, status == .active else { return true }
+        guard let source = boundSource, source.pool.effectivePurpose == positionPool?.effectivePurpose,
+              let quantity = parsedQuantity else { return false }
+        let remaining = max(0, quantity - filledQuantity)
+        return remaining <= availableSourceQuantity + PositionAllocation.quantityTolerance(remaining, availableSourceQuantity)
+    }
+
+    private var sourcePositionRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(poolCopy("卖出这笔仓位", "Sell this position portion"))
+                .font(.system(size: 12, weight: .semibold)).foregroundStyle(sideColor)
+            if let source = boundSource {
+                Text("\(source.pool.title) · \(PlanValueText.quantity(source.quantity, symbol: symbol, instrumentType: item?.resolvedInstrumentType)) "
+                     + poolCopy("份额", "units"))
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(poolCopy("可设置卖出：", "Available to plan: ")
+                     + PlanValueText.quantity(availableSourceQuantity, symbol: symbol, instrumentType: item?.resolvedInstrumentType)
+                     + (filledQuantity > 0
+                        ? poolCopy(" · 已成交：", " · Filled: ")
+                            + PlanValueText.quantity(filledQuantity, symbol: symbol, instrumentType: item?.resolvedInstrumentType)
+                        : ""))
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                if !sourceIsValid {
+                    Text(poolCopy("计划剩余数量超过这笔仓位可用数量，请调整数量。", "Reduce the remaining plan quantity to fit this portion."))
+                        .font(.system(size: 10)).foregroundStyle(.orange)
+                }
+            } else {
+                Text(poolCopy("源仓位已变化，无法继续卖出；可以取消这条计划。", "The source portion changed. Cancel this plan or restore its source."))
+                    .font(.system(size: 10)).foregroundStyle(.orange)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(sideColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+    }
 
     /// Two flat buttons sharing the trade page's DNA, so "buy" reads as the up
     /// colour everywhere in the app.
@@ -192,21 +350,57 @@ struct PlanEditorView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
+    /// Recording executes the stored intention, not an unsaved draft. Require
+    /// saving changes first so opening a fill never silently drops those edits.
+    private var draftMatchesStoredPlan: Bool {
+        guard didLoad, let plan = existingPlan, loadedUpdatedAt == plan.updatedAt else { return false }
+        return kind == plan.kind && parsedPrice == plan.price && parsedQuantity == plan.quantity
+            && status == plan.status && Self.normalizedNote(noteText) == plan.note
+            && positionPool == plan.positionPool && fundingSource == plan.fundingSource
+            && boundPortionID == plan.positionPortionID && conditions == (plan.conditions ?? [])
+    }
+
     private var statusPicker: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let entry = existingPlan.map {
+            TradePlanEntry(symbol: symbol, plan: $0,
+                transactions: appState.watchlist.transactionsForPlan(symbol, account: draftAccount))
+        }
+        return VStack(alignment: .leading, spacing: 3) {
             Text(PulseLocalization.localizedString("plan.status"))
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
-            Picker("", selection: $status) {
-                ForEach(TradePlan.Status.allCases, id: \.self) { value in
-                    Text(PulseLocalization.localizedString("plan.status.\(value.rawValue)"))
-                        .tag(value)
+            if let entry, entry.displayState == .filled {
+                PlanStatusBadge(entry: entry)
+            } else {
+                Picker("", selection: $status) {
+                    ForEach(TradePlan.Status.allCases.filter { $0 != .done || status == .done }, id: \.self) { value in
+                        Text(PulseLocalization.localizedString("plan.status.\(value.rawValue)")).tag(value)
+                    }
                 }
+                .labelsHidden().pickerStyle(.segmented).controlSize(.small)
+                .onChange(of: status) { _, _ in clearError() }
             }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .controlSize(.small)
-            .onChange(of: status) { _, _ in clearError() }
+            if let entry, entry.displayState == .waiting {
+                Button(PulseLocalization.localizedString("plans.action.recordFill")) { executionEntry = entry }
+                    .controlSize(.small)
+                    .disabled(!accountMatchesDraft || !draftMatchesStoredPlan)
+            } else if let entry, entry.canBackfillFill {
+                // A stopped record whose real fill was never completed. The
+                // button opens the same fill sheet, which performs the guarded
+                // backfill; the plan itself is not revived, because the user
+                // already settled it.
+                Button(PulseLocalization.localizedString("plans.action.backfill")) { executionEntry = entry }
+                    .controlSize(.small)
+                    .disabled(!accountMatchesDraft || !draftMatchesStoredPlan)
+            }
+            // Both fill entrances are gated on the draft matching the stored
+            // plan, so both need the same "save first" explanation. A stopped
+            // record that can be backfilled is the second one.
+            Text(PulseLocalization.localizedString(
+                (entry?.displayState == .waiting || entry?.canBackfillFill == true) && !draftMatchesStoredPlan
+                    ? "plans.display.saveBeforeFill" : "plans.display.recordHelp"))
+                .font(.system(size: 9)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -516,11 +710,16 @@ struct PlanEditorView: View {
     /// not a number that keeps moving.
     private var currentPriceSuggestion: PositionInputCell.Suggestion? {
         guard let quote, quote.price.isFinite, quote.price > 0 else { return nil }
-        let price = PriceFormatter.price(quote.price, market: symbol.market)
+        // The chip shows the market's money beside the field that will hold it.
+        // The *fill text* stays a bare number: it becomes the price field's
+        // contents, and a currency suffix there would not parse. Only the
+        // visible label names the currency.
+        let fill = PriceFormatter.price(quote.price, market: symbol.market)
         return PositionInputCell.Suggestion(
-            label: PulseLocalization.localizedString("trade.currentPrice", price),
+            label: PulseLocalization.localizedString("trade.currentPrice",
+                PlanValueText.price(quote.price, symbol: symbol, currencyCode: currencyCode)),
             help: PulseLocalization.localizedString("plan.useCurrentPrice"),
-            fill: { priceText = price }
+            fill: { priceText = fill }
         )
     }
 
@@ -581,18 +780,14 @@ struct PlanEditorView: View {
     private func load() {
         guard !didLoad else { return }
         didLoad = true
-        guard let plan = existingPlan else { return }
-        kind = plan.kind
-        priceText = Self.fieldText(plan.price)
-        quantityText = Self.fieldText(plan.quantity)
-        noteText = plan.note ?? ""
-        status = plan.status
-        positionPool = plan.positionPool
-        fundingSource = plan.fundingSource
-        // A plan with no stored condition list keeps `nil` on save; only a plan
-        // that already has one starts from it.
-        conditions = plan.conditions ?? []
-        loadedUpdatedAt = plan.updatedAt
+        loadedAllocationRevision = item?.positionAllocation?.revision
+        if let plan = existingPlan {
+            load(from: plan)
+        } else if boundPortionID != nil {
+            kind = .sell
+            positionPool = boundSource?.pool.effectivePurpose
+            quantityText = Self.fieldText(availableSourceQuantity)
+        }
     }
 
     /// Re-reads the plan after a stale-plan refusal, throwing away the draft's
@@ -600,6 +795,13 @@ struct PlanEditorView: View {
     /// just refused are gone with the draft; the message says so.
     private func reloadFromStore() {
         guard let plan = existingPlan else {
+            if planID == nil, boundPortionID != nil {
+                loadedAllocationRevision = item?.positionAllocation?.revision
+                positionPool = boundSource?.pool.effectivePurpose
+                quantityText = Self.fieldText(availableSourceQuantity)
+                clearError()
+                return
+            }
             route = returnRoute.popoverRoute
             return
         }
@@ -610,12 +812,16 @@ struct PlanEditorView: View {
     }
 
     private func load(from plan: TradePlan) {
+        boundPortionID = plan.positionPortionID
+        loadedAllocationRevision = item?.positionAllocation?.revision
         kind = plan.kind
         priceText = Self.fieldText(plan.price)
         quantityText = Self.fieldText(plan.quantity)
         noteText = plan.note ?? ""
         status = plan.status
-        positionPool = plan.positionPool
+        // Editing explicitly reconfirms the source's current purpose. The
+        // stored plan stays unchanged until Save accepts the draft.
+        positionPool = boundPortionID == nil ? plan.positionPool : (boundSource?.pool.effectivePurpose ?? plan.positionPool)
         fundingSource = plan.fundingSource
         conditions = plan.conditions ?? []
         expandedConditionIDs = []
@@ -660,7 +866,7 @@ struct PlanEditorView: View {
     /// switch does block it: there is no version of this draft that belongs to
     /// the ledger now selected.
     private var canSave: Bool {
-        !didSave && isValid && accountMatchesDraft
+        !didSave && isValid && sourceIsValid && accountMatchesDraft && item?.supportsPosition == true
     }
 
     private func clearError() {
@@ -668,7 +874,7 @@ struct PlanEditorView: View {
         saveErrorIsStale = false
     }
     private func save() {
-        guard !didSave, accountMatchesDraft, let item, let price = parsedPrice,
+        guard !didSave, accountMatchesDraft, let item, item.supportsPosition, let price = parsedPrice,
               let quantity = parsedQuantity else {
             return
         }
@@ -681,6 +887,13 @@ struct PlanEditorView: View {
         guard conditionsAreValid else {
             saveError = PulseLocalization.localizedString("plan.error.conditions")
             saveErrorIsStale = false
+            return
+        }
+        guard sourceIsValid else { return }
+        if boundPortionID != nil, status == .active,
+           loadedAllocationRevision != item.positionAllocation?.revision {
+            saveError = poolCopy("仓位已变化，请重新载入后确认数量。", "The position changed. Reload and confirm the quantity.")
+            saveErrorIsStale = true
             return
         }
         // The plan this draft was opened from has moved on. Refusing before
@@ -710,6 +923,7 @@ struct PlanEditorView: View {
         plan.status = status
         plan.note = Self.normalizedNote(noteText)
         plan.positionPool = positionPool
+        plan.positionPortionID = boundPortionID
         // `nil` means the plan never carried a funding intention; picking
         // "未标注" stores the explicit `.unmarked` that says the user cleared it.
         //
@@ -725,6 +939,12 @@ struct PlanEditorView: View {
         plan.conditions = conditions.isEmpty && existingPlan?.conditions == nil ? nil : conditions
 
         didSave = true
+        // Add membership only on save, in the frozen financial account. The
+        // shared-list facade could instead choose another group's owner.
+        if appState.watchlist.item(for: symbol) == nil,
+           let standIn = standInItem, standIn.supportsPosition, let newSymbolInfo {
+            appState.watchlist.add(newSymbolInfo)
+        }
         let accepted = appState.watchlist.setTradePlan(plan, for: item.symbol)
         guard accepted else {
             // The store refused the payload (an instrument that does not
@@ -736,16 +956,41 @@ struct PlanEditorView: View {
             saveErrorIsStale = false
             return
         }
+        onSaved?(plan)
         route = returnRoute.popoverRoute
     }
 
-    private func deletePlan() {
-        guard !didSave, accountMatchesDraft, let planID else {
+    /// Opens the deletion confirmation for the plan this editor loaded.
+    ///
+    /// Two refusals come first, and neither silently retargets newer data.
+    /// An account switch means there is no version of this draft that belongs
+    /// to the ledger now selected, and a plan that moved since the editor's
+    /// snapshot is not the plan the user was looking at — deleting it by id
+    /// would destroy a record nobody in this window ever saw. Both keep the
+    /// draft open with the reason visible instead.
+    private func requestDeletion() {
+        guard !didSave, accountMatchesDraft, let planID else { return }
+        guard let plan = existingPlan else {
+            saveError = PulseLocalization.localizedString("plan.error.stale")
+            saveErrorIsStale = true
             return
         }
-        didSave = true
-        appState.watchlist.deleteTradePlan(planID, for: symbol)
-        route = returnRoute.popoverRoute
+        // The stored plan changed under this draft. Refuse before a request is
+        // even built, so the sheet can never be confirmed against newer bytes.
+        if loadedUpdatedAt != nil, plan.updatedAt != loadedUpdatedAt {
+            saveError = PulseLocalization.localizedString("plan.error.stale")
+            saveErrorIsStale = true
+            return
+        }
+        deletionRequest = PlanDeletionRequest(
+            entry: TradePlanEntry(
+                symbol: symbol,
+                plan: plan,
+                transactions: appState.watchlist.transactionsForPlan(symbol, account: draftAccount)
+            ),
+            account: draftAccount,
+            hasUnsavedDraft: !draftMatchesStoredPlan
+        )
     }
 
     private func parseDecimal(_ text: String) -> Double? {

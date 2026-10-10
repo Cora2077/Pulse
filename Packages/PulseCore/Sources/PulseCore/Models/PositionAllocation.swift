@@ -354,27 +354,17 @@ public struct PositionAllocation: Codable, Hashable, Sendable {
         return max(scale * 1e-12, scale.ulp * 4)
     }
 
+    /// Whether every portion's recorded source still holds against `item`.
+    ///
+    /// The per-portion rule lives in `hasMatchingSource(for:item:)` (see
+    /// `PositionBuySources.swift`) so a caller can invalidate exactly the cards
+    /// that broke instead of all of them. This stays the conjunction over the
+    /// whole array: "is this allocation still fully sourced" is still the
+    /// question it answers, and a card that fails still fails the whole check.
     public func hasMatchingSources(for item: WatchItem) -> Bool {
         let entries = PositionLedger(transactions: item.transactions).entries
-        for portion in portions {
-            switch portion.origin.kind {
-            case .snapshot:
-                if let date = portion.origin.date,
-                   entries.contains(where: { $0.transaction.kind == .adjustment && $0.transaction.createdAt > date }) {
-                    return false
-                }
-            case .buy:
-                guard let id = portion.origin.transactionID,
-                      let entryIndex = entries.firstIndex(where: { $0.transaction.id == id }) else { return false }
-                let entry = entries[entryIndex]
-                guard entry.transaction.kind == .buy,
-                      entry.transaction.price == portion.origin.price,
-                      entry.transaction.quantity == portion.origin.quantity,
-                      entry.transaction.date == portion.origin.date,
-                      !entries.dropFirst(entryIndex + 1).contains(where: { $0.transaction.kind == .adjustment }) else {
-                    return false
-                }
-            }
+        for portion in portions where !Self.matchingSource(for: portion, entries: entries) {
+            return false
         }
         return isValid
     }

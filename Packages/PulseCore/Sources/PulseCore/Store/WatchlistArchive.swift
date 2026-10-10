@@ -19,7 +19,8 @@ import Foundation
 /// condition list a block of actually-held shares is judged against; version 11
 /// scopes the archive to one brokerage account; version 12 adds a
 /// per-portion brokerage-account label; version 13 records the account selected
-/// for a buy on its transaction; version 14 identifies the source account of a cross-account plan fill.
+/// for a buy on its transaction; version 14 identifies the source account of a cross-account plan fill;
+/// version 15 ties a sell plan to one existing position card.
 /// Exports use the oldest version that describes their data. Everything except `market` and
 /// `code` is optional. An entry as small as `{"market": "us", "code": "NVDA"}`
 /// imports correctly; the display name is then filled in by the first quote
@@ -27,7 +28,7 @@ import Foundation
 public struct WatchlistArchive: Codable, Sendable, Equatable {
     public static let formatIdentifier = "pulse.watchlist"
     /// Newest archive schema. Older data keeps its existing version.
-    public static let currentVersion = 14
+    public static let currentVersion = 15
     private static let reviewVersion = 3
     private static let tradingMetadataVersion = 4
     private static let allocationVersion = 5
@@ -46,6 +47,11 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
     static let brokerageTagVersion = 12
     private static let transactionAccountVersion = 13
     private static let planSourceAccountVersion = 14
+    /// The version a sell plan's tie to one existing position card requires. It
+    /// is the newest field, so it outranks every other reason to raise the
+    /// version: a payload carrying a binding must not claim 14, whose reader
+    /// would drop the binding and let the plan fall back to spending the pool.
+    private static let positionSalePlanVersion = 15
     private static let unixReferenceOffset: TimeInterval = 978_307_200
 
     public var format: String
@@ -229,7 +235,16 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         // change's before/after snapshots still counts: a payload that dropped
         // the change log's copy would lose the attribution the user recorded.
         let hasBrokerageTag = entries.contains { $0.positionAllocation?.hasBrokerageTagMetadata == true }
-        version = transactions.contains { $0.planExecution?.sourceAccountID != nil } ? Self.planSourceAccountVersion
+        // A sell plan's tie to one card lives on the plan, in a revision's
+        // configuration, or in a fill's immutable snapshot. All three are
+        // scanned because a reader that stopped at the declared version would
+        // drop whichever copy was left out — and a dropped binding is not
+        // cosmetic: the plan would silently widen to its whole pool.
+        let hasPositionSalePlan = entries.contains { entry in
+            entry.plans?.contains { $0.hasPositionPortionMetadata } == true
+        } || transactions.contains { $0.planExecution?.hasPositionPortionMetadata == true }
+        version = hasPositionSalePlan ? Self.positionSalePlanVersion
+            : transactions.contains { $0.planExecution?.sourceAccountID != nil } ? Self.planSourceAccountVersion
             : transactions.contains { $0.brokerageAccountID != nil } ? Self.transactionAccountVersion
             : hasBrokerageTag ? Self.brokerageTagVersion
             : brokerageAccountID != nil ? Self.brokerageAccountVersion
@@ -387,6 +402,18 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         }
         let entries = archive.lists.flatMap(\.entries)
         let transactions = entries.flatMap { $0.transactions ?? [] }
+        // A sell plan's tie to one card is invisible to a reader that stops at
+        // the declared version, and it is the one field whose silent loss
+        // changes what the plan *does* rather than merely what it records: the
+        // plan would fall back to consuming its whole pool. A payload claiming
+        // an older version while carrying a binding is therefore rejected
+        // rather than quietly downgraded.
+        if archive.version < positionSalePlanVersion,
+           entries.contains(where: { entry in
+               entry.plans?.contains { $0.hasPositionPortionMetadata } == true
+           }) || transactions.contains(where: { $0.planExecution?.hasPositionPortionMetadata == true }) {
+            throw DecodingFailure.unsupportedVersion(positionSalePlanVersion)
+        }
         if archive.version < planSourceAccountVersion, transactions.contains(where: { $0.planExecution?.sourceAccountID != nil }) {
             throw DecodingFailure.unsupportedVersion(planSourceAccountVersion)
         }
@@ -531,7 +558,11 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
                   configuration.price.isFinite, configuration.price > 0,
                   configuration.quantity.isFinite, configuration.quantity > 0,
                   configuration.createdAt.timeIntervalSince1970.isFinite,
-                  (configuration.note.map { $0.count <= 4_000 } ?? true) else { return false }
+                  (configuration.note.map { $0.count <= 4_000 } ?? true),
+                  TradePlan.hasValidPositionPortionBinding(
+                      kind: configuration.kind, positionPool: configuration.positionPool,
+                      positionPortionID: configuration.positionPortionID
+                  ) else { return false }
             var nestedIDs = Set<UUID>()
             for condition in configuration.conditions ?? [] where
                 condition.normalized() != condition || !nestedIDs.insert(condition.id).inserted {
@@ -543,13 +574,17 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
 
     /// A transaction's plan snapshot is immutable context: it has to point at a
     /// plan and carry a configuration the ledger can still read back, including
-    /// any event references its conditions hold.
+    /// any event references its conditions hold and any card it was tied to.
     private static func isValidPlanExecution(_ execution: TradePlanExecution) -> Bool {
         let configuration = execution.configuration
         guard configuration.price.isFinite, configuration.price > 0,
               configuration.quantity.isFinite, configuration.quantity > 0,
               configuration.createdAt.timeIntervalSince1970.isFinite,
-              (configuration.note.map { $0.count <= 4_000 } ?? true) else { return false }
+              (configuration.note.map { $0.count <= 4_000 } ?? true),
+              TradePlan.hasValidPositionPortionBinding(
+                  kind: configuration.kind, positionPool: configuration.positionPool,
+                  positionPortionID: configuration.positionPortionID
+              ) else { return false }
         var conditionIDs = Set<UUID>()
         for condition in configuration.conditions ?? [] where
             condition.normalized() != condition || !conditionIDs.insert(condition.id).inserted {

@@ -13,11 +13,12 @@ import Foundation
 /// named brokerage accounts; version 13 adds per-account settings; version 14
 /// adds a per-portion brokerage-account label; version 15 records the account
 /// selected for a buy on its transaction; version 16 identifies the source account
-/// of a cross-account plan fill.
+/// of a cross-account plan fill; version 17 ties a sell plan to one existing
+/// position card.
 /// Encoders keep older versions when the newer fields are absent.
 public enum WatchlistSyncWireCodec {
     public static let formatIdentifier = "pulse.device-sync"
-    public static let currentVersion = 16
+    public static let currentVersion = 17
     private static let reviewVersion = 4
     private static let tradingMetadataVersion = 5
     private static let allocationVersion = 6
@@ -35,6 +36,11 @@ public enum WatchlistSyncWireCodec {
     private static let brokerageTagVersion = 14
     private static let transactionAccountVersion = 15
     private static let planSourceAccountVersion = 16
+    /// The version a sell plan's tie to one existing position card requires.
+    /// A binding is the newest field and outranks every other threshold; a
+    /// reader that stops at the declared version would drop it and let the plan
+    /// widen back to its whole pool, so it is never declared below this.
+    private static let positionSalePlanVersion = 17
 
     public struct File: Sendable, Equatable {
         public let format: String
@@ -153,7 +159,19 @@ public enum WatchlistSyncWireCodec {
         // would declare the settings version and let an older reader drop the
         // attribution.
         let hasBrokerageTag = snapshot.allAccountItems.contains { $0.positionAllocation?.hasBrokerageTagMetadata == true }
-        let version = snapshot.allAccountItems.flatMap(\.transactions).contains { $0.planExecution?.sourceAccountID != nil }
+        // A sell plan's binding to one card can live on the plan, in a
+        // revision's configuration, or in a fill's immutable snapshot. Every
+        // copy is scanned, including inside named accounts, because a reader
+        // that stopped at the declared version would drop the one it did not
+        // look at — and a plan whose binding vanished widens to its whole pool.
+        let hasPositionSalePlan = snapshot.allAccountItems.contains { item in
+            item.plans.contains { $0.hasPositionPortionMetadata }
+        } || snapshot.allAccountItems.flatMap(\.transactions).contains {
+            $0.planExecution?.hasPositionPortionMetadata == true
+        }
+        let version = hasPositionSalePlan
+            ? positionSalePlanVersion
+            : snapshot.allAccountItems.flatMap(\.transactions).contains { $0.planExecution?.sourceAccountID != nil }
             ? planSourceAccountVersion
             : snapshot.allAccountItems.flatMap(\.transactions).contains { $0.brokerageAccountID != nil }
             ? transactionAccountVersion
@@ -261,6 +279,20 @@ public enum WatchlistSyncWireCodec {
         }
         let items = file.snapshot.items + file.snapshot.retainedHistoryItems
         let transactions = items.flatMap(\.transactions)
+        // A sell plan's tie to one card is the newest field, and it is the one
+        // whose loss changes behaviour rather than just losing an annotation:
+        // without it the plan falls back to consuming its whole pool. It is
+        // checked first and against the whole snapshot, named accounts
+        // included, so a payload claiming an older version while carrying a
+        // binding is rejected instead of silently downgraded.
+        if file.version < positionSalePlanVersion,
+           file.snapshot.allAccountItems.contains(where: { item in
+               item.plans.contains { $0.hasPositionPortionMetadata }
+           }) || file.snapshot.allAccountItems.flatMap(\.transactions).contains(where: {
+               $0.planExecution?.hasPositionPortionMetadata == true
+           }) {
+            throw CodecError.unsupportedVersion(positionSalePlanVersion)
+        }
         if file.version < planSourceAccountVersion,
            file.snapshot.allAccountItems.flatMap(\.transactions).contains(where: { $0.planExecution?.sourceAccountID != nil }) {
             throw CodecError.unsupportedVersion(planSourceAccountVersion)
@@ -419,7 +451,11 @@ public enum WatchlistSyncWireCodec {
                   configuration.price.isFinite, configuration.price > 0,
                   configuration.quantity.isFinite, configuration.quantity > 0,
                   configuration.createdAt.timeIntervalSince1970.isFinite,
-                  (configuration.note.map { $0.count <= 4_000 } ?? true) else { return false }
+                  (configuration.note.map { $0.count <= 4_000 } ?? true),
+                  TradePlan.hasValidPositionPortionBinding(
+                      kind: configuration.kind, positionPool: configuration.positionPool,
+                      positionPortionID: configuration.positionPortionID
+                  ) else { return false }
             var nestedIDs = Set<UUID>()
             for condition in configuration.conditions ?? [] where
                 condition.normalized() != condition || !nestedIDs.insert(condition.id).inserted {
@@ -430,13 +466,18 @@ public enum WatchlistSyncWireCodec {
     }
 
     /// The immutable plan snapshot on a fill has to be readable on its own,
-    /// including any event references its conditions carry.
+    /// including any event references its conditions carry and the card it was
+    /// tied to.
     private static func isValidPlanExecution(_ execution: TradePlanExecution) -> Bool {
         let configuration = execution.configuration
         guard configuration.price.isFinite, configuration.price > 0,
               configuration.quantity.isFinite, configuration.quantity > 0,
               configuration.createdAt.timeIntervalSince1970.isFinite,
-              (configuration.note.map { $0.count <= 4_000 } ?? true) else { return false }
+              (configuration.note.map { $0.count <= 4_000 } ?? true),
+              TradePlan.hasValidPositionPortionBinding(
+                  kind: configuration.kind, positionPool: configuration.positionPool,
+                  positionPortionID: configuration.positionPortionID
+              ) else { return false }
         var conditionIDs = Set<UUID>()
         for condition in configuration.conditions ?? [] where
             condition.normalized() != condition || !conditionIDs.insert(condition.id).inserted {

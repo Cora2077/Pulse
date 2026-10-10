@@ -958,8 +958,8 @@
 "plan.price" = "Price";
 "plan.note" = "Note (optional)";
 "plan.status" = "Status";
-"plan.status.active" = "Active";
-"plan.status.done" = "Ended";
+"plan.status.active" = "Pending";
+"plan.status.done" = "Stopped waiting";
 "plan.status.cancelled" = "Dropped";
 "plan.delete" = "Delete Plan";
 "plan.useCurrentPrice" = "Click to fill in the current price";
@@ -968,14 +968,28 @@
 /* Trade plans: the cross-symbol overview and its entry point on the home bar */
 "plan.list.title" = "Trade Plans";
 "plan.list.summary" = "%d plans · %d in range";
-"plan.list.empty" = "No plans yet. Open an instrument's detail page and write down what you mean to do at which price — when the market gets there, this page will tell you.";
+"plan.list.empty" = "No trade plans yet. Click New Plan at the top right to begin.";
 "plan.menu.edit" = "Edit Price and Size";
 "plan.menu.drop" = "Mark as Dropped";
 "plan.menu.revive" = "Put Back in Waiting";
+"plans.delete.title" = "Delete this trade plan?";
+"plans.delete.help" = "Only this plan is removed. Recorded fills and holdings are preserved.";
+"plans.delete.confirm" = "Delete plan";
+"plans.delete.changed" = "The plan or account changed. Cancel and reopen the confirmation.";
+"plans.delete.pendingDraft" = "Unsaved plan edits will be discarded.";
+"plans.delete.targetPrice" = "Target %@";
+"plans.delete.remaining" = "%@ still open";
 "plan.entry.empty" = "Plans";
 "plan.entry.waiting" = "%d plans";
 "plan.entry.reached" = "%d plans · %d in range";
 "plan.entry.help" = "Every plan you have written, and whether the market has reached it yet";
+
+/* Trade plans: the new-plan chooser sheet */
+"plan.newPlan" = "New Plan";
+"plan.new.account" = "Written into %@";
+"plan.new.empty" = "Type a code or a name to search. Symbols already on a watchlist are listed below.";
+"plan.new.noMatches" = "No matching symbols. Try a name or code.";
+"plan.new.searchError" = "Search failed: %@";
 
 /* Trade plans: the editor's condition list and the plan workflow pages */
 "plan.conditions" = "Conditions";
@@ -1176,6 +1190,8 @@
 "trade.quantityUnitHelp" = "Enter quantity in %@.";
 "trade.quantityWithUnit" = "Quantity (%@)";
 "trade.unit.shares" = "shares";
+"plans.unit.fund" = "units";
+"plans.unit.generic" = "units";
 "main.holdings.costBasis.title" = "Cost basis";
 "position.realizedPnLHelp" = "Realized P&L is independent of cost basis. Do not add it to diluted holding P&L; that would count the same result twice.";
 "main.chart.tool.browse" = "Browse";
@@ -1386,8 +1402,13 @@
 "plans.status.progress" = "Filled %@/open %@";
 "plans.noQuote" = "No live quote";
 "plans.action.recordFill" = "Record fill";
+"plans.action.backfill" = "Backfill fill";
+"plans.backfill.title" = "Backfill a past fill";
+"plans.backfill.help" = "Enter the price, quantity and date that actually traded. Cancelling, or a failed record, does not put the plan back in waiting.";
 "plans.action.logicHistory" = "Logic and revision history";
 "plans.action.snooze" = "Snooze price alerts for 15 minutes";
+"plans.layout.showCompact" = "Switch to compact cards";
+"plans.layout.showComfortable" = "Switch to comfortable cards";
 
 "alerts.settings.planToggle" = "Trade plan price alerts";
 "alerts.settings.sectorToggle" = "Sector exposure over-limit alerts";
@@ -1428,3 +1449,34 @@
 "journal.strategy.event" = "Event";
 
 "main.holdings.empty.accountHint" = "Viewing %@. Switch accounts beside the title; holdings in other accounts are preserved.";
+"settings.mcp.keychain.noninteractive" = "Keychain access needs authorization. Password prompts are blocked in local builds and the original token is unchanged. Review FFF access in Keychain Access.";
+
+/* Plan state is derived from recorded fills, separate from stored intent. */
+"plans.display.waiting" = "Pending";
+"plans.display.filled" = "Filled";
+"plans.display.abandoned" = "Abandoned";
+"plans.display.unrecorded" = "No fill recorded";
+"plans.display.incomplete" = "Partially filled · stopped";
+"plans.display.incompleteRecords" = "Incomplete records";
+"plans.display.waitingCount" = "Pending %d";
+"plans.display.historyCount" = "History %d";
+"plans.display.noWaiting" = "No pending plans.";
+"plans.display.noHistory" = "No past plans yet.";
+"plans.display.actualFill" = "Filled %@ × %@";
+"plans.display.target" = "Target %@ × %@";
+"plans.display.current" = "Current %@";
+"plans.display.priceColumn" = "Target / Fill average";
+"plans.display.fillPrice" = "Fill average";
+"plans.display.missingFillHelp" = "This plan stopped waiting without a complete fill record. Backfill the fill that actually happened; the plan is not put back in waiting.";
+"plans.display.recordHelp" = "Use Record Fill to save the actual price, quantity and date.";
+"plans.display.saveBeforeFill" = "Save plan changes before recording a fill.";
+"plans.status.closedProgress" = "Filled %@ / Unfilled %@";
+
+/* Menu-bar panel height grip. */
+"popover.resize.help" = "Drag up or down to resize. Double-click to restore automatic height.";
+"popover.resize.label" = "Adjust panel height";
+"popover.resize.value" = "Height %@ points";
+
+/* Trade plans: backfill mode and an unidentifiable quote currency. */
+"plans.backfill.date" = "Actual fill date";
+"plans.unit.unknownCurrency" = "currency unknown";

@@ -1,4 +1,5 @@
 import AppKit
+import Security
 import SwiftUI
 import PulseCore
 import PulseUI
@@ -39,6 +40,11 @@ struct PulseMacApp: App {
 
     init() {
         #if DEBUG
+        // Local rebuilds must never launch SecurityAgent during startup or
+        // background refresh. Existing authorized items still work; unavailable
+        // access fails through the stores' normal error paths without replacing
+        // credentials or changing the Keychain's permissions.
+        SecKeychainSetUserInteractionAllowed(false)
         let isOfflinePreview = CommandLine.arguments.contains("--main-window-demo")
             || CommandLine.arguments.contains("--detail-market-selftest")
             || CommandLine.arguments.contains("--share-selftest")

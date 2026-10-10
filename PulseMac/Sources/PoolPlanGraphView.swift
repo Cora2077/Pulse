@@ -123,14 +123,18 @@ struct PoolPlanCardFace: View {
             DragGesture(minimumDistance: 6, coordinateSpace: .named("position-pools-board"))
                 .onChanged(onDragChanged)
                 .onEnded(onDragEnded),
-            including: (isDraggable && !isWriteBlocked) ? .all : .none
+            including: (isDraggable && !isWriteBlocked && entry.plan.positionPortionID == nil) ? .all : .none
         )
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: Text(PulseLocalization.localizedString("poolPlan.action.select")), onSelect)
         .accessibilityAction(named: Text(PulseLocalization.localizedString("poolPlan.action.edit"))) { if !isWriteBlocked { onEdit() } }
         .accessibilityAction(named: Text(PulseLocalization.localizedString("poolPlan.action.recordFill"))) { if !isWriteBlocked { onRecord() } }
         .accessibilityAction(named: Text(PulseLocalization.localizedString("poolPlan.action.inspect"))) { if !isWriteBlocked { onInspect() } }
-        .accessibilityAction(named: Text(PulseLocalization.localizedString("poolPlan.action.clearPool"))) { if !isWriteBlocked { onAssign(nil) } }
+        .accessibilityActions {
+            if !isWriteBlocked, entry.plan.positionPortionID == nil {
+                Button(PulseLocalization.localizedString("poolPlan.action.clearPool")) { onAssign(nil) }
+            }
+        }
         .background {
             if tracksFrame {
                 GeometryReader { proxy in
@@ -252,9 +256,7 @@ struct PoolPlanCardFace: View {
                 Text(PulseLocalization.localizedString("poolPlan.overSell.shares",
                         PriceFormatter.quantity(overSell.available),
                         PriceFormatter.quantity(overSell.requested),
-                        PulseLocalization.localizedString(overSell.scope == .position
-                           ? "poolPlan.overSell.scopePosition"
-                           : "poolPlan.overSell.scopePool")))
+                        overSellScopeTitle(overSell)))
                     .font(PoolType.label.monospacedDigit())
                     .foregroundStyle(.orange)
             }
@@ -267,6 +269,14 @@ struct PoolPlanCardFace: View {
         _ = warning
         let amount = PriceFormatter.money(entry.remainingEstimatedAmount, currencyCode: currencyCode)
         return PulseLocalization.localizedString("poolPlan.overSell.amount", amount)
+    }
+
+    private func overSellScopeTitle(_ warning: PoolBudgetProjection.OverSellWarning) -> String {
+        switch warning.scope {
+        case .position: PulseLocalization.localizedString("poolPlan.overSell.scopePosition")
+        case .pool: PulseLocalization.localizedString("poolPlan.overSell.scopePool")
+        case .portion: poolCopy("源仓位不足或已变化", "Source portion insufficient or changed")
+        }
     }
 
     /// One badge, not a row of state dots.
@@ -324,22 +334,26 @@ struct PoolPlanCardFace: View {
         // write path and is refused in preview like the others.
         Button(PulseLocalization.localizedString("poolPlan.action.inspect"), action: onInspect).disabled(isWriteBlocked)
         Button(PulseLocalization.localizedString("poolPlan.action.edit"), action: onEdit)
-        Divider()
-        ForEach(PositionPool.activeCases, id: \.self) { pool in
-            Button(PulseLocalization.localizedString("poolPlan.action.link", pool.title)) { onAssign(pool) }
+        if entry.plan.positionPortionID == nil {
+            Divider()
+            ForEach(PositionPool.activeCases, id: \.self) { pool in
+                Button(PulseLocalization.localizedString("poolPlan.action.link", pool.title)) { onAssign(pool) }
+            }
+            Button(PulseLocalization.localizedString("poolPlan.action.clearPool")) { onAssign(nil) }
         }
-        Button(PulseLocalization.localizedString("poolPlan.action.clearPool")) { onAssign(nil) }
     }
 
     @ViewBuilder private var contextMenu: some View {
         Button(PulseLocalization.localizedString("poolPlan.action.recordFill"), action: onRecord).disabled(isWriteBlocked)
         Button(PulseLocalization.localizedString("poolPlan.action.inspect"), action: onInspect).disabled(isWriteBlocked)
         Button(PulseLocalization.localizedString("poolPlan.action.edit"), action: onEdit).disabled(isWriteBlocked)
-        Divider()
-        ForEach(PositionPool.activeCases, id: \.self) { pool in
-            Button(PulseLocalization.localizedString("poolPlan.action.link", pool.title)) { onAssign(pool) }.disabled(isWriteBlocked)
+        if entry.plan.positionPortionID == nil {
+            Divider()
+            ForEach(PositionPool.activeCases, id: \.self) { pool in
+                Button(PulseLocalization.localizedString("poolPlan.action.link", pool.title)) { onAssign(pool) }.disabled(isWriteBlocked)
+            }
+            Button(PulseLocalization.localizedString("poolPlan.action.clearPool")) { onAssign(nil) }.disabled(isWriteBlocked)
         }
-        Button(PulseLocalization.localizedString("poolPlan.action.clearPool")) { onAssign(nil) }.disabled(isWriteBlocked)
     }
 
     private func confirmedCount(_ conditions: [TradePlanCondition]) -> Int {

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import PulseCore
 
@@ -81,7 +82,7 @@ struct PopoverRootView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.pulseHost) private var host
-    @State private var route: PopoverRoute = .list
+    @State private var route: PopoverRoute
     @State private var draftRouteAccount: BrokerageAccountID?
     /// The standalone window animates this staged value alongside route motion.
     /// Owning the height explicitly keeps the lower-edge resize predictable while
@@ -90,6 +91,18 @@ struct PopoverRootView: View {
     /// Search UI state lives at the root so pushing a detail page and coming back
     /// preserves the query, active state, and cached results.
     @State private var searchSession = SearchSession()
+    /// Live size during a grip drag, persisted only on release and discarded if
+    /// the panel closes mid-gesture.
+    @State private var transientHeight: CGFloat?
+    /// The menu-bar panel's window, kept for screen-budget math and for resizing
+    /// the real window from the grip.
+    @State private var hostWindow: NSWindow?
+    /// Screen budget is observable so display changes also relayout the pages.
+    @State private var menuBarMaximumHeight: CGFloat = 900
+
+    init(initialRoute: PopoverRoute = .list) {
+        _route = State(initialValue: initialRoute)
+    }
 
     private static let minHeight: CGFloat = 300
     private static let minListHeight: CGFloat = 220
@@ -279,6 +292,58 @@ struct PopoverRootView: View {
             }
         }
         .frame(width: panelWidth, height: presentedHeight, alignment: .top)
+        // The panel's own window, needed to read its screen budget and to resize it
+        // from the footer. Reading it off the view hierarchy avoids matching
+        // SwiftUI's private `MenuBarExtra` panel class by name.
+        .background {
+            HostWindowReader { window in
+                guard host == .menuBar else { return }
+                // Do not publish state from an NSView layout/update callback.
+                DispatchQueue.main.async {
+                    hostWindow = window
+                    refreshMenuBarScreenBudget()
+                }
+            }
+        }
+        .modifier(MenuBarResizeFooter(
+            isEnabled: host == .menuBar,
+            height: PopoverPanelSizing.gripHeight,
+            currentHeight: presentedHeight,
+            minimumHeight: { resolvedMinimumHeight(for: displayRoute) },
+            maximumHeight: { availableMaximumHeight() },
+            onChange: { height in
+                guard host == .menuBar else { return }
+                // Dragging has to feel attached to the pointer: no implicit
+                // animation, and no route animation re-entering the size.
+                withoutResizeAnimation {
+                    transientHeight = height
+                }
+            },
+            onCommit: { height in
+                guard host == .menuBar else { return }
+                // Re-clamp at commit time: the window may have moved to a display
+                // with less room between the last drag event and the release.
+                let committed = PopoverPanelSizing.resolveHeight(
+                    preferred: height,
+                    automatic: automaticHeight(for: displayRoute),
+                    minimum: resolvedMinimumHeight(for: displayRoute),
+                    maximum: availableMaximumHeight()
+                )
+                withoutResizeAnimation {
+                    appState.settings.setMenuBarPanelHeight(committed)
+                    transientHeight = nil
+                }
+                resizePanelWindow(to: committed)
+            },
+            onReset: {
+                guard host == .menuBar else { return }
+                withoutResizeAnimation {
+                    appState.settings.setMenuBarPanelHeight(nil)
+                    transientHeight = nil
+                }
+                resizePanelWindow(to: resolvedMenuBarHeight)
+            }
+        ))
         // Keep one title-bar skeleton mounted for the lifetime of the pinned
         // window. Route-specific views contribute actions, but an actionless page
         // no longer collapses the bar from 52pt to the empty 32pt window strip.
@@ -297,10 +362,7 @@ struct PopoverRootView: View {
         .clipped()
         .animation(.snappy(duration: 0.28), value: displayRoute)
         .animation(.snappy(duration: 0.28), value: searchSession.isActive)
-        // The pinned window owns a staged height value below; the panel keeps
-        // its existing system-anchored resize animation.
-        .animation(host == .menuBar ? .snappy(duration: 0.28) : nil, value: height(for: displayRoute))
-        // Live subscriptions run only while a host is on screen
+        // Height changes from the grip use a disabled-animation transaction.
         .onAppear {
             if host == .pinnedWindow {
                 var transaction = Transaction(animation: nil)
@@ -309,13 +371,24 @@ struct PopoverRootView: View {
                     pinnedPresentedHeight = height(for: displayRoute)
                 }
             }
+            if host == .menuBar { refreshMenuBarScreenBudget() }
             appState.setHostVisible(host, true)
             // Product analytics counts panel opens only; the pinned window stays up for
             // hours at a time and would otherwise read as a single enormous session.
             if host == .menuBar { PulseTelemetry.signal(.popoverOpened) }
         }
+        .onChange(of: hostWindow) { _, _ in
+            refreshMenuBarScreenBudget()
+        }
         .onDisappear {
             appState.setHostVisible(host, false)
+            // A panel closed mid-drag must not leave a half-finished gesture behind
+            // that the next presentation would commit.
+            var cancelTransaction = Transaction(animation: nil)
+            cancelTransaction.disablesAnimations = true
+            withTransaction(cancelTransaction) {
+                transientHeight = nil
+            }
             // Closing the host ends the current search presentation.
             // Keep the result cache warm, but reopen on the normal watchlist.
             searchSession.text = ""
@@ -334,12 +407,20 @@ struct PopoverRootView: View {
         }
         .onChange(of: height(for: displayRoute)) { _, targetHeight in
             guard host == .pinnedWindow else { return }
-            // Resize in the same 280ms window as the route push. The retained
-            // list keeps its toolbar safe area, so its exit remains horizontal
-            // while the lower window edge moves.
             withAnimation(reduceMotion ? nil : .snappy(duration: 0.28)) {
                 pinnedPresentedHeight = targetHeight
             }
+        }
+        .onChange(of: presentedHeight) { _, _ in
+            guard host == .menuBar else { return }
+            DispatchQueue.main.async { resizePanelWindow(to: presentedHeight) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeScreenNotification)) { note in
+            guard let changed = note.object as? NSWindow, changed === hostWindow else { return }
+            refreshMenuBarScreenBudget()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            refreshMenuBarScreenBudget()
         }
         .onChange(of: appState.watchlist.quoteSymbols) { _, _ in
             appState.watchlistSymbolsChanged()
@@ -360,6 +441,10 @@ struct PopoverRootView: View {
         .onChange(of: route) { _, newRoute in
             draftRouteAccount = newRoute.preservesAccountDraft
                 ? appState.watchlist.activeBrokerageAccountID : nil
+            // Reframe the panel for the route just entered (or for its automatic
+            // size when a manual height is stored). Deferred: the route's body has
+            // to be installed before the window is measured.
+            DispatchQueue.main.async { refreshMenuBarScreenBudget() }
         }
         .onChange(of: appState.sharedWatchlist.groups.map(\.id)) { _, _ in
             appState.watchlistGroupsChanged()
@@ -372,11 +457,112 @@ struct PopoverRootView: View {
     }
 
     /// The pinned window animates this value alongside the page transition.
-    /// Menu-bar panels keep their existing live size behavior.
+    /// Menu-bar panels resolve the same value through the resizer: a drag first,
+    /// then the stored manual height, then the route's automatic size.
     private var presentedHeight: CGFloat {
-        host == .pinnedWindow
-            ? (pinnedPresentedHeight ?? height(for: displayRoute))
-            : height(for: displayRoute)
+        switch host {
+        case .pinnedWindow:
+            pinnedPresentedHeight ?? height(for: displayRoute)
+        case .menuBar:
+            resolvedMenuBarHeight
+        case .mainWindow:
+            height(for: displayRoute)
+        }
+    }
+
+    /// Menu-bar panel height: live drag, then the explicit user height, then the
+    /// route's automatic height. Total content points, grip included.
+    private var resolvedMenuBarHeight: CGFloat {
+        PopoverPanelSizing.resolveHeight(
+            preferred: transientHeight ?? appState.settings.menuBarPanelHeight,
+            automatic: automaticHeight(for: displayRoute),
+            minimum: layoutMinimumHeight(for: displayRoute),
+            maximum: availableMaximumHeight()
+        )
+    }
+
+    /// A compact automatic watchlist keeps its old size until a manual drag.
+    private func layoutMinimumHeight(for route: PopoverRoute) -> CGFloat {
+        let minimum = resolvedMinimumHeight(for: route)
+        guard transientHeight == nil && appState.settings.menuBarPanelHeight == nil else { return minimum }
+        return min(automaticHeight(for: route), minimum)
+    }
+
+    /// Existing automatic budgets remain the default; manual sizing adds space
+    /// to the actual page, not a blank area below its fixed-height scroll view.
+    private func automaticHeight(for route: PopoverRoute) -> CGFloat {
+        pageBudget(for: route) + (host == .menuBar ? PopoverPanelSizing.gripHeight : 0)
+    }
+
+    private func height(for route: PopoverRoute) -> CGFloat {
+        guard host == .menuBar else { return pageBudget(for: route) }
+        let total = PopoverPanelSizing.resolveHeight(
+            preferred: transientHeight ?? appState.settings.menuBarPanelHeight,
+            automatic: automaticHeight(for: route),
+            minimum: layoutMinimumHeight(for: route),
+            maximum: availableMaximumHeight()
+        )
+        return max(0, total - PopoverPanelSizing.gripHeight)
+    }
+
+    private func availableMaximumHeight() -> CGFloat { menuBarMaximumHeight }
+
+    /// Smallest total height this route may be dragged to. Scrolling pages can
+    /// shrink to the shared floor; fixed forms and detail keep the budget they
+    /// need to lay out, so the shrink can never clip their fields.
+    private func resolvedMinimumHeight(for route: PopoverRoute) -> CGFloat {
+        let total = automaticHeight(for: route)
+        guard host == .menuBar else { return total }
+        if Self.isScrollable(route) {
+            return min(PopoverPanelSizing.minimumHeight, availableMaximumHeight())
+        }
+        return min(total, availableMaximumHeight())
+    }
+
+    /// Routes whose height is a window onto scrolling content rather than a budget
+    /// for a fixed form: these can shrink to the shared minimum.
+    private static func isScrollable(_ route: PopoverRoute) -> Bool {
+        switch route {
+        case .list, .planList, .transactions, .settings, .providerList, .providerDetail,
+             .dataSettings, .appearanceSettings, .mcpSettings, .profile, .plan:
+            true
+        case .position, .trade, .editTrade, .calibrate, .detail:
+            false
+        }
+    }
+
+    /// Grows or shrinks the real panel window from its top-left corner, which is
+    /// what keeps the header and the menu-bar anchor fixed while the bottom edge
+    /// moves. Width is never touched.
+    private func resizePanelWindow(to height: CGFloat) {
+        guard host == .menuBar, let window = hostWindow else { return }
+        let overhead = window.frame.height - window.contentLayoutRect.height
+        let target = max(0, height + max(0, overhead))
+        guard target.isFinite, target > 0 else { return }
+        if abs(window.frame.height - target) < 0.5 { return }
+        var frame = window.frame
+        frame.origin.y = frame.maxY - target
+        frame.size.height = target
+        window.setFrame(frame, display: true)
+    }
+
+    /// Re-asks the screen how much room the panel has. The window moves between
+    /// displays (and the displays change), so a remembered height may need
+    /// clamping — without rewriting the stored preference just because a smaller
+    /// screen could not show all of it.
+    private func refreshMenuBarScreenBudget() {
+        guard host == .menuBar, let window = hostWindow else { return }
+        let maximum = PopoverPanelSizing.maximumHeight(for: window)
+        withoutResizeAnimation {
+            menuBarMaximumHeight = maximum
+        }
+        resizePanelWindow(to: resolvedMenuBarHeight)
+    }
+
+    private func withoutResizeAnimation(_ updates: () -> Void) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction, updates)
     }
 
     /// The pinned window lifts the watchlist's brand-and-actions row into its title bar,
@@ -443,8 +629,9 @@ struct PopoverRootView: View {
     }
 
     /// The list page height adapts to the watchlist size (chrome, row height, bottom bar, and padding),
-    /// clamped between the min and max
-    private func height(for route: PopoverRoute) -> CGFloat {
+    /// clamped between the min and max. This is the page's own budget: the
+    /// menu-bar panel adds the resize footer strip on top of it in `height(for:)`.
+    private func pageBudget(for route: PopoverRoute) -> CGFloat {
         let noticeHeight: CGFloat = route.preservesAccountDraft
             && draftRouteAccount != nil
             && draftRouteAccount != appState.watchlist.activeBrokerageAccountID ? 54 : 0
@@ -571,5 +758,34 @@ private final class EscapeBackMonitorView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
+    }
+}
+
+/// The child pages reserve this strip in their resolved frame heights, so the
+/// bottom-aligned footer is outside scrolling content, never on top of actions.
+private struct MenuBarResizeFooter: ViewModifier {
+    let isEnabled: Bool
+    let height: CGFloat
+    let currentHeight: CGFloat
+    let minimumHeight: () -> CGFloat
+    let maximumHeight: () -> CGFloat
+    let onChange: (CGFloat) -> Void
+    let onCommit: (CGFloat) -> Void
+    let onReset: () -> Void
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .bottom) {
+            if isEnabled {
+                PopoverResizeGrip(
+                    currentHeight: { currentHeight },
+                    minimumHeight: minimumHeight,
+                    maximumHeight: maximumHeight,
+                    onChange: onChange,
+                    onEnd: onCommit,
+                    onReset: onReset
+                )
+                .frame(height: height)
+            }
+        }
     }
 }

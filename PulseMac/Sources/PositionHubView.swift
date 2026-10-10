@@ -494,6 +494,8 @@ struct PositionPageHeader: View {
     @Environment(AppState.self) private var appState
     @Environment(\.pulseHost) private var host
     let symbol: SymbolID
+    /// Search drafts may not have a persisted instrument name yet.
+    var displayName: String? = nil
     /// Optional leading emphasis ("买入"/"卖出"), tinted by the caller.
     var title: (text: String, color: Color)?
     /// The account this page is writing into, named in the chrome.
@@ -519,7 +521,7 @@ struct PositionPageHeader: View {
                         .foregroundStyle(title.color)
                         .fixedSize()
                 }
-                Text(appState.displayName(for: symbol))
+                Text(displayName ?? appState.displayName(for: symbol))
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)

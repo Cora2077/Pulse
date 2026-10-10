@@ -71,8 +71,11 @@ enum WorkflowSelfTest {
         ended.status = .active
         let filled = PositionTransaction(kind: .buy, price: 10, quantity: 10,
             planExecution: .init(planID: ended.id, configuration: .init(plan: ended)))
-        guard titleBefore != planIntentTitle(.init(symbol: titleSymbol, plan: ended, transactions: [filled])),
-              titleBefore.contains("未全部成交") || titleBefore.contains("not fully") else { return false }
+        guard titleBefore == PulseLocalization.localizedString("plans.display.unrecorded"),
+              planIntentTitle(.init(symbol: titleSymbol, plan: ended, transactions: [filled]))
+                == PulseLocalization.localizedString("plans.display.filled"),
+              planIntentTitle(.init(symbol: titleSymbol, plan: TradePlan(kind: .buy, price: 10, quantity: 10, status: .cancelled)))
+                == PulseLocalization.localizedString("plans.display.abandoned") else { return false }
 
         let usdBuy = plan(usdSymbol, kind: .buy, price: 10, quantity: 2)
         let usdSell = plan(usdSymbol, kind: .sell, price: 15, quantity: 3)

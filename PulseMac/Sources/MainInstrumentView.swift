@@ -16,6 +16,12 @@ struct MainInstrumentView: View {
     @State private var route: PopoverRoute
     @State private var draftRouteAccount: BrokerageAccountID?
     @State private var selectedTab: MainInstrumentTab = .position
+    @State private var planExecutionEntry: TradePlanEntry?
+    /// The plan a delete is being requested for. The plans menu assigns here
+    /// instead of writing, so the confirmation sheet always names the record
+    /// the menu was opened on and the account it was frozen against.
+    @State private var planDeletionRequest: PlanDeletionRequest?
+    @State private var planWorkflowEntry: TradePlanEntry?
     @State private var pendingTabReturn: MainInstrumentTab?
     @State private var chartMode: MainChartMode = .intraday
     @State private var candles: [Candle] = []
@@ -51,8 +57,9 @@ struct MainInstrumentView: View {
     @AppStorage("pulse.chart.movingAverages.v2") private var movingAverageMask = MovingAveragePeriod.allMask
     @AppStorage("pulse.chart.macd.v1") private var showsMACD = false
 
-    init(symbol: SymbolID) {
+    init(symbol: SymbolID, initialShowsPlans: Bool = false) {
         self.symbol = symbol
+        _selectedTab = State(initialValue: initialShowsPlans ? .plans : .position)
         _route = State(initialValue: .detail(symbol))
     }
 
@@ -184,6 +191,15 @@ struct MainInstrumentView: View {
                 attachDrawingHistoryHandlers()
             }
         }
+        .sheet(item: $planExecutionEntry) { entry in
+            PlanExecutionSheet(entry: entry, account: appState.watchlist.activeBrokerageAccountID,
+                onClose: { planExecutionEntry = nil })
+        }
+        .sheet(item: $planWorkflowEntry) { entry in
+            PlanWorkflowDetailView(symbol: entry.symbol, planID: entry.plan.id,
+                account: appState.watchlist.activeBrokerageAccountID).frame(width: 650, height: 600)
+        }
+        .modifier(PlanDeletionConfirmation(request: $planDeletionRequest))
         .onChange(of: symbol) { _, newSymbol in
             route = .detail(newSymbol)
             selectedTab = .position
@@ -1218,7 +1234,8 @@ struct MainInstrumentView: View {
     // MARK: - Trade plans
 
     private var plansTab: some View {
-        let plans = item?.plans ?? []
+        let transactions = appState.watchlist.transactionsForPlan(symbol)
+        let entries = (item?.plans ?? []).map { TradePlanEntry(symbol: symbol, plan: $0, transactions: transactions) }
         return VStack(spacing: 0) {
             HStack {
                 Text(PulseLocalization.localizedString("main.plans.caption"))
@@ -1239,7 +1256,7 @@ struct MainInstrumentView: View {
             .padding(.horizontal, 16)
             .padding(.top, 6)
             ScrollView {
-                if plans.isEmpty {
+                if entries.isEmpty {
                     Text(PulseLocalization.localizedString("main.plans.empty"))
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
@@ -1247,9 +1264,19 @@ struct MainInstrumentView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 10)
                 } else {
-                    LazyVStack(spacing: 2) {
-                        ForEach(plans) { plan in
-                            planRow(plan)
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach([TradePlanEntry.DisplayState.waiting, .filled, .abandoned, .stopped], id: \.self) { state in
+                            let group = entries.filter { $0.displayState == state }
+                                .sorted { ($0.lastFillDate ?? $0.plan.updatedAt) > ($1.lastFillDate ?? $1.plan.updatedAt) }
+                            if !group.isEmpty {
+                                Text(PulseLocalization.localizedString(state.sectionTitleKey) + " · \(group.count)")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.top, 10).padding(.bottom, 3)
+                                ForEach(group) { entry in
+                                    planRow(entry).id(entry)
+                                }
+                            }
                         }
                     }
                     .padding(.horizontal, 16)
@@ -1260,8 +1287,29 @@ struct MainInstrumentView: View {
         }
     }
 
-    private func planRow(_ plan: TradePlan) -> some View {
-        HStack(spacing: 9) {
+    private func planRow(_ entry: TradePlanEntry) -> some View {
+        let plan = entry.plan
+        let isWaiting = entry.displayState == .waiting
+        // The row's headline is either what the linked trades actually paid or
+        // the plan's own target, and both carry their real currency and unit.
+        // The value never falls back to the target once a fill exists: a real
+        // fill and an intention are different facts.
+        let headline = entry.displayState == .filled
+            ? PlanValueText.priceQuantity(
+                price: entry.averageFillPrice ?? plan.price,
+                quantity: entry.filledQuantity,
+                symbol: symbol,
+                currencyCode: quote?.currencyCode,
+                instrumentType: instrumentType
+            )
+            : PlanValueText.priceQuantity(
+                price: plan.price,
+                quantity: isWaiting ? entry.remainingQuantity : plan.quantity,
+                symbol: symbol,
+                currencyCode: quote?.currencyCode,
+                instrumentType: instrumentType
+            )
+        return HStack(spacing: 9) {
             Capsule()
                 .fill(PlanSideStyle.color(for: plan.kind))
                 .frame(width: 2, height: 26)
@@ -1273,20 +1321,27 @@ struct MainInstrumentView: View {
                         Text(PulseLocalization.localizedString(plan.kind == .buy ? "plan.kind.buy" : "plan.kind.sell"))
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(PlanSideStyle.color(for: plan.kind))
-                        Text("\(PriceFormatter.price(plan.price, market: symbol.market)) × \(PriceFormatter.quantity(plan.quantity))")
+                        Text(headline)
                             .font(.system(size: 10.5, weight: .medium).monospacedDigit())
                             .foregroundStyle(.primary)
-                        if let current = quote?.price, plan.isReached(at: current), plan.status == .active {
+                        if let quote, TradingQuoteHealth.isCurrent(quote), plan.isReached(at: quote.price), isWaiting {
                             Text(PulseLocalization.localizedString("plan.reached"))
                                 .font(.system(size: 9, weight: .semibold))
                                 .foregroundStyle(PlanSideStyle.color(for: plan.kind))
                         }
                         Spacer(minLength: 4)
                     }
-                    Text(plan.note.flatMap { $0.isEmpty ? nil : $0 } ?? PulseLocalization.localizedString("plan.note"))
+                    if entry.displayState != .filled,
+                       let fill = entry.actualFillText(currencyCode: quote?.currencyCode, instrumentType: instrumentType) {
+                        Text(fill + (entry.fillDateText.map { " · " + $0 } ?? ""))
+                            .font(.system(size: 9).monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    Text(entry.displayState == .filled ? entry.fillDateText ?? "" : entry.displayState == .stopped
+                         ? PulseLocalization.localizedString("plans.display.missingFillHelp")
+                         : plan.note.flatMap { $0.isEmpty ? nil : $0 } ?? PulseLocalization.localizedString("plan.note"))
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                 }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -1294,40 +1349,53 @@ struct MainInstrumentView: View {
             .buttonStyle(.plain)
             if symbolSupportsPosition {
                 Menu {
-                    ForEach(TradePlan.Status.allCases, id: \.self) { status in
-                        Button {
-                            var updated = plan
-                            updated.status = status
+                    if isWaiting {
+                        Button(PulseLocalization.localizedString("plans.action.recordFill")) { planExecutionEntry = entry }
+                        Button(PulseLocalization.localizedString("plan.menu.drop")) {
+                            var updated = plan; updated.status = .cancelled
                             appState.watchlist.setTradePlan(updated, for: symbol)
-                        } label: {
-                            if plan.status == status {
-                                Label(PulseLocalization.localizedString("plan.status.\(status.rawValue)"), systemImage: "checkmark")
-                            } else {
-                                Text(PulseLocalization.localizedString("plan.status.\(status.rawValue)"))
+                        }
+                    } else {
+                        // A stopped record with an incomplete real fill can be
+                        // completed from here. The row is not revived first: the
+                        // fill sheet detects the backfill mode itself and the
+                        // core write is guarded.
+                        if entry.canBackfillFill {
+                            Button(PulseLocalization.localizedString("plans.action.backfill")) { planExecutionEntry = entry }
+                        }
+                        if entry.displayState != .filled {
+                            Button(PulseLocalization.localizedString("plan.menu.revive")) {
+                                var updated = plan; updated.status = .active
+                                appState.watchlist.setTradePlan(updated, for: symbol)
                             }
                         }
                     }
+                    Button(PulseLocalization.localizedString("plans.action.logicHistory")) { planWorkflowEntry = entry }
                     Divider()
                     Button(PulseLocalization.localizedString("plan.delete"), role: .destructive) {
-                        appState.watchlist.deleteTradePlan(plan.id, for: symbol)
+                        planDeletionRequest = PlanDeletionRequest(
+                            entry: entry,
+                            account: appState.watchlist.activeBrokerageAccountID
+                        )
                     }
                 } label: {
-                    Text(PulseLocalization.localizedString("plan.status.\(plan.status.rawValue)"))
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                    PlanStatusBadge(entry: entry)
                 }
                 .menuStyle(.borderlessButton)
                 .help(PulseLocalization.localizedString("main.plans.changeStatus"))
             } else {
-                Text(PulseLocalization.localizedString("plan.status.\(plan.status.rawValue)"))
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.secondary)
+                PlanStatusBadge(entry: entry)
             }
         }
         .padding(.vertical, 5)
+    }
+
+    /// The instrument's resolved type, from the stored item when there is one.
+    /// `nil` is a real answer for a symbol with no watchlist row: the shared
+    /// value helper then falls back to its generic unit rather than guessing.
+    private var instrumentType: InstrumentType? {
+        appState.watchlist.item(for: symbol)?.resolvedInstrumentType
+            ?? appState.sharedWatchlist.item(for: symbol)?.resolvedInstrumentType
     }
 
     // MARK: - Thesis

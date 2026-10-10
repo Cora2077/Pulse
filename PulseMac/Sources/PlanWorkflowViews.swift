@@ -4,15 +4,7 @@ import PulseUI
 
 /// The user's intent is separate from price conditions and recorded fills.
 func planIntentTitle(_ entry: TradePlanEntry) -> String {
-    let chinese = PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
-    if entry.plan.status == .cancelled { return chinese ? "已取消" : "Cancelled" }
-    if entry.remainingQuantity == 0, entry.filledQuantity > 0 {
-        return chinese ? "已全部成交" : "Fully recorded"
-    }
-    if entry.plan.status == .done {
-        return chinese ? "已结束，未全部成交" : "Ended · not fully filled"
-    }
-    return chinese ? "进行中" : "Active"
+    entry.displayStatusTitle
 }
 
 // MARK: - Funding source labels
@@ -230,8 +222,20 @@ struct PlanExecutionSheet: View {
         self.entry = entry
         self.onClose = onClose
         self._draftAccount = State(initialValue: account)
-        _priceText = State(initialValue: Self.fieldText(entry.plan.price))
-        _quantityText = State(initialValue: Self.fieldText(
+        // Backfill starts both numbers blank. The plan's own price and its
+        // remaining size are *intentions*, and this sheet is recording what a
+        // broker already did: pre-filling either one would put a number in
+        // front of the user that the app invented, and a saved fill that was
+        // never checked is worse than an empty field that has to be filled in.
+        // The remaining quantity stays one click away as a suggestion, so the
+        // common case of "the rest of the plan filled" is still cheap.
+        //
+        // Ordinary recording keeps its suggestions: the plan is live, the
+        // numbers are a proposal the user is deliberately confirming, and
+        // nothing is being inferred about a trade that has not been described
+        // yet.
+        _priceText = State(initialValue: entry.canBackfillFill ? "" : Self.fieldText(entry.plan.price))
+        _quantityText = State(initialValue: entry.canBackfillFill ? "" : Self.fieldText(
             entry.remainingQuantity > 0 ? entry.remainingQuantity : entry.plan.quantity
         ))
         _date = State(initialValue: Calendar.current.startOfDay(for: .now))
@@ -255,6 +259,16 @@ struct PlanExecutionSheet: View {
     private var accountMatchesDraft: Bool {
         appState.watchlist.activeBrokerageAccountID == draftAccount
     }
+
+    /// Whether this sheet is entering a trade that already happened against a
+    /// plan that is already stopped.
+    ///
+    /// Derived from the entry rather than passed in, so the one question — "is
+    /// this an intention being confirmed, or a fact being written down?" — has
+    /// one answer that the fields, the copy, and the store call all read. The
+    /// init API is unchanged: a caller that knows how to build an
+    /// `TradePlanEntry` already says which mode it wants.
+    private var isBackfill: Bool { entry.canBackfillFill }
 
     private var plan: TradePlan { entry.plan }
     private var symbol: SymbolID { entry.symbol }
@@ -350,7 +364,9 @@ struct PlanExecutionSheet: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Text(PulseLocalization.localizedString("plan.execution.title"))
+                Text(isBackfill
+                    ? PulseLocalization.localizedString("plans.backfill.title")
+                    : PulseLocalization.localizedString("plan.execution.title"))
                     .font(.system(size: 13, weight: .semibold))
                 Text(appState.displayName(for: symbol))
                     .font(.system(size: 12))
@@ -364,22 +380,35 @@ struct PlanExecutionSheet: View {
             HStack(spacing: 10) {
                 summaryValue(
                     PulseLocalization.localizedString("plan.execution.planned"),
-                    "\(PriceFormatter.price(plan.price, market: symbol.market)) × \(PriceFormatter.quantity(plan.quantity))",
+                    PlanValueText.priceQuantity(price: plan.price, quantity: plan.quantity,
+                        symbol: symbol, currencyCode: currencyCode,
+                        instrumentType: sourceItem?.resolvedInstrumentType),
                     color: sideColor
                 )
                 summaryValue(
                     PulseLocalization.localizedString("plan.execution.filled"),
-                    PriceFormatter.quantity(entry.filledQuantity)
+                    PlanValueText.quantity(entry.filledQuantity, symbol: symbol,
+                        instrumentType: sourceItem?.resolvedInstrumentType)
                 )
                 summaryValue(
                     PulseLocalization.localizedString("plan.execution.remaining"),
-                    PriceFormatter.quantity(entry.remainingQuantity)
+                    PlanValueText.quantity(entry.remainingQuantity, symbol: symbol,
+                        instrumentType: sourceItem?.resolvedInstrumentType)
                 )
             }
             Text(PulseLocalization.localizedString("plan.execution.poolHelp", pool.title))
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
+            if isBackfill {
+                // This sheet is reached from a plan that is already stopped, so
+                // the one thing that has to be said is why the numbers are
+                // blank and where the write is going.
+                Text(PulseLocalization.localizedString("plans.backfill.help"))
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text(PulseLocalization.localizedString("plan.execution.notAnOrder"))
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
@@ -440,9 +469,21 @@ struct PlanExecutionSheet: View {
 
     // MARK: - Fields
 
+    /// The unit this fill is counted in, resolved through the one shared rule.
+    ///
+    /// This used to decide for itself — the pair's base asset, else "shares" —
+    /// which is why an ETF's fill form said "shares" while the card that opened
+    /// it said the fund unit. `PlanValueText.quantityUnit` is the single answer
+    /// every surface reads, so the form and the row that launched it cannot
+    /// disagree about what is being counted.
     private var quantityUnit: String {
-        symbol.cryptoPair?.baseAsset
-            ?? PulseLocalization.localizedString("trade.unit.shares")
+        PlanValueText.quantityUnit(symbol: symbol, instrumentType: sourceItem?.resolvedInstrumentType)
+    }
+
+    /// The planned instrument as this ledger stores it, which is the same
+    /// resolution the plan list uses for its card.
+    private var sourceItem: WatchItem? {
+        appState.watchlist.draftItem(for: symbol, account: draftAccount)
     }
 
     private var remainingSuggestion: PositionInputCell.Suggestion? {
@@ -474,7 +515,24 @@ struct PlanExecutionSheet: View {
     /// something to review, never a reason to hide a fill that already happened.
     @ViewBuilder
     private var fundingSection: some View {
-        if kind == .sell, !saleCandidates.isEmpty {
+        if kind == .sell, plan.positionPortionID != nil {
+            VStack(alignment: .leading, spacing: 4) {
+                if let source = saleCandidates.first {
+                    Text(poolCopy("卖出这笔仓位：", "Sell this portion: ") + source.pool.title
+                         + " · " + PriceFormatter.quantity(source.quantity))
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Text(poolCopy("只扣减这张仓位卡，不影响其他仓位。", "Only this position portion will be reduced."))
+                        .font(.caption2).foregroundStyle(.tertiary)
+                    if !saleSelectionIsValid {
+                        Text(poolCopy("卖出数量超过这笔仓位的剩余数量。", "The sale exceeds this portion's remaining quantity."))
+                            .font(.caption2).foregroundStyle(.orange)
+                    }
+                } else {
+                    Text(poolCopy("源仓位已变化，请先修改卖出计划。", "The source portion changed. Edit the sell plan first."))
+                        .font(.caption2).foregroundStyle(.orange)
+                }
+            }
+        } else if kind == .sell, !saleCandidates.isEmpty {
             if hasMixedFunding {
                 saleSelectionSection
             } else {
@@ -535,6 +593,9 @@ struct PlanExecutionSheet: View {
               let item = appState.watchlist.draftItem(for: symbol, account: draftAccount),
               let allocation = item.positionAllocation,
               !item.positionAllocationNeedsReconciliation else { return [] }
+        if plan.positionPortionID != nil {
+            return item.salePlanSource(for: plan).map { [$0] } ?? []
+        }
         guard let pool = plan.positionPool else { return allocation.portions }
         return allocation.portions.filter { $0.pool == pool }
     }
@@ -551,6 +612,9 @@ struct PlanExecutionSheet: View {
     }
 
     private var parsedSaleSelection: [UUID: Double]? {
+        if let id = plan.positionPortionID, let quantity = parsedQuantity {
+            return [id: quantity]
+        }
         guard hasMixedFunding else { return nil }
         var selection: [UUID: Double] = [:]
         for portion in saleCandidates {
@@ -573,6 +637,10 @@ struct PlanExecutionSheet: View {
     /// this sale exactly. The store repeats the check; doing it here keeps the
     /// mismatch next to the fields instead of in an alert.
     private var saleSelectionIsValid: Bool {
+        if plan.positionPortionID != nil {
+            guard let source = saleCandidates.first, let quantity = parsedQuantity else { return false }
+            return quantity <= source.quantity + PositionAllocation.quantityTolerance(quantity, source.quantity)
+        }
         guard hasMixedFunding else { return true }
         guard let selection = parsedSaleSelection, let quantity = parsedQuantity else { return false }
         guard !saleCandidates.contains(where: saleRowExceedsCard) else { return false }
@@ -682,9 +750,31 @@ struct PlanExecutionSheet: View {
         )
     }
 
+    /// The key naming the date field for the current mode.
+    ///
+    /// In backfill the label names the date it is asking for instead of leaving
+    /// the reader to assume "today" — entering a trade after the fact is the
+    /// whole point of the mode. The wording comes from the string table like
+    /// every other label: the two-language `poolCopy` this used to call serves
+    /// the funding annotations, and it answered a Japanese or Korean build with
+    /// English. Should the key ever go missing, the ordinary date label stands
+    /// in rather than a raw identifier appearing in a form that records money.
+    ///
+    /// The label is deliberately not inferred from the plan's `updatedAt`: when
+    /// the plan was last edited is not when the broker filled it, and quietly
+    /// substituting one for the other would file a real trade on a fabricated
+    /// date.
+    private var dateLabelKey: String {
+        guard isBackfill else { return PulseLocalization.localizedString("trade.date") }
+        let backfill = PulseLocalization.localizedString("plans.backfill.date")
+        return backfill == "plans.backfill.date"
+            ? PulseLocalization.localizedString("trade.date")
+            : backfill
+    }
+
     private var dateRow: some View {
         HStack(spacing: 8) {
-            Text(PulseLocalization.localizedString("trade.date"))
+            Text(dateLabelKey)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             Spacer()
@@ -785,7 +875,9 @@ struct PlanExecutionSheet: View {
             Button {
                 submit()
             } label: {
-                Text(PulseLocalization.localizedString("plan.execution.record"))
+                Text(PulseLocalization.localizedString(
+                    isBackfill ? "plans.action.backfill" : "plan.execution.record"
+                ))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(blocked ? Color.secondary : Color.white)
                     .padding(.horizontal, 12)
@@ -800,6 +892,12 @@ struct PlanExecutionSheet: View {
             )
             .disabled(blocked)
             .opacity(blocked ? 0.45 : 1)
+            // A stable handle for the backfill save button, so a UI check can
+            // reach this exact control rather than the first button that
+            // happens to say the same words. The ordinary record button is left
+            // without one: it is an existing surface, and adding an identifier
+            // to it is not this change's business.
+            .accessibilityIdentifier(isBackfill ? "plan.fill.backfill" : "")
             // The second way out: same submission, same single transaction, but
             // the journal is asked to open this exact fill for its review. It is
             // a shortcut, not a different record, and `didSave` governs both
@@ -909,7 +1007,13 @@ struct PlanExecutionSheet: View {
                 // it: that selection is meaningless against an allocation that
                 // changed since the rows were drawn. A buy or an automatic
                 // single-source sale leaves the check off, exactly as before.
-                expectedAllocationRevision: parsedSaleSelection == nil ? nil : loadedAllocationRevision
+                expectedAllocationRevision: parsedSaleSelection == nil ? nil : loadedAllocationRevision,
+                // Tells the store this is a fact being written down rather than
+                // an intention being confirmed, so it may accept the fill on a
+                // stopped plan. The store re-derives the condition from its own
+                // values — a sheet that has been open while the plan changed
+                // gains nothing here.
+                historicalBackfill: isBackfill
             )
             if openingReview, kind == .buy, let account = selectedBrokerageAccount {
                 // The journal opens a transaction in a ledger, so the app has
@@ -1099,13 +1203,47 @@ struct PlanWorkflowDetailView: View {
                 }
             }
             Spacer(minLength: 8)
-            Button(PulseLocalization.localizedString("plan.execution.record")) {
-                executionSheetAccount = appState.watchlist.activeBrokerageAccountID
-                showsExecutionSheet = true
+            let entry = TradePlanEntry(symbol: symbol, plan: plan, transactions: transactions)
+            if entry.displayState == .waiting {
+                Button(PulseLocalization.localizedString("plan.execution.record")) {
+                    executionSheetAccount = appState.watchlist.activeBrokerageAccountID
+                    showsExecutionSheet = true
+                }
+                .controlSize(.small).disabled(!accountMatchesDraft)
+            } else if entry.canBackfillFill {
+                // The direct route. A stopped plan whose fills are incomplete is
+                // exactly what backfill is for, so the header offers the fill
+                // itself rather than only the revive button below — reviving a
+                // plan to record a trade that already happened writes a state
+                // the user never chose and makes a settled plan briefly look
+                // live again. Reviving stays its own decision, one branch down,
+                // for the user who really does want to keep waiting.
+                Button(PulseLocalization.localizedString("plans.action.backfill")) {
+                    executionSheetAccount = appState.watchlist.activeBrokerageAccountID
+                    showsExecutionSheet = true
+                }
+                .controlSize(.small)
+                .disabled(!accountMatchesDraft)
+                .help(PulseLocalization.localizedString("plans.backfill.help"))
+                .accessibilityIdentifier("plan.detail.backfill")
+                if entry.displayState != .filled {
+                    reviveButton(plan)
+                }
+            } else if entry.displayState != .filled {
+                reviveButton(plan)
             }
-            .controlSize(.small)
-            .disabled(!accountMatchesDraft)
         }
+    }
+
+    /// Puts a stopped or dropped plan back to `.active`, which is a decision
+    /// about the plan's future and never a way to file its past. Kept as its own
+    /// control so the backfill entrance above cannot be mistaken for it.
+    private func reviveButton(_ plan: TradePlan) -> some View {
+        Button(PulseLocalization.localizedString("plan.menu.revive")) {
+            var updated = plan; updated.status = .active
+            write(updated, verb: "plan.detail.conditionFailed")
+        }
+        .controlSize(.small).disabled(!accountMatchesDraft)
     }
 
     // MARK: - Progress
@@ -1617,11 +1755,10 @@ struct PlanWorkflowDetailView: View {
                 Text(Self.day(date))
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
-                Text(PulseLocalization.localizedString(
-                    configuration.status == .active ? "plan.status.active"
-                        : configuration.status == .done ? "plan.status.done"
-                        : "plan.status.cancelled"
-                ))
+                Text(isCurrent
+                    ? plan.map { planIntentTitle(TradePlanEntry(symbol: symbol, plan: $0, transactions: transactions)) }
+                        ?? PulseLocalization.localizedString("plan.status.\(configuration.status.rawValue)")
+                    : PulseLocalization.localizedString("plan.status.\(configuration.status.rawValue)"))
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 Spacer(minLength: 0)

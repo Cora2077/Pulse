@@ -733,6 +733,9 @@ public final class WatchlistStore {
             incoming.conditions = normalized
         }
         guard incoming.hasValidPayload else { return false }
+        guard Self.validIncomingPlanBinding(incoming, on: allItems[index], plans: plans, existing: existing) else {
+            return false
+        }
 
         if let existing, let stored, let old {
             incoming.createdAt = old.createdAt
@@ -777,6 +780,49 @@ public final class WatchlistStore {
     private static func normalizedPlanNote(_ note: String?) -> String? {
         let trimmed = note?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed?.isEmpty ?? true) ? nil : trimmed
+    }
+
+    /// Whether a bound sell plan may be admitted, checked against the live item.
+    ///
+    /// `hasValidPayload` has already refused a binding on a buy, or on a sell
+    /// with no active pool — those are malformed anywhere. What is left is only
+    /// answerable against this item's own shares: the bound card must exist in
+    /// the plan's pool, the allocation must be reconciled, and the plan's size
+    /// must fit what its siblings have not already claimed.
+    ///
+    /// The claim is measured on the *incoming* plan's remaining quantity, not
+    /// its total, so a half-filled plan can still afford to be edited or
+    /// re-saved, and the plan's own previous claim is excluded — without that,
+    /// every save of an unchanged bound plan would have to fit twice.
+    ///
+    /// Cancelled and done plans are deliberately not checked. Their binding is
+    /// retained as history: the plan records which shares it was written
+    /// against even after the shares move, and re-validating a settled plan
+    /// would refuse to cancel exactly the stale bindings the user most needs to
+    /// clear. An unbound plan takes the original path unchanged.
+    ///
+    /// Nothing is written here — a `false` leaves the store byte for byte as it
+    /// was — and `allItems[index]` is the account-scoped item, so a plan can
+    /// never validate a card that lives in another ledger.
+    private static func validIncomingPlanBinding(
+        _ incoming: TradePlan,
+        on item: WatchItem,
+        plans: [TradePlan],
+        existing: Int?
+    ) -> Bool {
+        guard incoming.status == .active else { return true }
+        guard let portionID = incoming.positionPortionID else { return true }
+        guard item.salePlanSource(for: incoming) != nil else { return false }
+        // The candidate item carries the incoming plan in place of the stored
+        // one, so the availability read sees exactly what the store would hold.
+        var candidate = item
+        candidate.plans = plans
+        if let existing { candidate.plans[existing] = incoming }
+        else { candidate.plans.append(incoming) }
+        let remaining = TradePlanExecutionProgress(plan: incoming, transactions: candidate.transactions).remainingQuantity
+        guard remaining.isFinite, remaining > 0 else { return true }
+        let available = candidate.availableSalePlanQuantity(for: portionID, excludingPlanID: incoming.id)
+        return remaining <= available + PositionAllocation.quantityTolerance(remaining, available)
     }
 
     @discardableResult
@@ -1060,6 +1106,31 @@ public final class WatchlistStore {
     /// candidate shares agree on one funding source; a sale spanning several
     /// sources is refused with `fundingSelectionRequired` rather than quietly
     /// spending one of them.
+    ///
+    /// `historicalBackfill` is the one route that records a fill against a plan
+    /// that is not waiting any more. It exists because a user can close a plan
+    /// (or have it closed by a recorded fill) and only afterwards enter the
+    /// trade that actually happened; the alternative — putting the plan back to
+    /// `.active`, recording, and letting it close again — writes a state the
+    /// user never chose and makes a settled plan briefly look live again. The
+    /// flag is therefore additive and narrow:
+    ///
+    /// - The default stays exactly what it always was: the plan must be
+    ///   `.active`.
+    /// - `true` requires a raw `.done` plan that still has size left in the
+    ///   aggregate of its linked fills. A `.cancelled` plan, an `.active` plan,
+    ///   and a plan whose linked fills already complete it are all refused with
+    ///   `stalePlan` — the caller asked for a backfill of something that is not
+    ///   an incomplete stopped record.
+    /// - Nothing else relaxes. The expected stamp, the duplicate-id check, the
+    ///   payload validation, the destination account and buy method, the source
+    ///   account, and the sale allocation and revision protections all run
+    ///   unchanged, and every one of them runs before a single value is
+    ///   written.
+    ///
+    /// The rule is decided on this store's own values, never on the caller's
+    /// copy: a stale `canBackfillFill` on a sheet that has been open for a
+    /// while cannot talk the store into a write it would otherwise refuse.
     @discardableResult
     public func recordTradePlanFill(
         symbol: SymbolID,
@@ -1074,7 +1145,8 @@ public final class WatchlistStore {
         fundingSource: PositionFundingSource? = nil,
         brokerageAccountID: BrokerageAccountID? = nil,
         salePortionQuantities: [UUID: Double]? = nil,
-        expectedAllocationRevision: UUID? = nil
+        expectedAllocationRevision: UUID? = nil,
+        historicalBackfill: Bool = false
     ) throws -> PositionTransaction {
         guard let index = allItems.firstIndex(where: { $0.symbol == symbol }) else {
             throw TradePlanExecutionError.itemNotFound
@@ -1093,7 +1165,21 @@ public final class WatchlistStore {
         }
         if plan.kind == .buy, fundingSource == .margin,
            brokerageAccountsEnabled && destination != .financing { throw TradePlanExecutionError.invalidBuyMethod }
-        guard plan.status == .active, plan.hasValidPayload,
+        // The status gate, asked of the *stored* plan. Backfill widens it to a
+        // stopped plan that is still short of its size in the aggregate of its
+        // linked fills — including fills recorded into other accounts, so a
+        // plan whose remaining shares were bought elsewhere is recognised as
+        // complete rather than backfilled twice.
+        //
+        // Everything else is unchanged, which is why this is a widening of the
+        // one status question rather than a second path: a plan that is
+        // cancelled, still active, or already complete under backfill fails
+        // here with the same `stalePlan` the ordinary route gives a plan that
+        // is not active.
+        let backfillable = plan.status == .done
+            && TradePlanExecutionProgress(plan: plan, transactions: transactionsForPlan(symbol)).remainingQuantity > 0
+        guard plan.hasValidPayload,
+              historicalBackfill ? backfillable : plan.status == .active,
               expectedPlanUpdatedAt.map({ $0 == plan.updatedAt }) ?? true else {
             throw TradePlanExecutionError.stalePlan
         }
@@ -1131,7 +1217,14 @@ public final class WatchlistStore {
             var updatedPlan = plan
             updatedPlan.filledTransactionID = plan.filledTransactionID ?? transactionID
             let fills = transactionsForPlan(symbol) + [transaction]
-            if TradePlanExecutionProgress(plan: updatedPlan, transactions: fills).isComplete { updatedPlan.status = .done }
+            if TradePlanExecutionProgress(plan: updatedPlan, transactions: fills).isComplete {
+                updatedPlan.status = .done
+            } else if !historicalBackfill {
+                // Same rule as the same-account path below: only ordinary
+                // recording reopens a plan. A partial backfill stays `.done`
+                // so the user's own decision survives the entry.
+                updatedPlan.status = .active
+            }
             updatedPlan.updatedAt = .now
             source.items[index].plans[planIndex] = updatedPlan
             try commitAccountPortfolios([activeBrokerageAccountID: source, destination: target])
@@ -1169,8 +1262,18 @@ public final class WatchlistStore {
         updatedPlan.filledTransactionID = plan.filledTransactionID.flatMap { legacyID in
             transactionsForPlan(symbol).contains { $0.id == legacyID } ? legacyID : nil
         } ?? transactionID
-        if TradePlanExecutionProgress(plan: updatedPlan, transactions: transactionsForPlan(symbol)).isComplete {
+        let fills = transactionsForPlan(symbol)
+        if TradePlanExecutionProgress(plan: updatedPlan, transactions: fills).isComplete {
             updatedPlan.status = .done
+        } else if !historicalBackfill {
+            // Ordinary recording is the only route that may derive `.active`
+            // from a plan. A backfill arrives on a plan that is already
+            // `.done`, and a partial one has to *stay* `.done`: leaving it
+            // stopped is the honest reading of "the user closed this and has
+            // since entered some of the missing fills", while flipping it to
+            // `.active` would both contradict the recorded decision and make
+            // the ordinary record route claim it again.
+            updatedPlan.status = .active
         }
         updatedPlan.updatedAt = .now
         allItems[index].plans[planIndex] = updatedPlan
@@ -1194,6 +1297,12 @@ public final class WatchlistStore {
     ///    attribute the sale to a funding source the user never chose, and the
     ///    store cannot know which of their own or borrowed shares they meant.
     ///
+    /// A plan bound to one card short-circuits all three. Its own card is the
+    /// only answer the store may produce, and it is produced together with the
+    /// map the rest of the path would otherwise have been given: naming the
+    /// bound card is what the binding already said, so the caller does not have
+    /// to repeat it.
+    ///
     /// A plan with no pool and no explicit selection keeps the older behaviour:
     /// there is no pool to consume, so no shares are deducted and nothing is
     /// invented about where they came from.
@@ -1212,6 +1321,32 @@ public final class WatchlistStore {
         }
         guard updated.transactions.last?.id == transactionID else {
             throw TradePlanExecutionError.historicalPoolSale
+        }
+
+        // A bound plan answers the question by itself, so it is resolved before
+        // the map and the pool are consulted. The map the caller may have sent
+        // is still checked — against the binding, not instead of it — so a
+        // caller and a plan that disagree about which card is being sold are
+        // told so rather than having one of them silently win.
+        //
+        // The pool is passed as nil on purpose: the binding already resolved
+        // through `salePlanSource`, which compares purposes the way every other
+        // reader does, and re-checking the raw stored value here would disagree
+        // with it for a legacy card on the retired purpose. The restriction is
+        // the binding, and it has been applied.
+        if let bound = try boundSaleAllocation(
+            previous: previous,
+            plan: plan,
+            quantity: quantity,
+            selection: salePortionQuantities
+        ) {
+            return try selectedSaleAllocation(
+                allocation: bound.allocation,
+                updated: updated,
+                pool: nil,
+                selection: [bound.portion.id: quantity],
+                quantity: quantity
+            )
         }
 
         if let selection = salePortionQuantities {
@@ -1256,6 +1391,40 @@ public final class WatchlistStore {
         return try validatedSaleAllocation(
             allocation: allocation, portions: portions, updated: updated, quantity: quantity
         )
+    }
+
+    /// Resolves the one card a bound sell plan consumes, or refuses.
+    ///
+    /// The read is the same one the store validates a binding against when the
+    /// plan is written: a card that has moved pool, been spent, or been deleted
+    /// leaves the plan with no source at all. That is a refusal, not a
+    /// fallback — picking a sibling card would sell shares the user never tied
+    /// this plan to, so a missing source throws `staleAllocation` and the
+    /// caller is told to re-select. An explicit map is checked against the
+    /// binding first and must name *only* the bound card.
+    ///
+    /// Returns nil for an unbound plan, which then takes the pool path.
+    private func boundSaleAllocation(
+        previous: WatchItem,
+        plan: TradePlan,
+        quantity: Double,
+        selection: [UUID: Double]?
+    ) throws -> (allocation: PositionAllocation, portion: PositionPortion)? {
+        guard let portionID = plan.positionPortionID else { return nil }
+        guard let allocation = previous.positionAllocation,
+              let source = previous.salePlanSource(for: plan) else {
+            throw TradePlanExecutionError.staleAllocation
+        }
+        if let selection {
+            let tolerance = PositionAllocation.quantityTolerance(quantity, source.quantity)
+            guard selection.count == 1,
+                  let amount = selection[portionID],
+                  amount.isFinite, amount > 0,
+                  abs(amount - quantity) <= tolerance else {
+                throw TradePlanExecutionError.invalidFundingSelection
+            }
+        }
+        return (allocation, source)
     }
 
     /// Reduces exactly the portions a caller named, rejecting anything that
@@ -1762,12 +1931,21 @@ public final class WatchlistStore {
             }
         }
 
+        // Only the cards whose own source stopped matching are reset. A
+        // calibration invalidates every portion that preceded it, but an
+        // unrelated edit — a deleted or re-priced trade in another part of the
+        // ledger — leaves the cards that still point at a live buy exactly as
+        // they were, and with them the buy price the user recorded. The flag
+        // survives because the audit entry's meaning ("this reconciliation
+        // invalidated sources") has not changed; what changed is that it now
+        // describes only the cards that actually lost one.
+        let entries = PositionLedger(transactions: item.transactions).entries
         let invalidSource = !current.hasMatchingSources(for: item)
         var portions = current.portions.compactMap { portion -> PositionPortion? in
             guard let quantity = confirmedQuantities[portion.id], quantity > 0 else { return nil }
             var updated = portion
             updated.quantity = quantity
-            if invalidSource {
+            if !PositionAllocation.matchingSource(for: portion, entries: entries) {
                 updated.origin = PositionPortion.Origin(kind: .snapshot, date: .now)
             }
             return updated
@@ -1792,6 +1970,85 @@ public final class WatchlistStore {
             reason: reason
         )
         guard updated.isValid else { throw PositionAllocationError.sourceQuantityExceeded }
+        setPositionAllocation(updated, for: symbol)
+        save()
+        return updated
+    }
+
+    /// Links one card to the exact buy it came from.
+    ///
+    /// Reconciliation resets the *source* of a card whose evidence was lost, and
+    /// the audit trail can recover most of them on its own — but a card that was
+    /// split before the trail recorded a buy, or one whose history predates the
+    /// field, has nothing left to recover from. This is the user supplying that
+    /// missing evidence: they know which fill the shares came out of, and the
+    /// app must never guess it from a matching quantity, a date, or an account
+    /// label.
+    ///
+    /// The candidate has to come from `availableBuySources(for:item:)`, so a
+    /// sell, an adjustment, a buy in another ledger, a buy already calibrated
+    /// away, or a buy whose remaining quantity cannot cover this card is refused
+    /// rather than written. A target the ledger cannot satisfy throws
+    /// `.needsReconciliation`; one that is real but has no capacity left throws
+    /// `.sourceQuantityExceeded`.
+    ///
+    /// Exactly one card changes: its `origin` becomes the chosen transaction's
+    /// exact buy origin. Quantity, pool, id, account label, funding, conditions,
+    /// note, every transaction, and every plan are carried across untouched, so
+    /// this is a provenance edit and nothing else. It appends the ordinary
+    /// `.reconcile` audit entry through `changedAllocation` — no new change kind
+    /// and no schema change, because "the user reconciled this card" is what
+    /// already happened.
+    ///
+    /// The whole candidate is validated before anything is written: a revision
+    /// the caller already replaced is refused, and an allocation that would come
+    /// out invalid (or with two cards claiming more of one buy than it held) is
+    /// refused without a write. Re-linking a card to the buy it already names is
+    /// a no-op that returns the current allocation without saving.
+    @discardableResult
+    public func linkPositionPortionToBuy(
+        symbol: SymbolID,
+        portionID: UUID,
+        transactionID: UUID,
+        expectedRevision: UUID
+    ) throws -> PositionAllocation {
+        guard let item = positionAllocationItem(for: symbol) else {
+            throw PositionAllocationError.itemNotFound(symbol)
+        }
+        let current = try currentPositionAllocation(for: item, expectedRevision: expectedRevision)
+        guard let index = current.portions.firstIndex(where: { $0.id == portionID }) else {
+            throw PositionAllocationError.unknownPortion(portionID)
+        }
+        guard let entry = PositionLedger(transactions: item.transactions).entries
+            .first(where: { $0.transaction.id == transactionID }),
+            entry.transaction.kind == .buy else {
+            throw PositionAllocationError.needsReconciliation
+        }
+        let transaction = entry.transaction
+        let origin = PositionPortion.Origin(
+            kind: .buy,
+            transactionID: transaction.id,
+            date: transaction.date,
+            price: transaction.price,
+            quantity: transaction.quantity
+        )
+        guard current.portions[index].origin != origin else { return current }
+        guard current.availableBuySources(for: portionID, item: item)
+            .contains(where: { $0.id == transactionID }) else {
+            throw PositionAllocationError.sourceQuantityExceeded
+        }
+        var portions = current.portions
+        portions[index].origin = origin
+        let updated = changedAllocation(
+            current,
+            portions: portions,
+            item: item,
+            kind: .reconcile,
+            reason: "关联买入成交"
+        )
+        guard updated.isValid, updated.hasMatchingSources(for: item) else {
+            throw PositionAllocationError.sourceQuantityExceeded
+        }
         setPositionAllocation(updated, for: symbol)
         save()
         return updated

@@ -56,6 +56,16 @@ public struct TradePlan: Codable, Sendable, Hashable, Identifiable {
     /// never creates a transaction and never overrides the funding a recorded
     /// fill actually reports. `.unmarked` is an explicit clearing.
     public var fundingSource: PositionFundingSource?
+    /// The one existing position card this sell plan is tied to.
+    ///
+    /// `nil` is the ordinary, unbound plan — anything written before the field
+    /// existed, and every plan whose size is not a claim on one specific card.
+    /// A non-nil id is a *binding*, not a suggestion: the store refuses to
+    /// record a fill whose source card has moved, been reduced, or vanished
+    /// rather than quietly spending a sibling card, and it never invents a
+    /// binding for a plan the user did not tie. Only a sell may carry one, and
+    /// only against an explicitly named active pool.
+    public var positionPortionID: UUID?
 
     public init(
         id: UUID = UUID(),
@@ -70,7 +80,8 @@ public struct TradePlan: Codable, Sendable, Hashable, Identifiable {
         positionPool: PositionPool? = nil,
         conditions: [TradePlanCondition]? = nil,
         history: [TradePlanRevision]? = nil,
-        fundingSource: PositionFundingSource? = nil
+        fundingSource: PositionFundingSource? = nil,
+        positionPortionID: UUID? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -85,6 +96,7 @@ public struct TradePlan: Codable, Sendable, Hashable, Identifiable {
         self.conditions = conditions
         self.history = history
         self.fundingSource = fundingSource
+        self.positionPortionID = positionPortionID
     }
 }
 
@@ -189,6 +201,10 @@ public struct TradePlanConfiguration: Codable, Sendable, Hashable {
     /// captured. Copied from the plan so a revision and a fill's immutable
     /// snapshot both answer "what was intended then" after the plan changes.
     public var fundingSource: PositionFundingSource?
+    /// The position card this configuration was tied to, captured beside the
+    /// pool and funding so a revision and a fill's immutable snapshot both
+    /// answer "which shares was this written against" after the plan changes.
+    public var positionPortionID: UUID?
 
     public init(plan: TradePlan) {
         kind = plan.kind
@@ -200,10 +216,18 @@ public struct TradePlanConfiguration: Codable, Sendable, Hashable {
         conditions = plan.conditions
         createdAt = plan.createdAt
         fundingSource = plan.fundingSource
+        positionPortionID = plan.positionPortionID
     }
 
     public static func hasFundingMetadata(in configurations: [TradePlanConfiguration]) -> Bool {
         configurations.contains { $0.fundingSource != nil }
+    }
+
+    /// Whether any configuration in the list carries a position-card binding.
+    /// Checked beside the other metadata predicates so the archive and sync
+    /// version gates ask one shared question instead of each walking the tree.
+    public static func hasPositionPortionMetadata(in configurations: [TradePlanConfiguration]) -> Bool {
+        configurations.contains { $0.positionPortionID != nil }
     }
 
     /// Whether any configuration in the list carries an event link, whether on
@@ -235,6 +259,19 @@ public extension TradePlan {
     var hasEventReferenceMetadata: Bool {
         hasEventReference
             || TradePlanConfiguration.hasEventReference(in: (history ?? []).map(\.configuration))
+    }
+
+    /// Whether a position-card binding lives anywhere under this plan: its own
+    /// field, or a configuration a revision captured.
+    ///
+    /// The revisions are walked for the same reason the other metadata
+    /// predicates walk them: a plan whose binding was cleared leaves the live
+    /// field with nothing to detect, and a reader that stopped at the declared
+    /// version would drop the record of which shares it was once written
+    /// against.
+    var hasPositionPortionMetadata: Bool {
+        positionPortionID != nil
+            || TradePlanConfiguration.hasPositionPortionMetadata(in: (history ?? []).map(\.configuration))
     }
 
     /// The single badge a plan card shows for its reasoning.
@@ -269,12 +306,20 @@ public extension TradePlanConfiguration {
     var hasEventReferenceMetadata: Bool {
         (conditions ?? []).contains { $0.eventReference != nil }
     }
+
+    /// Whether this configuration names a position card. Its own field only:
+    /// a configuration has no history to walk.
+    var hasPositionPortionMetadata: Bool { positionPortionID != nil }
 }
 
 public extension TradePlanExecution {
     /// Whether the immutable fill snapshot holds an event link in its
     /// conditions.
     var hasEventReferenceMetadata: Bool { configuration.hasEventReferenceMetadata }
+
+    /// Whether the immutable fill snapshot names the card it consumed. A fill
+    /// whose plan was later unbound still records which shares actually moved.
+    var hasPositionPortionMetadata: Bool { configuration.hasPositionPortionMetadata }
 }
 
 public struct TradePlanRevision: Codable, Sendable, Hashable, Identifiable {
@@ -294,17 +339,49 @@ public struct TradePlanExecutionProgress: Sendable, Hashable {
     public let remainingQuantity: Double
     public let hasLinkedTrades: Bool
 
+    /// Quantity-weighted actual price from the same deduplicated linked fills.
+    public let averageFillPrice: Double?
+
+    /// The most recent date among the counted fills. `nil` when none was
+    /// counted, and skipped for any transaction whose date is not finite —
+    /// a broken date loses its claim on "latest" without dropping the trade
+    /// from the quantity and price it does legitimately contribute to.
+    public let lastFillDate: Date?
+
     public init(plan: TradePlan, transactions: [PositionTransaction]) {
         let expectedKind: PositionTransaction.Kind = plan.kind == .buy ? .buy : .sell
         let byID = Dictionary(transactions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var counted = Set<UUID>()
         var total = 0.0
+        var mean = 0.0
+        var weightScale = 0.0
+        var scaledWeight = 0.0
+        var latestDate: Date?
         func add(_ transaction: PositionTransaction) {
             guard transaction.kind == expectedKind, transaction.quantity.isFinite, transaction.quantity > 0,
                   transaction.price.isFinite, transaction.price > 0,
                   counted.insert(transaction.id).inserted else { return }
             let next = total + transaction.quantity
             total = next.isFinite ? next : .greatestFiniteMagnitude
+            // Normalize weights before adding them; price × quantity and even
+            // the total quantity can overflow while their weighted mean is valid.
+            if transaction.quantity > weightScale {
+                scaledWeight *= weightScale / transaction.quantity
+                weightScale = transaction.quantity
+            }
+            let weight = transaction.quantity / weightScale
+            let combinedWeight = scaledWeight + weight
+            let fraction = weight / combinedWeight
+            if mean == 0 { mean = transaction.price }
+            else if transaction.price >= mean {
+                let updated = mean + (transaction.price - mean) * fraction
+                mean = updated.isFinite ? updated : max(mean, transaction.price)
+            } else { mean -= (mean - transaction.price) * fraction }
+            scaledWeight = combinedWeight
+            if transaction.date.timeIntervalSince1970.isFinite,
+               latestDate.map({ transaction.date > $0 }) ?? true {
+                latestDate = transaction.date
+            }
         }
 
         for transaction in transactions where transaction.planExecution?.planID == plan.id {
@@ -315,6 +392,8 @@ public struct TradePlanExecutionProgress: Sendable, Hashable {
             add(transaction)
         }
         filledQuantity = total
+        averageFillPrice = counted.isEmpty ? nil : mean
+        lastFillDate = latestDate
         if plan.quantity.isFinite, plan.quantity > 0 {
             let remaining = max(0, plan.quantity - total)
             remainingQuantity = remaining <= PositionAllocation.quantityTolerance(plan.quantity, total) ? 0 : remaining
@@ -388,12 +467,33 @@ public enum TradePlanExecutionError: LocalizedError, Equatable {
 }
 
 extension TradePlan {
+    /// The one payload contract every write path shares: a plan whose price,
+    /// size, timestamps, note, conditions, revisions, or position-card binding
+    /// could not have been written is not a plan to act on either.
     var hasValidPayload: Bool {
         guard price.isFinite, price > 0, quantity.isFinite, quantity > 0,
               createdAt.timeIntervalSince1970.isFinite, updatedAt.timeIntervalSince1970.isFinite,
               (note.map { $0.count <= 4_000 } ?? true),
               Self.validConditions(conditions),
-              (history.map(Self.validHistory) ?? true) else { return false }
+              (history.map(Self.validHistory) ?? true),
+              Self.hasValidPositionPortionBinding(
+                  kind: kind, positionPool: positionPool, positionPortionID: positionPortionID
+              ) else { return false }
+        return true
+    }
+
+    /// Whether a plan's position-card binding describes something the product
+    /// can actually act on.
+    ///
+    /// A binding is a claim on one card of one pool, so it only makes sense on
+    /// a sell whose pool is named *and* still an active destination: a plan
+    /// tied to a card while claiming the retired observation purpose, or no
+    /// pool at all, names no bucket the card could be read out of. A legacy
+    /// plan without the field is untouched — the answer is asked only when a
+    /// binding exists, so nothing old is ever defaulted to a card.
+    static func hasValidPositionPortionBinding(kind: Kind, positionPool: PositionPool?, positionPortionID: UUID?) -> Bool {
+        guard positionPortionID != nil else { return true }
+        guard kind == .sell, let positionPool, positionPool.isActivePurpose else { return false }
         return true
     }
 
@@ -417,6 +517,14 @@ extension TradePlan {
             && value.createdAt.timeIntervalSince1970.isFinite
             && (value.note.map { $0.count <= 4_000 } ?? true)
             && validConditions(value.conditions)
+            // A revision is a configuration of this same plan, so the binding
+            // it captured has to have been a legal one: a captured card on a
+            // buy, or on a sell with no active pool, is not a plan the store
+            // ever wrote.
+            && hasValidPositionPortionBinding(
+                kind: value.kind, positionPool: value.positionPool,
+                positionPortionID: value.positionPortionID
+            )
     }
 }
 

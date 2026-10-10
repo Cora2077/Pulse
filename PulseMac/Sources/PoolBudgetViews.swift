@@ -71,7 +71,8 @@ struct PoolBudgetInput {
                 price: price,
                 currencyCode: code,
                 sector: item.tradingProfile?.sector,
-                poolQuantities: Self.verifiedPoolShares(of: item)
+                poolQuantities: Self.verifiedPoolShares(of: item),
+                portions: Self.verifiedPortions(of: item)
             )
         }
 
@@ -104,30 +105,65 @@ struct PoolBudgetInput {
                                    accountFilter: BrokerageAccountID?) -> Self {
         let filter = PoolBudgetFilter(currencyFilter)
         let records = BrokerageBoardReader.records(store: appState.watchlist)
-        let entries = BrokerageBoardReader.entries(store: appState.watchlist).filter {
+        let candidateEntries = BrokerageBoardReader.entries(store: appState.watchlist).filter {
             $0.plan.status == .active && filter.includes($0.symbol.currencyCode)
-                && (accountFilter == nil || $0.accountID == accountFilter)
                 && (planIDs == nil || planIDs!.contains($0.id))
         }
+        // Which group consumes each bound plan.
+        //
+        // A binding (`positionPortionID`) names one exact card. The plan's own
+        // ledger is where the write lands, but the card it can *reach* is the
+        // one it names — the verified card inside that same ledger. Its display
+        // attribution (`brokerageAccountID ?? owner ledger`) decides which
+        // projection group consumes the plan, so the row the plan is judged
+        // against always contains that card.
+        //
+        // This is a routing decision only. It never moves a share between
+        // groups and never adds one anywhere: each group still consumes a card
+        // solely through that card's own display attribution below, so a
+        // holding is counted exactly once, in exactly the group its label names.
+        let projections = Self.projectionGroups(entries: candidateEntries, records: records)
+        let entries = candidateEntries.filter { accountFilter == nil || projections[ProjectionPlanKey($0)] == accountFilter }
         let accounts = accountFilter.map { [$0] } ?? BrokerageAccountID.allCases
         var results: [PoolBudgetProjection.Result] = []
         var allPositions: [PoolBudgetProjection.Position] = []
         var referenceSymbols = Set<SymbolID>()
         for account in accounts {
-            let plans = entries.filter { $0.accountID == account }
+            let plans = entries.filter { projections[ProjectionPlanKey($0)] == account }
             let planSymbols = Set(plans.map(\.symbol))
-            var grouped: [SymbolID: (item: WatchItem, quantity: Double, pools: [PositionPool: Double])] = [:]
+            // The bound cards whose plan projects into this group. A card only
+            // qualifies when a selected bound plan names it *and* the plan was
+            // written in the ledger that owns the card: a same-id card in
+            // another ledger must never satisfy a plan whose own ledger holds
+            // no such card.
+            let boundCards = Set(entries.compactMap { entry -> BoundPortionKey? in
+                guard projections[ProjectionPlanKey(entry)] == account, let portionID = entry.plan.positionPortionID,
+                      let owner = entry.accountID else { return nil }
+                return BoundPortionKey(accountID: owner, symbol: entry.symbol, portionID: portionID)
+            })
+            var grouped: [SymbolID: (item: WatchItem, quantity: Double, pools: [PositionPool: Double], portions: [PositionPortion])] = [:]
             for record in records {
                 let item = record.item
                 guard item.supportsPosition, filter.includes(item.symbol.currencyCode) else { continue }
+                // Totals always use the existing attribution. Bound plans
+                // only add exact source metadata; they never add/remove shares.
                 let shares = item.positionAccountAttribution(enclosingAccountID: record.accountID)[account] ?? [:]
+                let boundPortions = Self.verifiedPortions(of: item).filter { portion in
+                    Self.projectedAccount(of: portion, in: record) == account
+                        && boundCards.contains(BoundPortionKey(accountID: record.accountID,
+                                                              symbol: item.symbol, portionID: portion.id))
+                }
                 let quantity = shares.values.reduce(0, +)
+                // A plan-bearing symbol of this ledger keeps its row even when
+                // its attributed shares landed in another group, so a sell plan
+                // is still visible next to the cards it can reach.
                 guard quantity != 0 || (record.accountID == account && planSymbols.contains(item.symbol)) else { continue }
-                var old = grouped[item.symbol] ?? (item, 0, [:])
+                var old = grouped[item.symbol] ?? (item, 0, [:], [])
                 old.quantity += quantity
                 if !item.positionAllocationNeedsReconciliation {
                     for (pool, value) in shares { old.pools[pool, default: 0] += value }
                 }
+                old.portions += boundPortions
                 grouped[item.symbol] = old
             }
             let positions = grouped.values.map { value in
@@ -140,7 +176,8 @@ struct PoolBudgetInput {
                 }
                 return PoolBudgetProjection.Position(symbol: value.item.symbol, name: value.item.resolvedDisplayName,
                     quantity: value.quantity, price: price, currencyCode: value.item.symbol.currencyCode,
-                    sector: value.item.tradingProfile?.sector, poolQuantities: value.pools)
+                    sector: value.item.tradingProfile?.sector, poolQuantities: value.pools,
+                    portions: value.portions)
             }
             let balances = appState.poolBudgets.cashBalances(for: account).filter { filter.includes($0.key) }
             var limits: [String: [PositionPool: Double]] = [:]
@@ -166,21 +203,110 @@ struct PoolBudgetInput {
         symbol.currencyCode.uppercased()
     }
 
+    // MARK: Bound-plan projection groups
+
+    /// One bound plan's plan id, paired with the group that consumes it.
+    private struct ProjectionPlanKey: Hashable {
+        let accountID: BrokerageAccountID
+        let symbol: SymbolID
+        let planID: UUID
+
+        init(_ entry: TradePlanEntry) {
+            accountID = entry.accountID ?? .unassigned
+            symbol = entry.symbol
+            planID = entry.id
+        }
+    }
+    private typealias PlanProjections = [ProjectionPlanKey: BrokerageAccountID]
+
+    /// The card a bound plan names, together with the ledger and instrument it
+    /// must be found in. The ledger is what stops a same-id card elsewhere from
+    /// satisfying the binding.
+    private struct BoundPortionKey: Hashable {
+        let accountID: BrokerageAccountID
+        let symbol: SymbolID
+        let portionID: UUID
+    }
+
+    /// The group a verified card projects into: its own display label when it
+    /// carries one, otherwise the ledger it was read out of. This is the *same*
+    /// fallback `positionAccountAttribution` applies, so a card's group here and
+    /// its contribution to the per-label totals can never disagree.
+    private static func projectedAccount(of portion: PositionPortion,
+                                        in record: BrokerageBoardItem) -> BrokerageAccountID {
+        portion.brokerageAccountID ?? record.accountID
+    }
+
+    /// Where each bound entry's plan projects.
+    ///
+    /// The lookup is deliberately exact: the named card must exist among the
+    /// *verified* cards of a record in the plan's own ledger carrying the same
+    /// instrument. When it does, the card's group consumes the plan. When it
+    /// does not — a stale binding, an unverified allocation, or a plan whose
+    /// ledger holds no such card — the plan falls back to its owner ledger with
+    /// no source, which the projection reports as an over-sell rather than
+    /// quietly funding it from a card in another book.
+    ///
+    /// `entry.accountID` is never rewritten: it stays the ledger the plan was
+    /// written in, which is where any fill will be recorded.
+    @MainActor
+    private static func projectionGroups(entries: [TradePlanEntry],
+                                         records: [BrokerageBoardItem]) -> PlanProjections {
+        var portionOwners: [BoundPortionKey: BrokerageAccountID] = [:]
+        for record in records {
+            for portion in verifiedPortions(of: record.item) {
+                let key = BoundPortionKey(accountID: record.accountID, symbol: record.item.symbol,
+                                          portionID: portion.id)
+                portionOwners[key] = projectedAccount(of: portion, in: record)
+            }
+        }
+        var projections: PlanProjections = [:]
+        for entry in entries { projections[ProjectionPlanKey(entry)] = entry.accountID ?? .unassigned }
+        for entry in entries {
+            // An entry with no ledger cannot name a card in one; it keeps the
+            // unassigned group, which is where such a plan is displayed.
+            guard let portionID = entry.plan.positionPortionID, let ledger = entry.accountID else { continue }
+            let key = BoundPortionKey(accountID: ledger, symbol: entry.symbol, portionID: portionID)
+            projections[ProjectionPlanKey(entry)] = portionOwners[key] ?? ledger
+        }
+        return projections
+    }
+
     /// Only a *verified* allocation yields pool shares. An allocation that
     /// still needs reconciliation contributes nothing, so the projection
     /// reports a shortfall instead of splitting the position on a guess.
     @MainActor
     private static func verifiedPoolShares(of item: WatchItem) -> [PositionPool: Double] {
-        guard item.positionQuantity > 0,
-              !item.positionAllocationNeedsReconciliation,
-              let allocation = item.positionAllocation,
-              allocation.isValid,
-              allocation.hasMatchingSources(for: item) else { return [:] }
+        guard let allocation = verifiedAllocation(of: item) else { return [:] }
         var shares: [PositionPool: Double] = [:]
         for portion in allocation.portions {
             shares[portion.pool, default: 0] += portion.quantity
         }
         return shares
+    }
+
+    /// The exact cards a *verified* allocation holds for this item.
+    ///
+    /// The projection needs the cards, not just their per-pool sum, because a
+    /// sell plan bound to one card can only be checked against that card. The
+    /// gate is deliberately the same one `verifiedPoolShares` uses — a
+    /// reconciled allocation whose sources still match — so a caller can never
+    /// hand the calculator a card it would not also have counted in the pool
+    /// totals. An unverified allocation yields `[]`, which reads downstream as
+    /// "no live source" rather than as a fallback to a sibling card.
+    @MainActor
+    private static func verifiedPortions(of item: WatchItem) -> [PositionPortion] {
+        verifiedAllocation(of: item)?.portions ?? []
+    }
+
+    @MainActor
+    private static func verifiedAllocation(of item: WatchItem) -> PositionAllocation? {
+        guard item.positionQuantity > 0,
+              !item.positionAllocationNeedsReconciliation,
+              let allocation = item.positionAllocation,
+              allocation.isValid,
+              allocation.hasMatchingSources(for: item) else { return nil }
+        return allocation
     }
 
     func calculate() -> PoolBudgetProjection.Result {

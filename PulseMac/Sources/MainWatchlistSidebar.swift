@@ -32,6 +32,11 @@ struct MainWatchlistSidebar: View {
     @State private var searchError: String?
     @State private var sidebarWidth: CGFloat = 280
     @State private var dragStartWidth: CGFloat?
+    /// The same two keys the popover owns. Automatic order here is a display
+    /// projection only: it never reorders the stored group, so switching it on
+    /// cannot disturb a manual arrangement or start a sync write.
+    @AppStorage("pulse.watchlist.orderMode.v1") private var orderMode = WatchlistOrderMode.manual.rawValue
+    @AppStorage("pulse.watchlist.sortOption.v1") private var sortOption = WatchlistSortOption.changePercent.rawValue
 
     private var normalizedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var currentGroup: WatchlistGroup? { appState.sharedWatchlist.group(for: selectedGroupID) }
@@ -53,7 +58,22 @@ struct MainWatchlistSidebar: View {
     }
     private var groupItems: [WatchItem] {
         guard let currentGroup else { return [] }
-        return appState.sharedWatchlist.items(in: currentGroup.id).filter { item in
+        // Presentation order comes from the shared display function, reading the
+        // rows' live quotes through the same value function the popover uses, so
+        // the two surfaces cannot disagree about what the automatic order means.
+        // The group is passed explicitly: this sidebar owns its own tab choice.
+        let resolvedOption = WatchlistOrderMode(rawValue: orderMode) == .automatic
+            ? WatchlistSortOption(rawValue: sortOption)
+            : nil
+        let items = WatchlistDisplayOrder.items(
+            from: appState.sharedWatchlist,
+            prioritizeOpenMarkets: appState.settings.prioritizeOpenMarkets,
+            groupID: currentGroup.id,
+            sortValue: resolvedOption.map { option in
+                { item in WatchlistDisplayOrder.value(for: item, option: option, appState: appState) }
+            }
+        )
+        return items.filter { item in
             switch filter {
             case .all: true
             case .positions: appState.sharedWatchlist.hasPosition(for: item.symbol)

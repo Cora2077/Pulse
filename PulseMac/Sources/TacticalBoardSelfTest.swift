@@ -1,5 +1,6 @@
 #if DEBUG
 import AppKit
+import Security
 import SwiftUI
 import PulseCore
 
@@ -44,6 +45,25 @@ enum TacticalBoardSelfTest {
         }
 
         let appState = AppState()
+        if CommandLine.arguments.contains("--plan-status-only") {
+            guard CommandLine.arguments.contains("--main-window-demo") else {
+                report("plan-status", "isolated demo required"); return finish()
+            }
+            renderPlanStatuses(appState: appState, into: outputDirectory)
+            return finish()
+        }
+        if CommandLine.arguments.contains("--buy-source-only") {
+            guard CommandLine.arguments.contains("--main-window-demo") else {
+                report("buy-source", "isolated demo required")
+                return finish()
+            }
+            renderBuySources(appState: appState, into: outputDirectory)
+            return finish()
+        }
+        if CommandLine.arguments.contains("--live-sort-only") {
+            renderLiveSorting(appState: appState, into: outputDirectory)
+            return finish()
+        }
         if CommandLine.arguments.contains("--reconciliation-only") {
             renderReconciliationForm(appState: appState, into: outputDirectory)
             return finish()
@@ -79,6 +99,14 @@ enum TacticalBoardSelfTest {
             return finish()
         }
         let symbols = seedFixture(into: appState)
+        if CommandLine.arguments.contains("--portion-sale-only") {
+            renderPortionSales(appState: appState, symbols: symbols, into: outputDirectory)
+            return finish()
+        }
+        if CommandLine.arguments.contains("--plan-create-only") {
+            renderPlanCreation(appState: appState, symbols: symbols, into: outputDirectory)
+            return finish()
+        }
         if CommandLine.arguments.contains("--pool-transfer-only") {
             renderPoolTransferForms(appState: appState, into: outputDirectory)
             return finish()
@@ -124,6 +152,666 @@ enum TacticalBoardSelfTest {
         renderAccountOverviewArtifacts(appState: appState, into: outputDirectory)
 
         return finish()
+    }
+
+    /// Recorded prices, historical recovery, and the real source-link editor.
+    private static func renderBuySources(appState: AppState, into directory: URL) {
+        let store = appState.watchlist
+        store.enableBrokerageAccounts()
+        _ = appState.selectBrokerageAccount(.unassigned)
+        let symbol = SymbolID(market: .us, code: "SOURCEQA")
+        store.add(SymbolInfo(symbol: symbol, name: "虚构成交来源"))
+        let date = Date(timeIntervalSince1970: 1_790_000_000)
+        let buys = [110.0, 120.0, 130.0].enumerated().map { offset, price in
+            PositionTransaction(kind: .buy, price: price, quantity: 200,
+                date: date.addingTimeInterval(Double(offset) * 86_400))
+        }
+        for buy in buys { store.addTransaction(symbol, buy) }
+        var snapshot = store.syncSnapshot()
+        guard let index = snapshot.items.firstIndex(where: { $0.symbol == symbol }),
+              var allocation = snapshot.items[index].positionAllocation else {
+            report("buy-source", "missing fictional allocation"); return
+        }
+        let targetID = allocation.portions[0].id
+        let recoveredID = allocation.portions[2].id
+        var previous = allocation.portions
+        for i in previous.indices {
+            previous[i].pool = .tactical
+            previous[i].brokerageAccountID = .financing
+            if i < 2 { previous[i].origin = .init(kind: .snapshot, date: date.addingTimeInterval(4 * 86_400)) }
+        }
+        allocation.portions = previous.map { part in
+            var copy = part
+            copy.origin = .init(kind: .snapshot, date: date.addingTimeInterval(4 * 86_400))
+            return copy
+        }
+        allocation.changes = [.init(kind: .sourceInvalidated, reason: "Synthetic legacy source reset",
+            previousPortions: previous, resultingPortions: allocation.portions)]
+        snapshot.items[index].positionAllocation = allocation
+        _ = store.applySyncSnapshot(snapshot)
+        let original = store.syncSnapshot()
+        guard let item = store.item(for: symbol), let current = item.positionAllocation,
+              let target = current.portions.first(where: { $0.id == targetID }) else {
+            report("buy-source", "fixture load failed"); return
+        }
+        expect(current.resolvedBuyOrigins(for: item)[recoveredID]?.price == 130,
+               "buy-source", "same-id historical source must recover the recorded price")
+        expect(current.resolvedBuyOrigins(for: item)[targetID] == nil,
+               "buy-source", "equal-sized buys cannot identify an old snapshot")
+        expect(current.availableBuySources(for: targetID, item: item).map(\.id) == [buys[1].id, buys[0].id],
+               "buy-source", "a historically recovered card reserves its source quantity")
+        expect(PositionPoolsView.Sheet.isMutating(.buySource(.init(symbol: symbol, portionID: targetID))),
+               "buy-source", "source linking must be blocked in preview")
+        do {
+            for scheme in [ColorScheme.light, .dark] {
+                let style = scheme == .light ? "light" : "dark"
+                let cards = VStack(spacing: 10) {
+                    ForEach(current.portions) { part in
+                        PortionCardFace(card: .init(item: item, portion: part, needsReview: false), compact: false,
+                            onSelect: {}, onWholeTransfer: { _ in }, onPartialTransfer: { _ in }, onMarkFunding: {},
+                            onEditVerification: {}, onDragChanged: { _, _ in }, onDragEnded: { _ in },
+                            isDraggable: true, isPlaceholder: false)
+                    }
+                }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).environment(appState).environment(\.colorScheme, scheme)
+                try renderInOffscreenWindow(view: cards, width: 360, height: 400,
+                    to: directory.appendingPathComponent("buy-source-cards-\(style).png"), scheme: scheme, requiresBoardBand: false)
+                let form = PositionBuySourceSheet(item: item, portion: target, allocation: current, account: .unassigned,
+                    onCancel: {}, onSuccess: {}).environment(appState).environment(\.colorScheme, scheme)
+                try renderInOffscreenWindow(view: form, width: 460, height: 330,
+                    to: directory.appendingPathComponent("buy-source-editor-\(style).png"), scheme: scheme, requiresBoardBand: false)
+            }
+            expect(store.syncSnapshot() == original, "buy-source", "display and recovery must never write")
+            if CommandLine.arguments.contains("--interactive-buy-source") {
+                var timedOut = false
+                let view = BuySourceInteractiveFixture(symbol: symbol, portionID: targetID).environment(appState)
+                try renderInOffscreenWindow(view: view, width: 560, height: 400,
+                    to: directory.appendingPathComponent("buy-source-linked-interactive.png"), scheme: .light,
+                    requiresBoardBand: false, inspect: { hosting in
+                        guard let window = hosting.window else { return }
+                        window.title = "FFF · 虚构成交来源验证"
+                        window.setFrameOrigin(NSPoint(x: 260, y: 180))
+                        NSApp.finishLaunching()
+                        window.makeKeyAndOrderFront(nil)
+                        NSApp.activate(ignoringOtherApps: true)
+                        print("BUY_SOURCE_INTERACTIVE_READY"); fflush(stdout)
+                        let stop: @MainActor @Sendable () -> Void = {
+                            NSApp.stop(nil)
+                            if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+                                modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                                subtype: 0, data1: 0, data2: 0) { NSApp.postEvent(event, atStart: true) }
+                        }
+                        let monitor = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+                            MainActor.assumeIsolated {
+                                if store.item(for: symbol)?.positionAllocation?.portions.first(where: { $0.id == targetID })?.origin.transactionID == buys[1].id { stop() }
+                            }
+                        }
+                        let timeout = Timer.scheduledTimer(withTimeInterval: 240, repeats: false) { _ in
+                            MainActor.assumeIsolated { timedOut = true; stop() }
+                        }
+                        NSApp.run(); monitor.invalidate(); timeout.invalidate()
+                        for _ in 0..<3 { RunLoop.current.run(until: Date().addingTimeInterval(0.1)) }
+                    })
+                expect(!timedOut, "buy-source", "interactive source linking must complete")
+                if let updated = store.item(for: symbol) {
+                    expect(updated.transactions == item.transactions && updated.plans == item.plans,
+                           "buy-source", "linking must leave transactions and plans intact")
+                    expect(updated.positionQuantity == item.positionQuantity && updated.costBasis == item.costBasis,
+                           "buy-source", "linking must preserve held quantity and cost")
+                    expect(updated.positionAllocation?.portions.first(where: { $0.id == targetID })?.origin.price == 120,
+                           "buy-source", "the selected recorded price must appear on the card")
+                }
+            }
+        } catch { report("buy-source", error.localizedDescription) }
+    }
+
+    private struct BuySourceInteractiveFixture: View {
+        @Environment(AppState.self) private var appState
+        let symbol: SymbolID
+        let portionID: UUID
+        @State private var showingSource = false
+
+        var body: some View {
+            if let item = appState.watchlist.item(for: symbol), let allocation = item.positionAllocation,
+               let portion = allocation.portions.first(where: { $0.id == portionID }) {
+                PortionCardFace(card: .init(item: item, portion: portion, needsReview: false), compact: false,
+                    onSelect: {}, onWholeTransfer: { _ in }, onPartialTransfer: { _ in }, onMarkFunding: {},
+                    onEditVerification: {}, onLinkBuySource: { showingSource = true },
+                    onDragChanged: { _, _ in }, onDragEnded: { _ in }, isDraggable: true, isPlaceholder: false)
+                    .frame(width: 340).padding(24)
+                    .sheet(isPresented: $showingSource) {
+                        PositionBuySourceSheet(item: item, portion: portion, allocation: allocation, account: .unassigned,
+                            onCancel: { showingSource = false }, onSuccess: { showingSource = false })
+                    }
+            }
+        }
+    }
+
+    /// Keeps one native view alive while quotes change, proving that sorting
+    /// reacts to the market store rather than just to a new view being built.
+    private static func renderLiveSorting(appState: AppState, into directory: URL) {
+        let suite = "FFF.LiveSort.\(UUID())"
+        guard let defaults = UserDefaults(suiteName: suite),
+              let groupID = appState.watchlist.createGroup(named: "虚构排序") else {
+            report("live-sort", "missing isolated defaults or group"); return
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let first = SymbolID(market: .us, code: "SORTA")
+        let second = SymbolID(market: .us, code: "SORTB")
+        for (symbol, name, quantity) in [(first, "虚构甲", 100.0), (second, "虚构乙", 80.0)] {
+            appState.watchlist.add(SymbolInfo(symbol: symbol, name: name), to: groupID)
+            appState.watchlist.addTransaction(symbol, .init(kind: .buy, price: 100, quantity: quantity,
+                date: Calendar.current.startOfDay(for: .now).addingTimeInterval(-86_400)))
+        }
+        appState.sharedWatchlist.selectGroup(groupID)
+        appState.sharedWatchlist.reorder([first, second])
+        appState.settings.prioritizeOpenMarkets = false
+        appState.settings.watchRowMetricMode = .changePercent
+        defaults.set(WatchlistOrderMode.automatic.rawValue, forKey: "pulse.watchlist.orderMode.v1")
+        defaults.set(WatchlistSortOption.marketValue.rawValue, forKey: "pulse.watchlist.sortOption.v1")
+        let snapshot = appState.watchlist.syncSnapshot()
+        let timestamp = Date.now
+        var quoteRound = 0
+        func quotes(secondBatch: Bool) -> [Quote] {
+            [Quote(symbol: first, price: secondBatch ? 90 : 110, previousClose: 100,
+                   sourceID: "fictional-sort", timestamp: timestamp.addingTimeInterval(Double(quoteRound * 2) + (secondBatch ? 1 : 0)), marketState: .regular),
+             Quote(symbol: second, price: secondBatch ? 130 : 105, previousClose: 100,
+                   sourceID: "fictional-sort", timestamp: timestamp.addingTimeInterval(Double(quoteRound * 2) + (secondBatch ? 1 : 0)), marketState: .regular)]
+        }
+        func order(_ option: WatchlistSortOption?, bypass: Bool = false) -> [SymbolID] {
+            WatchlistDisplayOrder.items(from: appState.sharedWatchlist, prioritizeOpenMarkets: false,
+                bypass: bypass, sortValue: option.map { value in
+                    { item in WatchlistDisplayOrder.value(for: item, option: value, appState: appState) }
+                }).map(\.symbol)
+        }
+        func captureBefore(_ host: NSView, name: String) {
+            guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+            host.cacheDisplay(in: host.bounds, to: rep)
+            guard let data = rep.representation(using: .png, properties: [:]) else { return }
+            if CommandLine.arguments.contains("--export-render-base64") {
+                print("PULSE_RENDER_BASE64 \(name) \(data.base64EncodedString())"); fflush(stdout)
+            } else { try? data.write(to: directory.appendingPathComponent(name)) }
+        }
+        do {
+            for scheme in [ColorScheme.light, .dark] {
+                let suffix = scheme == .dark ? "dark" : "light"
+                for sidebar in [false, true] {
+                    quoteRound += 1
+                    appState.market.apply(quotes: quotes(secondBatch: false))
+                    for option in WatchlistSortOption.allCases {
+                        expect(order(option) == [first, second], "live-sort-before", "all four metrics must use the first quote batch")
+                    }
+                    let view: AnyView = sidebar
+                        ? AnyView(MainWatchlistSidebar(selectedSymbol: .constant(first), currentPage: nil,
+                            onShowPage: { _ in }).environment(appState).defaultAppStorage(defaults))
+                        : AnyView(WatchlistView(route: .constant(.list), searchSession: .constant(SearchSession()))
+                            .environment(appState).defaultAppStorage(defaults))
+                    let width: CGFloat = sidebar ? 281 : 340
+                    let name = "live-sort-\(sidebar ? "sidebar" : "popover")"
+                    try renderInOffscreenWindow(view: view, width: width, height: 650,
+                        to: directory.appendingPathComponent("\(name)-after-\(suffix).png"),
+                        scheme: scheme, requiresBoardBand: false, inspect: { host in
+                            captureBefore(host, name: "\(name)-before-\(suffix).png")
+                            appState.market.applyStreamed(quotes(secondBatch: true))
+                            for _ in 0..<6 { RunLoop.current.run(until: Date().addingTimeInterval(0.12)) }
+                            host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+                        })
+                }
+            }
+            for option in WatchlistSortOption.allCases {
+                expect(order(option) == [second, first], "live-sort-after", "all four metrics must use the updated quotes")
+            }
+            expect(order(nil) == [first, second] && order(.marketValue, bypass: true) == [first, second],
+                   "live-sort-manual", "custom order and reorder bypass must stay unchanged")
+            expect(appState.watchlist.syncSnapshot() == snapshot, "live-sort-persistence",
+                   "live sorting must not write holdings, plans, group order or manual order")
+        } catch { report("live-sort", error.localizedDescription) }
+    }
+
+    /// Real cards, editor and execution form, using fictional accounts only.
+    private static func renderPortionSales(appState: AppState, symbols: Fixture, into directory: URL) {
+        let store = appState.watchlist
+        store.enableBrokerageAccounts()
+        let fixtureAccount = store.activeBrokerageAccountID
+        let otherAccountID: BrokerageAccountID = fixtureAccount == .financing ? .mengmeng : .financing
+        guard let original = store.item(for: symbols.tactical),
+              let portion = original.positionAllocation?.portions.first(where: { $0.pool == .tactical }) else {
+            report("portion-sale", "missing fixture portion"); return
+        }
+        for plan in original.plans { store.deleteTradePlan(plan.id, for: symbols.tactical) }
+        let otherAccount = store.brokeragePortfolio(for: otherAccountID)
+        let baseline = store.syncSnapshot()
+        do {
+            for scheme in [ColorScheme.light, .dark] {
+                let suffix = scheme == .dark ? "dark" : "light"
+                try renderInOffscreenWindow(view: PlanEditorView(symbol: symbols.tactical, planID: nil,
+                    returnRoute: .planList, route: .constant(.planList), account: fixtureAccount,
+                    positionPortionID: portion.id).environment(appState), width: 520, height: 520,
+                    to: directory.appendingPathComponent("portion-sale-editor-\(suffix).png"),
+                    scheme: scheme, requiresBoardBand: false)
+            }
+            expect(store.syncSnapshot() == baseline, "portion-sale-render", "rendering a new draft must not mutate holdings or plans")
+            let sample = TradePlan(kind: .sell, price: 12.5, quantity: 100, positionPool: .tactical, positionPortionID: portion.id)
+            expect(store.setTradePlan(sample, for: symbols.tactical), "portion-sale-fixture", "valid card plan must save")
+            // Legacy labels may differ from the owning ledger. A plan must
+            // neither duplicate that holding nor borrow a lookalike elsewhere.
+            let beforeLabel = PoolBudgetInput(appState: appState, currencyFilter: "USD", allAccounts: true).calculate()
+            if let allocation = store.item(for: symbols.tactical)?.positionAllocation {
+                let labelled = try store.setPositionBrokerageAccount(symbol: symbols.tactical,
+                    portionID: portion.id, accountID: .financing, expectedRevision: allocation.revision)
+                let afterLabel = PoolBudgetInput(appState: appState, currencyFilter: "USD", allAccounts: true).calculate()
+                expect(beforeLabel.currencies.first?.holdingsBefore == afterLabel.currencies.first?.holdingsBefore
+                       && beforeLabel.currencies.first?.holdingsAfter == afterLabel.currencies.first?.holdingsAfter,
+                       "portion-sale-label", "cross-labelled source must preserve total holdings before and after projection")
+                expect(!afterLabel.overSellWarnings.contains(where: { $0.planID == sample.id }),
+                       "portion-sale-label", "the exact source must remain available in its attributed group")
+                _ = try store.setPositionBrokerageAccount(symbol: symbols.tactical,
+                    portionID: portion.id, accountID: .unassigned, expectedRevision: labelled.revision)
+            }
+            guard let linked = store.item(for: symbols.tactical) else { return }
+            for scheme in [ColorScheme.light, .dark] {
+                let suffix = scheme == .dark ? "dark" : "light"
+                let cards = HStack(alignment: .top, spacing: 12) {
+                    ForEach(linked.positionAllocation?.portions ?? []) { value in
+                        PortionCardFace(card: .init(item: linked, portion: value, needsReview: false),
+                            compact: false, onSelect: {}, onWholeTransfer: { _ in }, onPartialTransfer: { _ in },
+                            onMarkFunding: {}, onEditVerification: {}, onDragChanged: { _, _ in },
+                            onDragEnded: { _ in }, isDraggable: true, isPlaceholder: false)
+                            .frame(width: 220)
+                    }
+                }.padding(16).environment(appState)
+                try renderInOffscreenWindow(view: cards, width: 490, height: 270,
+                    to: directory.appendingPathComponent("portion-sale-cards-\(suffix).png"),
+                    scheme: scheme, requiresBoardBand: false)
+                if let entry = store.tradePlanEntries.first(where: { $0.id == sample.id }) {
+                    try renderInOffscreenWindow(view: PlanExecutionSheet(entry: entry, account: fixtureAccount, onClose: {})
+                        .environment(appState), width: 520, height: 590,
+                        to: directory.appendingPathComponent("portion-sale-fill-\(suffix).png"),
+                        scheme: scheme, requiresBoardBand: false)
+                }
+            }
+            let historyCards = HStack(alignment: .top, spacing: 12) {
+                ForEach(["filled", "abandoned", "unrecorded", "partial-stopped"], id: \.self) { state in
+                    let variant = portionSaleDisplayFixture(linked, plan: sample, state: state)
+                    PortionCardFace(card: .init(item: variant, portion: portion, needsReview: false),
+                        compact: false, onSelect: {}, onWholeTransfer: { _ in }, onPartialTransfer: { _ in },
+                        onMarkFunding: {}, onEditVerification: {}, onDragChanged: { _, _ in },
+                        onDragEnded: { _ in }, isDraggable: true, isPlaceholder: false)
+                        .frame(width: 250)
+                }
+            }.padding(16).environment(appState)
+            for scheme in [ColorScheme.light, .dark] {
+                try renderInOffscreenWindow(view: historyCards, width: 1_100, height: 330,
+                    to: directory.appendingPathComponent("portion-sale-history-\(scheme == .dark ? "dark" : "light").png"),
+                    scheme: scheme, requiresBoardBand: false)
+            }
+            store.deleteTradePlan(sample.id, for: symbols.tactical)
+            guard CommandLine.arguments.contains("--portion-sale-interactive") else { return }
+            var timedOut = false
+            let view = PositionPoolsView(onSelect: { _ in }).environment(appState)
+            try renderInOffscreenWindow(view: view, width: 1_240, height: 800,
+                to: directory.appendingPathComponent("portion-sale-interactive-result.png"),
+                scheme: .light, requiresBoardBand: false, inspect: { host in
+                    guard let window = host.window else { return }
+                    window.styleMask = [.titled, .closable]
+                    window.title = "虚构仓位卖出计划测试"
+                    window.setFrameOrigin(NSPoint(x: 100, y: 100))
+                    NSApp.finishLaunching()
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    print("PORTION_SALE_INTERACTIVE_READY"); fflush(stdout)
+                    let stop: @MainActor @Sendable () -> Void = {
+                        NSApp.stop(nil)
+                        if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+                            modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                            subtype: 0, data1: 0, data2: 0) { NSApp.postEvent(event, atStart: true) }
+                    }
+                    let monitor = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+                        MainActor.assumeIsolated {
+                            if store.item(for: symbols.tactical)?.transactions.contains(where: { $0.kind == .sell }) == true { stop() }
+                        }
+                    }
+                    let timeout = Timer.scheduledTimer(withTimeInterval: 300, repeats: false) { _ in
+                        MainActor.assumeIsolated { timedOut = true; stop() }
+                    }
+                    NSApp.run(); monitor.invalidate(); timeout.invalidate()
+                    for _ in 0..<3 { RunLoop.current.run(until: Date().addingTimeInterval(0.1)) }
+                })
+            expect(!timedOut, "portion-sale-ui", "interactive creation and fill must finish")
+            let saved = store.item(for: symbols.tactical)
+            let plan = saved?.plans.first(where: { $0.positionPortionID == portion.id })
+            expect(plan?.kind == .sell && plan?.price == 12.5 && plan?.quantity == 100,
+                   "portion-sale-ui", "right-click must save the exact portion's target-price plan")
+            expect(saved?.positionAllocation?.portions.first(where: { $0.id == portion.id })?.quantity == portion.quantity - 50,
+                   "portion-sale-ui", "recording 50 must reduce only the source card")
+            let sibling = original.positionAllocation?.portions.filter { $0.id != portion.id }
+            expect(saved?.positionAllocation?.portions.filter { $0.id != portion.id } == sibling,
+                   "portion-sale-ui", "other cards must stay untouched")
+            expect(store.brokeragePortfolio(for: otherAccountID) == otherAccount,
+                   "portion-sale-ui", "another ledger must stay untouched")
+        } catch { report("portion-sale", error.localizedDescription) }
+    }
+
+    /// View-only copies of a fictional card; never persisted or accounted as a
+    /// trade. Actual store allocation and fill behavior has separate core tests.
+    private static func portionSaleDisplayFixture(_ item: WatchItem, plan: TradePlan, state: String) -> WatchItem {
+        var copy = item
+        var displayed = plan
+        displayed.status = state == "filled" ? .active : state == "abandoned" ? .cancelled : .done
+        copy.plans = [displayed]
+        if state == "filled" || state == "partial-stopped" {
+            copy.transactions.append(PositionTransaction(kind: .sell, price: 12, quantity: state == "filled" ? plan.quantity : 40,
+                date: .now, planExecution: .init(planID: plan.id, configuration: .init(plan: displayed))))
+        }
+        return copy
+    }
+
+    private static func renderPlanStatuses(appState: AppState, into directory: URL) {
+        // This regression exercises the comfortable card's visible record action.
+        // The separate usability self-test verifies both density modes.
+        appState.settings.compactPlanCards = false
+        let store = appState.watchlist
+        store.enableBrokerageAccounts()
+        _ = appState.selectBrokerageAccount(.financing)
+        // This branch is reachable only with the isolated offline demo suite.
+        for item in store.allItems {
+            for plan in item.plans { store.deleteTradePlan(plan.id, for: item.symbol) }
+            store.remove(item.symbol)
+        }
+        let symbol = SymbolID(market: .us, code: "PLANQA")
+        store.add(SymbolInfo(symbol: symbol, name: "虚构计划验证"))
+        let pending = TradePlan(kind: .buy, price: 110, quantity: 100)
+        let waitingSale = TradePlan(kind: .sell, price: 140, quantity: 50)
+        let completed = TradePlan(kind: .buy, price: 100, quantity: 200)
+        let abandoned = TradePlan(kind: .buy, price: 90, quantity: 100, status: .cancelled)
+        let stopped = TradePlan(kind: .buy, price: 80, quantity: 100, status: .done)
+        let partial = TradePlan(kind: .buy, price: 102, quantity: 100)
+        let abandonedPartial = TradePlan(kind: .buy, price: 95, quantity: 100)
+        let stoppedPartial = TradePlan(kind: .buy, price: 85, quantity: 100)
+        for plan in [pending, waitingSale, completed, abandoned, stopped, partial, abandonedPartial, stoppedPartial] {
+            expect(store.setTradePlan(plan, for: symbol), "plan-status", "fixture plan must save")
+        }
+        do {
+            _ = try store.recordTradePlanFill(symbol: symbol, planID: completed.id, price: 98,
+                quantity: 200, date: Calendar.current.startOfDay(for: .now).addingTimeInterval(-86_400),
+                fee: 0, note: "fictional status fill", fundingSource: .own, brokerageAccountID: .financing)
+            for (plan, quantity) in [(partial, 40.0), (abandonedPartial, 25.0), (stoppedPartial, 20.0)] {
+                _ = try store.recordTradePlanFill(symbol: symbol, planID: plan.id, price: plan.price - 1,
+                    quantity: quantity, date: .now, fee: 0, note: "fictional partial fill",
+                    fundingSource: .own, brokerageAccountID: .financing)
+            }
+            for (plan, status) in [(abandonedPartial, TradePlan.Status.cancelled), (stoppedPartial, .done)] {
+                if var saved = store.item(for: symbol)?.plans.first(where: { $0.id == plan.id }) {
+                    saved.status = status
+                    expect(store.setTradePlan(saved, for: symbol), "plan-status", "partial decision must save")
+                }
+            }
+        } catch { report("plan-status", error.localizedDescription); return }
+        appState.market.apply(quotes: [Quote(symbol: symbol, name: "虚构计划验证", price: 105, previousClose: 100,
+            sourceID: "fictional-status", timestamp: .now, marketState: .regular)])
+        let baseline = store.syncSnapshot()
+        do {
+            for scheme in [ColorScheme.light, .dark] {
+                let suffix = scheme == .dark ? "dark" : "light"
+                for scope in [PlanListView.Scope.waiting, .history] {
+                    try renderInOffscreenWindow(view: PlanListView(route: .constant(.planList), initialScope: scope).environment(appState),
+                        width: 340, height: 620, to: directory.appendingPathComponent("plans-compact-\(scope.rawValue)-\(suffix).png"),
+                        scheme: scheme, requiresBoardBand: false)
+                }
+                try renderInOffscreenWindow(view: MainPlanListView(route: .constant(.planList), initialFilter: .all).environment(appState),
+                    width: 1_240, height: 660, to: directory.appendingPathComponent("plans-main-all-\(suffix).png"),
+                    scheme: scheme, requiresBoardBand: false)
+            }
+            try renderInOffscreenWindow(view: MainPlanListView(route: .constant(.planList), initialFilter: .done).environment(appState),
+                width: 1_240, height: 660, to: directory.appendingPathComponent("plans-main-filled.png"),
+                scheme: .light, requiresBoardBand: false)
+            try renderInOffscreenWindow(view: MainInstrumentView(symbol: symbol, initialShowsPlans: true).environment(appState),
+                width: 1_240, height: 760, to: directory.appendingPathComponent("plans-instrument-light.png"),
+                scheme: .light, requiresBoardBand: false)
+            try renderInOffscreenWindow(view: DetailView(symbol: symbol, route: .constant(.detail(symbol))).environment(appState),
+                width: 340, height: 740, to: directory.appendingPathComponent("plans-detail-light.png"),
+                scheme: .light, requiresBoardBand: false)
+            try renderInOffscreenWindow(view: PlanWorkflowDetailView(symbol: symbol, planID: completed.id, account: .financing).environment(appState),
+                width: 650, height: 600, to: directory.appendingPathComponent("plans-filled-workflow-light.png"),
+                scheme: .light, requiresBoardBand: false)
+            try renderInOffscreenWindow(view: PlanEditorView(symbol: symbol, planID: pending.id,
+                returnRoute: .planList, route: .constant(.planList), account: .financing).environment(appState),
+                width: 520, height: 500, to: directory.appendingPathComponent("plans-pending-editor-light.png"),
+                scheme: .light, requiresBoardBand: false)
+            expect(store.syncSnapshot() == baseline, "plan-status", "browsing/rendering statuses must not write data")
+            guard CommandLine.arguments.contains("--interactive-plan-status")
+                || CommandLine.arguments.contains("--automated-plan-status") else { return }
+            var timedOut = false
+            try renderInOffscreenWindow(view: PlanListView(route: .constant(.planList)).environment(appState),
+                width: 360, height: 620, to: directory.appendingPathComponent("plans-status-interactive-result.png"),
+                scheme: .light, requiresBoardBand: false, inspect: { host in
+                    guard let window = host.window else { return }
+                    if CommandLine.arguments.contains("--automated-plan-status") {
+                        NSApp.finishLaunching()
+                        window.makeKey()
+                        exerciseNativePlanFill(in: host)
+                        return
+                    }
+                    window.styleMask = [.titled, .closable]
+                    window.title = "FFF · 虚构计划状态验证"
+                    window.setFrameOrigin(NSPoint(x: 340, y: 150))
+                    NSApp.finishLaunching(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+                    print("PLAN_STATUS_INTERACTIVE_READY"); fflush(stdout)
+                    let stop: @MainActor @Sendable () -> Void = {
+                        NSApp.stop(nil)
+                        if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+                            modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                            subtype: 0, data1: 0, data2: 0) { NSApp.postEvent(event, atStart: true) }
+                    }
+                    let monitor = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
+                        MainActor.assumeIsolated {
+                            if store.tradePlanEntries.first(where: { $0.plan.id == pending.id })?.displayState == .filled { stop() }
+                        }
+                    }
+                    let timeout = Timer.scheduledTimer(withTimeInterval: 180, repeats: false) { _ in
+                        MainActor.assumeIsolated { timedOut = true; stop() }
+                    }
+                    NSApp.run(); monitor.invalidate(); timeout.invalidate()
+                })
+            expect(!timedOut, "plan-status-ui", "native record-fill interaction must complete")
+            let result = store.tradePlanEntries.first { $0.plan.id == pending.id }
+            expect(result?.displayState == .filled && result?.averageFillPrice == 106 && result?.filledQuantity == 100,
+                "plan-status-ui", "recorded price must move pending plan into filled history")
+            expect(store.tradePlanEntries.count == 8, "plan-status-ui", "no duplicate plans")
+            try renderInOffscreenWindow(view: PlanListView(route: .constant(.planList), initialScope: .history).environment(appState),
+                width: 340, height: 620, to: directory.appendingPathComponent("plans-history-after-fill.png"),
+                scheme: .light, requiresBoardBand: false)
+        } catch { report("plan-status-render", error.localizedDescription) }
+    }
+
+    /// Uses AppKit's accessibility actions against the real SwiftUI controls,
+    /// inside this process and the offline fixture only. No desktop automation
+    /// permissions and no real account or broker connection are involved.
+    private static func exerciseNativePlanFill(in host: NSView) {
+        // SwiftUI AX nodes implement the Objective-C selectors without always
+        // declaring NSAccessibilityProtocol conformance. Keep those nodes too.
+        func elements(_ root: AnyObject) -> [AnyObject] {
+            var result: [AnyObject] = []
+            var seen = Set<ObjectIdentifier>()
+            func visit(_ element: AnyObject, depth: Int) {
+                guard depth < 40, seen.insert(ObjectIdentifier(element)).inserted else { return }
+                result.append(element)
+                for child in element.accessibilityChildren?() ?? [] {
+                    visit(child as AnyObject, depth: depth + 1)
+                }
+                if let view = element as? NSView {
+                    for child in view.subviews { visit(child, depth: depth + 1) }
+                }
+            }
+            visit(root, depth: 0)
+            return result
+        }
+        func text(_ element: AnyObject, _ selector: String) -> String? {
+            guard let object = element as? NSObject, object.responds(to: NSSelectorFromString(selector)) else { return nil }
+            return object.perform(NSSelectorFromString(selector))?.takeUnretainedValue() as? String
+        }
+        func settle() {
+            for _ in 0..<12 { RunLoop.current.run(until: Date().addingTimeInterval(0.1)) }
+        }
+        func hasTitle(_ element: AnyObject, _ title: String) -> Bool {
+            text(element, "accessibilityLabel") == title || text(element, "accessibilityTitle") == title
+                || text(element, "accessibilityValue") == title
+        }
+        func click(_ view: NSView, at point: NSPoint) {
+            guard let window = view.window else { return }
+            let location = view.convert(point, to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                if let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
+                    window.sendEvent(event)
+                }
+            }
+        }
+        let buttonTitle = PulseLocalization.localizedString("plans.action.recordFill")
+        if let button = elements(host).first(where: { text($0, "accessibilityRole") == NSAccessibility.Role.button.rawValue && hasTitle($0, buttonTitle) }) {
+            expect(button.accessibilityPerformPress?() == true, "plan-status-ui", "record-fill button must press")
+        } else {
+            // Offscreen SwiftUI may not publish AX children without an external
+            // accessibility client. Send native events to the known fixture's
+            // first row button instead; this never clicks the real desktop.
+            click(host, at: NSPoint(x: host.bounds.width - 54, y: host.isFlipped ? 137 : host.bounds.height - 137))
+        }
+        settle()
+        guard let sheet = host.window?.attachedSheet, let form = sheet.contentView else {
+            report("plan-status-ui", "record-fill sheet did not open")
+            return
+        }
+        if let field = elements(form).compactMap({ $0 as? NSTextField }).first(where: { $0.stringValue == "110" }) {
+            field.stringValue = "106"
+            field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
+        } else if let price = elements(form).first(where: {
+            text($0, "accessibilityRole") == NSAccessibility.Role.textField.rawValue && text($0, "accessibilityValue") == "110"
+        }) {
+            price.setAccessibilityValue?("106")
+        } else {
+            report("plan-status-ui", "actual-price field not available")
+            return
+        }
+        settle()
+        if let save = elements(form).first(where: {
+            text($0, "accessibilityRole") == NSAccessibility.Role.button.rawValue && hasTitle($0, PulseLocalization.localizedString("plan.execution.record"))
+        }) {
+            expect(save.isAccessibilityEnabled?() == true && save.accessibilityPerformPress?() == true,
+                "plan-status-ui", "save-fill button must be enabled and press")
+        } else {
+            click(form, at: NSPoint(x: form.bounds.width - 129, y: form.isFlipped ? form.bounds.height - 24 : 24))
+        }
+        settle()
+        expect(host.window?.attachedSheet == nil, "plan-status-ui", "saved sheet must dismiss")
+        // The caller checks the real stored price/quantity/state and captures
+        // this same host after dismissal for the lead's native visual review.
+    }
+
+    /// Runs creation from the real list against isolated accounts. Selecting a
+    /// symbol or cancelling a draft must leave all ledgers unchanged.
+    private static func renderPlanCreation(appState: AppState, symbols: Fixture, into directory: URL) {
+        var interactionAllowed: DarwinBoolean = true
+        expect(SecKeychainGetUserInteractionAllowed(&interactionAllowed) == errSecSuccess
+               && !interactionAllowed.boolValue,
+               "development-keychain-policy", "local app must disable automatic Keychain prompts before initialization")
+        let store = appState.watchlist
+        store.enableBrokerageAccounts()
+        _ = appState.selectBrokerageAccount(.unassigned)
+        let originalAccount = store.brokeragePortfolio(for: .unassigned)
+        let financeAccount = store.brokeragePortfolio(for: .financing)
+        guard let sourceItem = store.item(for: symbols.tactical) else {
+            report("plan-create", "fixture symbol missing")
+            return
+        }
+        let info = SymbolInfo(symbol: sourceItem.symbol, name: sourceItem.resolvedDisplayName,
+                              type: sourceItem.resolvedInstrumentType ?? .equity)
+        do {
+            try renderInOffscreenWindow(
+                view: MainPlanListView(route: .constant(.planList)).environment(appState),
+                width: 1_240, height: 740,
+                to: directory.appendingPathComponent("plan-list-create-light.png"),
+                scheme: .light, requiresBoardBand: false)
+            _ = appState.selectBrokerageAccount(.mengmeng)
+            let baseline = store.syncSnapshot()
+            try renderInOffscreenWindow(
+                view: MainPlanListView(route: .constant(.planList)).environment(appState),
+                width: 760, height: 640,
+                to: directory.appendingPathComponent("plan-list-empty-create-dark.png"),
+                scheme: .dark, requiresBoardBand: false)
+            try renderInOffscreenWindow(
+                view: PlanListView(route: .constant(.planList)).environment(appState),
+                width: 340, height: 470,
+                to: directory.appendingPathComponent("plan-compact-create-light.png"),
+                scheme: .light, requiresBoardBand: false)
+            for scheme in [ColorScheme.light, .dark] {
+                let suffix = scheme == .dark ? "dark" : "light"
+                try renderInOffscreenWindow(
+                    view: NewTradePlanSheet(account: .mengmeng, onCreated: { _ in }, onClose: {})
+                        .environment(appState),
+                    width: 520, height: 560,
+                    to: directory.appendingPathComponent("plan-create-choose-\(suffix).png"),
+                    scheme: scheme, requiresBoardBand: false)
+                try renderInOffscreenWindow(
+                    view: NewTradePlanSheet(account: .mengmeng, initialSymbol: info,
+                                           onCreated: { _ in }, onClose: {})
+                        .environment(appState),
+                    width: 520, height: 560,
+                    to: directory.appendingPathComponent("plan-create-editor-\(suffix).png"),
+                    scheme: scheme, requiresBoardBand: false)
+            }
+            expect(store.syncSnapshot() == baseline, "plan-create-render",
+                   "opening the chooser or editor must not create a watch item or a plan")
+
+            guard CommandLine.arguments.contains("--plan-create-interactive") else { return }
+            var timedOut = false
+            let view = MainPlanListView(route: .constant(.planList)).environment(appState)
+            try renderInOffscreenWindow(view: view, width: 1_140, height: 740,
+                to: directory.appendingPathComponent("plan-create-interactive-result.png"),
+                scheme: .light, requiresBoardBand: false, inspect: { host in
+                    guard let window = host.window else { return }
+                    window.styleMask = [.titled, .closable]
+                    window.title = "虚构新增计划入口测试"
+                    window.setFrameOrigin(NSPoint(x: 260, y: 180))
+                    NSApp.finishLaunching()
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                    print("PLAN_CREATE_INTERACTIVE_READY")
+                    fflush(stdout)
+                    let stop: @MainActor @Sendable () -> Void = {
+                        NSApp.stop(nil)
+                        if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+                            modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                            subtype: 0, data1: 0, data2: 0) { NSApp.postEvent(event, atStart: true) }
+                    }
+                    let monitor = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+                        MainActor.assumeIsolated {
+                            if !store.tradePlanEntries.isEmpty { stop() }
+                        }
+                    }
+                    let timeout = Timer.scheduledTimer(withTimeInterval: 240, repeats: false) { _ in
+                        MainActor.assumeIsolated { timedOut = true; stop() }
+                    }
+                    NSApp.run()
+                    monitor.invalidate()
+                    timeout.invalidate()
+                    for _ in 0..<3 { RunLoop.current.run(until: Date().addingTimeInterval(0.1)) }
+                })
+            expect(!timedOut, "plan-create-ui", "interactive creation must finish")
+            let created = store.tradePlanEntries
+            expect(created.count == 1 && created.first?.symbol == symbols.tactical,
+                   "plan-create-ui", "the selected fictional symbol must own the only new plan")
+            expect(created.first?.plan.price == 12.5 && created.first?.plan.quantity == 100
+                   && created.first?.plan.kind == .buy && created.first?.plan.fundingSource == .own,
+                   "plan-create-ui", "saved values and ordinary funding in Mengmeng must be preserved")
+            expect(store.activeBrokerageAccountID == .mengmeng,
+                   "plan-create-ui", "creation must keep its destination account")
+            let savedItems = store.brokeragePortfolio(for: .mengmeng).items
+            expect(savedItems.count == 1 && savedItems.first?.transactions.isEmpty == true,
+                   "plan-create-ui", "cancelled drafts must leave no items, and plans must not record fills")
+            expect(store.brokeragePortfolio(for: .unassigned) == originalAccount
+                   && store.brokeragePortfolio(for: .financing) == financeAccount,
+                   "plan-create-ui", "creation must not mutate other accounts")
+        } catch { report("plan-create", error.localizedDescription) }
     }
 
     /// The production reconciliation form, including a real synthetic save.
@@ -2569,6 +3257,16 @@ enum TacticalBoardSelfTest {
         hosting.displayIfNeeded()
 
         inspect?(hosting)
+        // An interaction may dismiss a sheet, change a filter and update lazy
+        // rows in separate layout passes. Flush the live post-action host too,
+        // not only the pre-interaction layout above, before caching its pixels.
+        if inspect != nil {
+            for _ in 0..<6 {
+                hosting.layoutSubtreeIfNeeded()
+                hosting.displayIfNeeded()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.12))
+            }
+        }
 
         defer { window.orderOut(nil) }
 

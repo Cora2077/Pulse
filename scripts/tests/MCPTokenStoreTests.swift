@@ -14,6 +14,19 @@ struct MCPTokenStoreTests {
     static func main() throws {
         var generated = 0
         var writes = 0
+        for status in [errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled] {
+            do {
+                _ = try MCPTokenStore.loadOrCreate(read: {
+                    try MCPTokenStore.decodeRead(status: status, data: nil)
+                }, generate: { generated += 1; return "synthetic-unwanted" },
+                   persist: { _ in writes += 1 })
+                throw CheckFailure.failed("unavailable Keychain access must fail")
+            } catch let failure as MCPTokenStore.KeychainFailure {
+                try check(failure.status == status, "preserve the no-interaction failure")
+            }
+        }
+        try check(generated == 0 && writes == 0,
+                  "blocked authorization must never replace the saved token")
         do {
             _ = try MCPTokenStore.loadOrCreate(read: {
                 try MCPTokenStore.decodeRead(status: errSecAuthFailed, data: nil)
