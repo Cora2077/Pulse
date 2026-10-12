@@ -780,8 +780,8 @@ struct BrokerageAccountStoreTests {
     }
 
     @MainActor
-    @Test("A partial assignment refuses a destination holding unrelated metadata")
-    func partialAssignmentRejectsDestinationMetadata() throws {
+    @Test("Selected trades preserve the destination's existing metadata")
+    func partialAssignmentPreservesDestinationMetadata() throws {
         let (store, defaults, suite) = try makeStore("partial-metadata")
         defer { defaults.removePersistentDomain(forName: suite) }
 
@@ -795,10 +795,12 @@ struct BrokerageAccountStoreTests {
         store.setThesis("a different position entirely", for: apple)
         #expect(store.selectBrokerageAccount(.unassigned))
 
-        #expect(store.assignBrokerageRecords(for: apple, transactionIDs: [sourceBuy], to: .financing) == false)
-        #expect(store.item(for: apple)?.transactions.map(\.id) == [sourceBuy])
+        #expect(store.assignBrokerageRecords(for: apple, transactionIDs: [sourceBuy], to: .financing))
+        #expect(store.item(for: apple)?.transactions.isEmpty == true)
         #expect(store.brokeragePortfolio(for: .financing).items.first?.thesis == "a different position entirely")
-        #expect(store.brokeragePortfolio(for: .financing).items.first?.transactions.isEmpty == true)
+        #expect(store.brokeragePortfolio(for: .financing).items.first?.transactions.map(\.id) == [sourceBuy])
+        #expect(store.brokeragePortfolio(for: .financing).items.first?.positionQuantity == 2)
+        #expect(store.brokeragePortfolio(for: .financing).items.first?.transactions.first?.brokerageAccountID == .financing)
     }
 
     // MARK: - Dormant history

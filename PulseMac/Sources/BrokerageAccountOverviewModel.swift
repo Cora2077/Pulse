@@ -72,11 +72,23 @@ enum BrokerageAccountOverviewReader {
             }
         }
 
-        // Plans and items stay with the ledger that owns them: the portfolio of
-        // the target account, read once, not the attributed quantities above.
+        // Items stay with the ledger that owns them: the portfolio of the
+        // target account, read once, not the attributed quantities above. They
+        // are used only to decide which currencies the ledger can speak to;
+        // the money comes from the attributed quantities and the plans below.
         var enclosingItems: [BrokerageAccountID: [WatchItem]] = [:]
         for record in records {
             enclosingItems[record.accountID, default: []].append(record.item)
+        }
+
+        // Plans are attributed to the account they *default to executing* in,
+        // read from every source ledger. The ledger a plan is stored in is an
+        // internal namespace, so it never decides which account's budget a plan
+        // lands in; a plan with no default lands in no named account.
+        var plansByAccount: [BrokerageAccountID: [TradePlanEntry]] = [:]
+        for entry in BrokerageBoardReader.entries(store: store) {
+            guard let account = entry.plan.executionAccountID else { continue }
+            plansByAccount[account, default: []].append(entry)
         }
 
         var result: [BrokerageAccountOverviewRow] = []
@@ -88,6 +100,9 @@ enum BrokerageAccountOverviewReader {
             currencies.formUnion(items.map { $0.symbol.currencyCode.uppercased() })
             currencies.formUnion(cash.keys)
             currencies.formUnion((poisonedSymbols[account] ?? [:]).keys)
+            for entry in plansByAccount[account] ?? [] {
+                currencies.insert(entry.symbol.currencyCode.uppercased())
+            }
             currencies.insert("CNY")
             for currency in currencies.sorted() {
                 var row = BrokerageAccountOverviewRow(accountID: account, currencyCode: currency, cash: cash[currency])
@@ -116,22 +131,27 @@ enum BrokerageAccountOverviewReader {
                         } else { row.hasOverflow = true; row.missingQuotes += 1 }
                     } else { row.missingQuotes += 1 }
                 }
-                for item in items where item.symbol.currencyCode.uppercased() == currency {
-                    for plan in item.plans where plan.status == .active {
-                        let remaining = TradePlanExecutionProgress(plan: plan, transactions: store.transactionsForPlan(item.symbol, account: account)).remainingQuantity
-                        guard remaining.isFinite, remaining > 0, plan.price.isFinite, plan.price > 0 else { continue }
-                        let amount = plan.price * remaining
-                        guard amount.isFinite else { row.hasOverflow = true; continue }
-                        row.planCount += 1
-                        if plan.kind == .buy {
-                            row.plannedBuy += amount
-                            switch plan.fundingSource {
-                            case .own: row.ownBuy += amount
-                            case .margin: row.marginBuy += amount
-                            case .unmarked, nil: row.unmarkedBuy += amount
-                            }
-                        } else { row.plannedSell += amount }
-                    }
+                // A plan is counted here because it defaults to executing in this
+                // account, and its progress is read from the ledger it is stored
+                // in — the record that actually holds its fills — so a plan whose
+                // trades sit under another namespace still reports the same
+                // remaining size it shows everywhere else.
+                for entry in plansByAccount[account] ?? [] where entry.symbol.currencyCode.uppercased() == currency {
+                    let plan = entry.plan
+                    guard plan.status == .active else { continue }
+                    let remaining = entry.remainingQuantity
+                    guard remaining.isFinite, remaining > 0, plan.price.isFinite, plan.price > 0 else { continue }
+                    let amount = plan.price * remaining
+                    guard amount.isFinite else { row.hasOverflow = true; continue }
+                    row.planCount += 1
+                    if plan.kind == .buy {
+                        row.plannedBuy += amount
+                        switch plan.fundingSource {
+                        case .own: row.ownBuy += amount
+                        case .margin: row.marginBuy += amount
+                        case .unmarked, nil: row.unmarkedBuy += amount
+                        }
+                    } else { row.plannedSell += amount }
                 }
                 if ![row.holdingValue, row.plannedBuy, row.plannedSell, row.ownBuy, row.marginBuy, row.unmarkedBuy].allSatisfy(\.isFinite) {
                     row.hasOverflow = true

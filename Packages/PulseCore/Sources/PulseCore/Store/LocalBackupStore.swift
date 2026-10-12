@@ -362,14 +362,13 @@ public struct LocalBackupStore: Sendable {
                 guard validKind,
                       transaction.date.timeIntervalSince1970.isFinite,
                       transaction.createdAt.timeIntervalSince1970.isFinite,
-                      transaction.hasValidFee else {
+                      transaction.hasValidFee,
+                      TradePlanConfiguration.isValidExecutionAccount(
+                        transaction.planExecution?.configuration.executionAccountID) else {
                     throw invalid("A position transaction has invalid values.")
                 }
             }
-            for plan in item.plans where !plan.price.isFinite || plan.price <= 0
-                || !plan.quantity.isFinite || plan.quantity <= 0
-                || !plan.createdAt.timeIntervalSince1970.isFinite
-                || !plan.updatedAt.timeIntervalSince1970.isFinite {
+            for plan in item.plans where !plan.hasValidPayload {
                 throw invalid("A trade plan has invalid values.")
             }
         }

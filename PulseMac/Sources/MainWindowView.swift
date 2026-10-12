@@ -789,7 +789,7 @@ struct InstrumentSummaryInspector: View {
                     ?? copy("无", "None")
             )
             if let item, item.hasPositionHistory {
-                factLine(copy("成交笔数", "Trades"), "\(item.transactions.count)")
+                factLine(copy("成交笔数", "Trades"), "\(appState.watchlist.tradeHistory(for: item.symbol).count)")
             }
         }
     }

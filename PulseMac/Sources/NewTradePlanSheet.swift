@@ -84,7 +84,14 @@ private struct PlanSymbolChooser: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(PulseLocalization.localizedString("plan.newPlan"))
                     .font(.system(size: 17, weight: .semibold))
-                Text(PulseLocalization.localizedString("plan.new.account", AccountIdentity.title(account)))
+                // The storage ledger is not a business account, and saying
+                // "written into X" here is what taught readers to treat the
+                // ledger a plan is filed in as the ledger it belongs to. The
+                // caption now says what the plan will carry instead: its own
+                // execution default, which the editor below can set.
+                Text(PulseLocalization.localizedString(
+                    "plan.new.account",
+                    AccountIdentity.title(account)))
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             .padding(16)

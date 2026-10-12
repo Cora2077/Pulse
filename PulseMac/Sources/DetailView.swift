@@ -33,6 +33,12 @@ struct DetailView: View {
     /// is open.
     @State private var frozenAccount: BrokerageAccountID?
 
+    init(symbol: SymbolID, route: Binding<PopoverRoute>, initialPeriod: CandlePeriod = .minute1) {
+        self.symbol = symbol
+        _route = route
+        _period = State(initialValue: initialPeriod)
+    }
+
     /// Non-nil only when the store still holds the ledger this draft came from.
     private var accountMatchesDraft: Bool {
         frozenAccount.map { appState.watchlist.activeBrokerageAccountID == $0 } ?? false
@@ -990,7 +996,7 @@ struct DetailView: View {
                     highlightsExtendedHours: period.isMinuteK
                         && appState.showsExtendedHours(for: symbol),
                     transactions: period == .day
-                        ? item?.materializedTransactions() ?? []
+                        ? appState.watchlist.transactionsForDisplay(symbol)
                         : [],
                     currencyCode: currencyCode,
                     viewport: candleViewport
@@ -1038,8 +1044,8 @@ struct DetailView: View {
     private var planSection: some View {
         VStack(alignment: .leading, spacing: PlanSection.stackSpacing) {
             planHeaderRow
-            if let item, !item.plans.isEmpty {
-                planRows(item)
+            if !displayPlans.isEmpty {
+                planRows()
             } else {
                 planEmptyRow
             }
@@ -1085,21 +1091,23 @@ struct DetailView: View {
     /// Lists at most `PlanSection.visibleRowCount` plans. The page is a fixed
     /// height, so the rest are counted rather than drawn — the same trade the
     /// position hub makes with its six most recent transactions.
+    private var displayPlans: [TradePlanEntry] {
+        BrokerageBoardReader.displayPlans(store: appState.watchlist, symbol: symbol)
+    }
+
     @ViewBuilder
-    private func planRows(_ item: WatchItem) -> some View {
-        let entries = item.plans.map {
-            TradePlanEntry(symbol: symbol, plan: $0, transactions: appState.watchlist.transactionsForPlan(symbol))
-        }
+    private func planRows() -> some View {
+        let entries = displayPlans
         let ordered = entries.filter { $0.displayState == .waiting }
             + entries.filter { $0.displayState != .waiting }
                 .sorted { ($0.lastFillDate ?? $0.plan.updatedAt) > ($1.lastFillDate ?? $1.plan.updatedAt) }
         ForEach(ordered.prefix(PlanSection.visibleRowCount)) { entry in
             planRow(entry)
         }
-        if item.plans.count > PlanSection.visibleRowCount {
+        if entries.count > PlanSection.visibleRowCount {
             Text(PulseLocalization.localizedString(
                 "plan.more",
-                item.plans.count - PlanSection.visibleRowCount
+                entries.count - PlanSection.visibleRowCount
             ))
             .font(.system(size: 9))
             .foregroundStyle(.tertiary)
@@ -1127,6 +1135,7 @@ struct DetailView: View {
                 instrumentType: instrumentType
             )
         return Button {
+            if let owner = entry.accountID { _ = appState.selectBrokerageAccount(owner) }
             openPlanEditor(plan.id)
         } label: {
             HStack(spacing: 6) {
@@ -1403,7 +1412,7 @@ struct DetailView: View {
                             )
                             stat(
                                 PulseLocalization.localizedString("position.historyTrades"),
-                                PulseLocalization.localizedString("position.tradeCount", item.transactions.count)
+                                PulseLocalization.localizedString("position.tradeCount", appState.watchlist.tradeHistory(for: symbol).count)
                             )
                         }
                     }

@@ -113,7 +113,8 @@ struct AgentWatchlistCommandsTests {
                 kind: .buy,
                 price: 120,
                 quantity: 3,
-                positionPool: .strategic
+                positionPool: .strategic,
+                executionAccountID: .financing
             ),
             for: SymbolID(market: .us, code: "NVDA")
         ))
@@ -130,6 +131,7 @@ struct AgentWatchlistCommandsTests {
         #expect(saved.price == 115)
         #expect(saved.quantity == 5)
         #expect(saved.positionPool == .strategic)
+        #expect(saved.executionAccountID == .financing)
     }
 
     @Test

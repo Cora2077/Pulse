@@ -21,7 +21,7 @@ struct PlanListView: View {
         _scope = State(initialValue: initialScope)
     }
 
-    private var entries: [TradePlanEntry] { appState.watchlist.tradePlanEntries }
+    private var entries: [TradePlanEntry] { BrokerageBoardReader.displayPlans(store: appState.watchlist) }
     private var waiting: [TradePlanEntry] {
         TradePlanOverview.ordered(entries.filter { $0.displayState == .waiting }, currentPrice: currentPrice)
     }
@@ -87,11 +87,11 @@ struct PlanListView: View {
         }
         .sheet(item: $workflowEntry) { entry in
             PlanWorkflowDetailView(symbol: entry.symbol, planID: entry.plan.id,
-                account: appState.watchlist.activeBrokerageAccountID)
+                account: entry.accountID ?? appState.watchlist.activeBrokerageAccountID)
                 .frame(width: 650, height: 600)
         }
         .sheet(item: $executionEntry) { entry in
-            PlanExecutionSheet(entry: entry, account: appState.watchlist.activeBrokerageAccountID,
+            PlanExecutionSheet(entry: entry, account: entry.accountID ?? appState.watchlist.activeBrokerageAccountID,
                 onClose: {
                     executionEntry = nil
                     if entries.first(where: { $0.plan.id == entry.plan.id })?.displayState == .filled {
@@ -228,6 +228,20 @@ struct PlanListView: View {
                 TradeKindBadge(kind: entry.plan.kind == .buy ? .buy : .sell, palette: appState.palette)
                 numberText(primaryNumber)
             }
+            // Which ledger this plan means to be executed in, when it has
+            // decided. Silent when it has not: the row is a queue of open work,
+            // and repeating "choose when it fills" on every undecided plan
+            // would be the visual noise the layout is built to avoid. It is
+            // never the ledger the plan is *stored* in — a source account is an
+            // internal reference and printing it here is what made a
+            // still-waiting plan look like it belonged to a ledger the user
+            // never chose.
+            if PlanExecutionAccountDisplay.isDecided(entry.plan) {
+                Text(PlanExecutionAccountDisplay.title(entry.plan))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
             if !isWaiting {
                 if let date = entry.fillDateText {
                     Text(date + (entry.displayState != .filled
@@ -237,6 +251,21 @@ struct PlanListView: View {
                 } else if entry.displayState == .stopped {
                     Text(PulseLocalization.localizedString("plans.display.missingFillHelp"))
                         .font(.system(size: 9.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                // A record that has real fills names the ledger they actually
+                // landed in, never the plan's source: a buy can be executed in
+                // one ledger against a plan kept in another, and the fill's own
+                // entry is the only thing that knows where the money went. The
+                // owner comes from the store's replay rather than the
+                // transaction's own account field, which old records can carry
+                // a conflicting value in.
+                if let accountText = entry.actualFillAccountText(
+                    store: appState.watchlist, symbol: entry.symbol
+                ) {
+                    Text(accountText)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
             }
         }
@@ -348,34 +377,42 @@ struct PlanListView: View {
     }
 
     @ViewBuilder private func menu(_ entry: TradePlanEntry) -> some View {
-        if entry.displayState == .waiting {
-            Button(PulseLocalization.localizedString("plans.action.recordFill")) { executionEntry = entry }
-        } else if entry.canBackfillFill {
-            // A stopped record with size still open. The fill sheet detects the
-            // mode from the entry itself and performs the guarded backfill; the
-            // row is never revived first, which would resurrect an intention
-            // the user already settled.
-            Button(PulseLocalization.localizedString("plans.action.backfill")) { executionEntry = entry }
-        }
-        Button(PulseLocalization.localizedString("plans.action.logicHistory")) { workflowEntry = entry }
-        Button(PulseLocalization.localizedString("plan.menu.edit")) { route = .plan(entry.symbol, entry.plan.id, .planList) }
-        if entry.displayState == .waiting {
-            Button(PulseLocalization.localizedString("plan.menu.drop")) { restate(entry, as: .cancelled) }
-        } else if entry.displayState != .filled {
-            Button(PulseLocalization.localizedString("plan.menu.revive")) { restate(entry, as: .active) }
-        }
-        Divider()
-        Button(PulseLocalization.localizedString("plan.delete"), role: .destructive) {
-            // The row already resolved the name it is showing; the dialog names
-            // the same thing rather than re-asking the market and possibly
-            // printing a different label than the row the user clicked.
-            let name = appState.market.quote(for: entry.symbol)?.name
-                ?? appState.displayName(for: entry.symbol)
-            deletionRequest = PlanDeletionRequest(
-                entry: entry,
-                account: appState.watchlist.activeBrokerageAccountID,
-                displayName: name
-            )
+        if entry.accountID != appState.watchlist.activeBrokerageAccountID {
+            Button(PulseLocalization.localizedString("plans.action.logicHistory")) { workflowEntry = entry }
+            Button(PulseLocalization.localizedString("plan.menu.edit")) {
+                if let owner = entry.accountID { _ = appState.selectBrokerageAccount(owner) }
+                route = .plan(entry.symbol, entry.plan.id, .planList)
+            }
+        } else {
+            if entry.displayState == .waiting {
+                Button(PulseLocalization.localizedString("plans.action.recordFill")) { executionEntry = entry }
+            } else if entry.canBackfillFill {
+                // A stopped record with size still open. The fill sheet detects the
+                // mode from the entry itself and performs the guarded backfill; the
+                // row is never revived first, which would resurrect an intention
+                // the user already settled.
+                Button(PulseLocalization.localizedString("plans.action.backfill")) { executionEntry = entry }
+            }
+            Button(PulseLocalization.localizedString("plans.action.logicHistory")) { workflowEntry = entry }
+            Button(PulseLocalization.localizedString("plan.menu.edit")) { route = .plan(entry.symbol, entry.plan.id, .planList) }
+            if entry.displayState == .waiting {
+                Button(PulseLocalization.localizedString("plan.menu.drop")) { restate(entry, as: .cancelled) }
+            } else if entry.displayState != .filled {
+                Button(PulseLocalization.localizedString("plan.menu.revive")) { restate(entry, as: .active) }
+            }
+            Divider()
+            Button(PulseLocalization.localizedString("plan.delete"), role: .destructive) {
+                // The row already resolved the name it is showing; the dialog names
+                // the same thing rather than re-asking the market and possibly
+                // printing a different label than the row the user clicked.
+                let name = appState.market.quote(for: entry.symbol)?.name
+                    ?? appState.displayName(for: entry.symbol)
+                deletionRequest = PlanDeletionRequest(
+                    entry: entry,
+                    account: appState.watchlist.activeBrokerageAccountID,
+                    displayName: name
+                )
+            }
         }
     }
 

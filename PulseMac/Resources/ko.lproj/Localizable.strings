@@ -493,7 +493,7 @@
 
 /* Trade plans: the new-plan chooser sheet */
 "plan.newPlan" = "계획 추가";
-"plan.new.account" = "작성 계좌: %@";
+"plan.new.account" = "기본 실행 계정을 %@(으)로 설정할 수 있습니다";
 "plan.new.empty" = "코드나 이름을 입력해 종목을 검색하세요. 관심 목록의 종목은 아래에 바로 표시됩니다.";
 "plan.new.noMatches" = "일치하는 종목이 없습니다. 이름이나 코드를 검색하세요.";
 "plan.new.searchError" = "검색 실패: %@";
@@ -546,7 +546,7 @@
 "plan.execution.record" = "체결 기록";
 "plan.execution.recordAndReview" = "기록 후 복기";
 "plan.execution.note" = "메모(선택)";
-"plan.execution.poolHelp" = "%@에 기록됩니다. 여기서는 브로커가 이미 체결한 내용만 적으며, FFF는 주문을 보내지 않습니다.";
+"plan.execution.poolHelp" = "포지션 용도: %@. 이미 체결된 거래를 기록합니다.";
 "plan.execution.notAnOrder" = "기록용일 뿐입니다. 여기서 브로커로 전달되는 것은 없습니다.";
 "plan.execution.useRemaining" = "남은 %@ 입력";
 "plan.execution.useRemainingHelp" = "이 계획에서 아직 체결되지 않은 수량을 입력합니다";
@@ -576,6 +576,15 @@
 "plan.detail.change.conditions" = "조건 %ld개";
 "plan.detail.change.kind" = "방향 %@";
 "plan.detail.change.status" = "상태 %@";
+
+/* Trade plans: the plan's default execution account (an intention, not the ledger it is stored in). */
+"plan.executionAccount" = "기본 실행 계정";
+"plan.executionAccount.help" = "의도일 뿐 제한이 아닙니다. 체결을 기록할 때 다른 계정을 선택할 수 있습니다.";
+"plan.executionAccount.named" = "기본 실행: %@";
+"plan.executionAccount.choose" = "체결 시 선택";
+"plan.defaultExecution.caption" = "기본 실행: %@";
+"plan.fillAccount.named" = "체결 계정: %@";
+"plan.detail.change.executionAccount" = "실행 계정 %@";
 
 "settings.mcp.row" = "MCP";
 "settings.mcp.title" = "MCP";
@@ -1250,7 +1259,7 @@
 /* Account draft preservation */
 "draft.account.kept" = "%@의 초안을 보관했습니다. 저장하려면 돌아가세요.";
 "draft.account.resume" = "%@로 돌아가기";
-"account.unassigned" = "미지정";
+"account.unassigned" = "확인 대기 기록";
 "workspace.risk" = "위험 계산";
 "workspace.risk.help" = "매수 위험 계산";
 "workspace.retry" = "다시 시도";
@@ -1481,3 +1490,4 @@
 /* Trade plans: backfill mode and an unidentifiable quote currency. */
 "plans.backfill.date" = "실제 체결일";
 "plans.unit.unknownCurrency" = "통화 불명";
+"plan.executionAccount.budgetPending" = "기본 계좌를 선택하지 않은 계획 %d개는 계좌 예산에 포함되지 않습니다.";

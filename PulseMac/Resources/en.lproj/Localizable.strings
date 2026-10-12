@@ -986,7 +986,7 @@
 
 /* Trade plans: the new-plan chooser sheet */
 "plan.newPlan" = "New Plan";
-"plan.new.account" = "Written into %@";
+"plan.new.account" = "Default execution account can be %@";
 "plan.new.empty" = "Type a code or a name to search. Symbols already on a watchlist are listed below.";
 "plan.new.noMatches" = "No matching symbols. Try a name or code.";
 "plan.new.searchError" = "Search failed: %@";
@@ -1039,7 +1039,7 @@
 "plan.execution.record" = "Record Fill";
 "plan.execution.recordAndReview" = "Record and review";
 "plan.execution.note" = "Note (optional)";
-"plan.execution.poolHelp" = "Filed under %@. This records what your broker already did — FFF never sends an order.";
+"plan.execution.poolHelp" = "Position purpose: %@. Record an already completed trade.";
 "plan.execution.notAnOrder" = "Bookkeeping only. Nothing here reaches a broker.";
 "plan.execution.useRemaining" = "Use remaining %@";
 "plan.execution.useRemainingHelp" = "Fill in the quantity still open on this plan";
@@ -1069,6 +1069,15 @@
 "plan.detail.change.conditions" = "Conditions %ld";
 "plan.detail.change.kind" = "Side %@";
 "plan.detail.change.status" = "Status %@";
+
+/* Trade plans: the plan's default execution account (an intention, not the ledger it is stored in). */
+"plan.executionAccount" = "Default execution account";
+"plan.executionAccount.help" = "An intention, not a limit: you can still choose another account when you record the fill.";
+"plan.executionAccount.named" = "Default execution: %@";
+"plan.executionAccount.choose" = "Choose when you record the fill";
+"plan.defaultExecution.caption" = "Default execution: %@";
+"plan.fillAccount.named" = "Fill account: %@";
+"plan.detail.change.executionAccount" = "Execution account %@";
 
 "main.window.title" = "FFF";
 "main.openWindow" = "Open Main Window";
@@ -1249,7 +1258,7 @@
 /* Account draft preservation */
 "draft.account.kept" = "Draft kept for %@. Return to save.";
 "draft.account.resume" = "Return to %@";
-"account.unassigned" = "Unassigned";
+"account.unassigned" = "Pending assignment";
 "workspace.risk" = "Risk calculator";
 "workspace.risk.help" = "Calculate buy risk";
 "workspace.retry" = "Retry";
@@ -1480,3 +1489,4 @@
 /* Trade plans: backfill mode and an unidentifiable quote currency. */
 "plans.backfill.date" = "Actual fill date";
 "plans.unit.unknownCurrency" = "currency unknown";
+"plan.executionAccount.budgetPending" = "%d plans have no default account and are excluded from account budgets.";

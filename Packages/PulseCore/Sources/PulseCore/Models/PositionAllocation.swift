@@ -112,15 +112,9 @@ public struct PositionPortion: Codable, Hashable, Sendable, Identifiable {
     public var id: UUID
     public var quantity: Double
     public var pool: PositionPool
-    /// Which brokerage account this card belongs to, independent of the ledger
-    /// the card happens to sit in.
-    ///
-    /// The same symbol can be held in two pools — two accounts — at once, so an
-    /// account label has to live on the card rather than on the item. `nil` is
-    /// the deliberate "inherit" value, not an unknown: a portion that predates
-    /// the field belongs to whatever ledger encloses it, and a copy through a
-    /// new build must carry the `nil` forward instead of guessing an owner.
-    /// `.unassigned` is a real catalog value only when someone chose it.
+    /// Legacy account label retained for archive and history compatibility.
+    /// Actual ownership follows the enclosing transaction ledger. This field
+    /// cannot change holdings, account totals, or the destination of a new trade.
     public var brokerageAccountID: BrokerageAccountID?
     public var origin: Origin
     public var note: String?
@@ -438,12 +432,9 @@ public enum PositionAllocationError: LocalizedError, Equatable {
     case noSingleTransferToRestore
     case sameFundingSource
     case incompatibleAccountFunding
+    case accountOwnershipRequiresClassification
     case invalidConditions
     case tooManyConditions(limit: Int)
-    /// A caller asked to clear a card's account label by passing the value it
-    /// already inherits. `nil` and an explicit `.unassigned` are different
-    /// states, so "make this card inherit again" has to be a real edit rather
-    /// than silently landing on the same label.
     /// A caller asked to assign the retired observation purpose. Verification is
     /// a state a portion carries, not a pool, so the request is refused rather
     /// than silently creating a purpose the product no longer has. Folding it
@@ -456,6 +447,7 @@ public enum PositionAllocationError: LocalizedError, Equatable {
         return switch self {
         case .itemNotFound: chinese ? "找不到这项持仓。" : "Position not found."
         case .notApplicable: chinese ? "只有有效的多头持仓可以分账。" : "Allocation requires an open long position."
+        case .accountOwnershipRequiresClassification: chinese ? "账户归属由实际成交确定，请通过交易归类修改。" : "Account ownership follows recorded trades. Use transaction classification to change it."
         case .missingAllocation: chinese ? "请先初始化仓位分账。" : "Initialize the position allocation first."
         case .staleRevision: chinese ? "分账已变化，请重新打开后再试。" : "The allocation changed. Reopen it and try again."
         case .needsReconciliation: chinese ? "请先核对剩余份额。" : "Reconcile the remaining shares first."
@@ -571,16 +563,10 @@ extension WatchItem {
 public typealias PositionPoolQuantities = [PositionPool: Double]
 
 extension WatchItem {
-    /// Attributes this position's shares to brokerage accounts.
-    ///
-    /// A portion's `brokerageAccountID` is the only source of a label; a `nil`
-    /// one inherits `enclosingAccountID`, the ledger the item came out of. The
-    /// derivation refuses to guess: unless the whole allocation is valid,
-    /// matches this item's transaction digest, still points at its sources, and
-    /// sums to the live position, the *entire* position is reported under
-    /// `enclosingAccountID` with its real quantity. That keeps a stale or
-    /// half-reconciled allocation from minting quantities for an account it
-    /// cannot prove, while every share still appears exactly once.
+    /// Attributes shares to their actual ledger, retaining valid pool splits.
+    /// Legacy portion account labels remain readable as historical metadata;
+    /// they cannot move shares or change account totals. A stale allocation
+    /// reports the full ledger quantity in the unassigned pool.
     ///
     /// Returns an empty map for flat positions. Shorts retain their signed
     /// quantity under the enclosing account; positive allocations are not guessed.
@@ -600,11 +586,10 @@ extension WatchItem {
 
         var result: [BrokerageAccountID: PositionPoolQuantities] = [:]
         for portion in allocation.portions {
-            let account = portion.brokerageAccountID ?? enclosingAccountID
             // A legacy card stored under the retired observation purpose reads
             // as `unassigned`, the same fold every other pool total uses.
             let pool = portion.pool.effectivePurpose
-            result[account, default: [:]][pool, default: 0] += portion.quantity
+            result[enclosingAccountID, default: [:]][pool, default: 0] += portion.quantity
         }
         return result
     }

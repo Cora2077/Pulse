@@ -675,6 +675,14 @@ struct DataSettingsView: View {
     private var foreignImportMessage: String {
         guard let reason = foreignImport else { return "" }
         switch reason {
+        case .transactionAccountConflict(_, let account):
+            return accountCopyData(
+                "成交记录与「\(AccountIdentity.title(account))」的归属冲突。请核对原记录；修改账户请使用成交归类，避免重复导入。",
+                "Trade ownership conflicts with \(AccountIdentity.title(account)). Check the original record and use classification to change accounts without duplicating trades.")
+        case .incompatibleAccountFunding(let account):
+            return accountCopyData(
+                "档案中的融资记录不符合「\(AccountIdentity.title(account))」的资金方式，请选择兼容账户。",
+                "The archive contains funding that \(AccountIdentity.title(account)) does not support. Choose a compatible account.")
         case .accountMismatch(let archiveAccountID, let destinationAccountID):
             let source = AccountIdentity.title(archiveAccountID)
             let destination = AccountIdentity.title(destinationAccountID)

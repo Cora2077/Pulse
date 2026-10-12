@@ -17,34 +17,6 @@ struct TradeJournalView: View {
         }
     }
 
-    /// Which ledger the journal is *showing*. A view filter only: it never
-    /// changes the store's selected account, and every row keeps naming the
-    /// account it actually came from.
-    private enum AccountScope: Hashable, CaseIterable {
-        case all
-        case account(BrokerageAccountID)
-
-        /// Menu order: the unfiltered view first, then the named ledgers, then
-        /// the legacy records that no longer carry a label.
-        static var allCases: [AccountScope] {
-            [.all, .account(.financing), .account(.mengmeng), .account(.unassigned)]
-        }
-
-        var title: String {
-            switch self {
-            case .all: PulseLocalization.currentLanguageIdentifier.hasPrefix("zh") ? "全部账户" : "All accounts"
-            case .account(let id): AccountIdentity.title(id)
-            }
-        }
-
-        func includes(_ account: BrokerageAccountID) -> Bool {
-            switch self {
-            case .all: true
-            case .account(let id): id == account
-            }
-        }
-    }
-
     private struct TradeKey: Hashable {
         let accountID: BrokerageAccountID
         let symbol: SymbolID
@@ -146,10 +118,7 @@ struct TradeJournalView: View {
     @State private var query = ""
     @State private var selectedMonth: Date?
     /// Local to this page and independent of `activeBrokerageAccountID`: the
-    /// journal reads every ledger at once, and the global selection is only
-    /// where a write is routed. Defaults to `.all` and is never re-derived
-    /// from the global account.
-    @State private var accountScope: AccountScope = .all
+    /// journal reads every ledger at once; drafts keep their original owner.
     @State private var selection: TradeKey?
     @State private var note = ""
     @State private var followedPlan = PlanChoice.unset
@@ -227,29 +196,23 @@ struct TradeJournalView: View {
             }
     }
 
-    /// The entries the local account filter admits — the single source every
-    /// other readout on this page derives from.
-    private var scopedEntries: [Entry] {
-        entries.filter { accountScope.includes($0.accountID) }
-    }
-
-    /// The scoped items the summaries aggregate over. Two ledgers holding the
+    /// The items the summaries aggregate over. Two ledgers holding the
     /// same symbol stay two entries here: no cross-account merging.
-    private var scopedItems: [WatchItem] {
+    private var summaryItems: [WatchItem] {
         BrokerageBoardReader.records(store: appState.watchlist)
-            .filter { accountScope.includes($0.accountID) && !$0.item.transactions.isEmpty }
+            .filter { !$0.item.transactions.isEmpty }
             .map(\.item)
     }
 
     private var monthOptions: [Date] {
-        Array(Set(scopedEntries.compactMap {
+        Array(Set(entries.compactMap {
             Calendar.current.dateInterval(of: .month, for: $0.transaction.date)?.start
         })).sorted(by: >)
     }
 
     private var filteredEntries: [Entry] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return scopedEntries.filter { entry in
+        return entries.filter { entry in
             switch reviewScope {
             case .today where !Calendar.current.isDateInToday(entry.transaction.date): return false
             case .pending where entry.transaction.kind == .adjustment
@@ -268,7 +231,7 @@ struct TradeJournalView: View {
 
     private var monthlySummaries: [TradeJournalMonthlySummary] {
         TradeJournalMonthlySummary.make(
-            from: scopedItems,
+            from: summaryItems,
             query: query,
             selectedMonth: selectedMonth
         )
@@ -380,24 +343,6 @@ struct TradeJournalView: View {
                 HStack(spacing: 8) {
                     TextField(PulseLocalization.localizedString("journal.search.placeholder"), text: $query)
                         .textFieldStyle(.roundedBorder)
-                    // Whose ledgers are shown, not where a write goes: the menu
-                    // is labelled from this view's own scope.
-                    Picker("", selection: Binding(get: { accountScope }, set: { scope in
-                        accountScope = scope
-                        selectedMonth = nil
-                        frozenAccount = nil
-                        selection = nil
-                        saved = false
-                        clearDraftFields()
-                    })) {
-                        ForEach(AccountScope.allCases, id: \.self) { scope in
-                            scopeLabel(scope)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .fixedSize()
-                    .accessibilityLabel(accountScope.title)
                     Picker(PulseLocalization.localizedString("journal.month"), selection: $selectedMonth) {
                         Text(PulseLocalization.localizedString("journal.month.all")).tag(nil as Date?)
                         ForEach(monthOptions, id: \.self) { month in
@@ -519,25 +464,10 @@ struct TradeJournalView: View {
         .sheet(isPresented: $showStrategyAnalysis) {
             // The sheet reads exactly the items the current scope, query and
             // month select, so two ledgers' copies of a symbol stay separate.
-            TradeStrategySummaryView(items: scopedItems, query: query, selectedMonth: selectedMonth)
+            TradeStrategySummaryView(items: summaryItems, query: query, selectedMonth: selectedMonth)
         }
         .alert(PulseLocalization.localizedString("journal.error.missing.title"), isPresented: $saveError) {
             Button(PulseLocalization.localizedString("journal.error.ok"), role: .cancel) { }
-        }
-    }
-
-    /// One account-filter menu row. The dot is added only where the menu style
-    /// renders content, so `.all` (which has no account) stays plain text.
-    @ViewBuilder private func scopeLabel(_ scope: AccountScope) -> some View {
-        switch scope {
-        case .all:
-            Text(scope.title).tag(scope)
-        case .account(let id):
-            HStack(spacing: 5) {
-                Circle().fill(AccountIdentity.dotColor(id)).frame(width: 6, height: 6)
-                Text(scope.title)
-            }
-            .tag(scope)
         }
     }
 
@@ -922,11 +852,6 @@ struct TradeJournalView: View {
         query = ""
         selectedMonth = nil
         reviewScope = .all
-        // The target must be inside the local scope, or the selection would be
-        // matched against a list that cannot show it. Narrow to the resolved
-        // owner's own ledger: `.all` would also satisfy visibility, but it
-        // would silently discard a filter the user had set.
-        accountScope = .account(entry.accountID)
         selection = entry.id
         loadDraft()
         // The id resolved, so the retry budget is unspent again for the next one.

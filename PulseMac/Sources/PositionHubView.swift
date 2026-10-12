@@ -58,6 +58,8 @@ struct PositionHubView: View {
                 } else {
                     emptyBody(item)
                 }
+            } else if !appState.watchlist.tradeHistory(for: symbol).isEmpty {
+                recentTransactions().padding(.horizontal, 12)
             }
             Spacer(minLength: 0)
         }
@@ -140,7 +142,7 @@ struct PositionHubView: View {
 
             separator
 
-            recentTransactions(item)
+            recentTransactions()
         }
         .padding(.horizontal, 12)
     }
@@ -236,8 +238,8 @@ struct PositionHubView: View {
     }
 
     @ViewBuilder
-    private func recentTransactions(_ item: WatchItem) -> some View {
-        let entries = Array((item.ledger?.entries ?? []).reversed())
+    private func recentTransactions() -> some View {
+        let entries = appState.watchlist.tradeHistory(for: symbol)
         VStack(alignment: .leading, spacing: 0) {
             // The header row is the way into the full log: a trailing chevron
             // instead of a separate link line under the rows.
@@ -256,8 +258,9 @@ struct PositionHubView: View {
                 }
                 .buttonStyle(.pressable)
                 ForEach(entries.prefix(Self.visibleTransactionCount)) { entry in
-                    TransactionRow(
-                        entry: entry,
+                    AccountTradeHistoryRow(
+                        record: entry,
+                        symbol: symbol,
                         palette: appState.palette,
                         currencyCode: currencyCode,
                         onOpen: { route = .editTrade(symbol, entry.transaction.id, returnRoute) }
@@ -291,6 +294,9 @@ struct PositionHubView: View {
     private func emptyBody(_ item: WatchItem) -> some View {
         if item.transactions.isEmpty {
             onboardingBody()
+            if !appState.watchlist.tradeHistory(for: symbol).isEmpty {
+                recentTransactions().padding(.horizontal, 12)
+            }
         } else {
             closedBody(item)
         }
@@ -311,7 +317,7 @@ struct PositionHubView: View {
                 .help(PulseLocalization.localizedString("position.realizedPnLHelp"))
                 stat(
                     PulseLocalization.localizedString("position.historyTrades"),
-                    PulseLocalization.localizedString("position.tradeCount", item.transactions.count)
+                    PulseLocalization.localizedString("position.tradeCount", appState.watchlist.tradeHistory(for: symbol).count)
                 )
                 totalFeesStat(item)
             }
@@ -323,7 +329,7 @@ struct PositionHubView: View {
 
             separator
 
-            recentTransactions(item)
+            recentTransactions()
         }
         .padding(.horizontal, 12)
     }
@@ -796,5 +802,52 @@ enum PositionDateFormat {
         formatter.locale = PulseLocalization.currentLocale
         formatter.setLocalizedDateFormatFromTemplate("yMMMM")
         return formatter.string(from: date)
+    }
+}
+
+/// Display all ledgers together while opening edits in the original ledger.
+struct AccountTradeHistoryRow: View {
+    @Environment(AppState.self) private var appState
+    let record: AccountTradeHistoryEntry
+    var symbol: SymbolID?
+    let palette: ChangePalette
+    let currencyCode: String?
+    var onOpen: () -> Void
+    @State private var showsClassification = false
+
+    private var stillOwned: Bool {
+        guard let symbol else { return true }
+        let owner = appState.watchlist.brokeragePortfolio(for: record.accountID)
+        return (owner.items + owner.retainedHistoryItems).contains {
+            $0.symbol == symbol && $0.materializedTransactions().contains { $0.id == record.transaction.id }
+        }
+    }
+
+    var body: some View {
+        TransactionRow(
+            entry: record.entry,
+            palette: palette,
+            currencyCode: currencyCode,
+            onOpen: {
+                guard stillOwned else { return }
+                _ = appState.selectBrokerageAccount(record.accountID)
+                onOpen()
+            }
+        )
+        .contextMenu {
+            if symbol != nil, appState.watchlist.brokerageAccountsEnabled {
+                Button(PulseLocalization.currentLanguageIdentifier.hasPrefix("zh") ? "修改成交账户归属…" : "Classify trade ownership…") {
+                    if stillOwned { showsClassification = true }
+                }
+            }
+        }
+        .sheet(isPresented: $showsClassification) {
+            if let symbol {
+                BrokerageAccountClassificationSheet(onAssigned: { _ in showsClassification = false },
+                    sourceAccountID: record.accountID, initialSymbol: symbol,
+                    initialTransactionIDs: [record.transaction.id])
+                    .environment(appState)
+            }
+        }
     }
 }

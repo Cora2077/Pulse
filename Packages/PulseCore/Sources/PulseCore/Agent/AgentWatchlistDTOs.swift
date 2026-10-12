@@ -129,6 +129,8 @@ public struct AgentTradePlan: Hashable, Codable, Sendable {
     /// Quantity still outstanding: the plan's size less `fillQuantity`, never
     /// negative.
     public var remainingQuantity: Double
+    /// Optional execution default; the actual fill account is recorded on each trade.
+    public var executionAccountID: BrokerageAccountID?
 
     public init(
         id: UUID,
@@ -143,7 +145,8 @@ public struct AgentTradePlan: Hashable, Codable, Sendable {
         conditions: [TradePlanCondition]? = nil,
         history: [TradePlanRevision]? = nil,
         fillQuantity: Double = 0,
-        remainingQuantity: Double = 0
+        remainingQuantity: Double = 0,
+        executionAccountID: BrokerageAccountID? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -158,6 +161,7 @@ public struct AgentTradePlan: Hashable, Codable, Sendable {
         self.history = history
         self.fillQuantity = fillQuantity
         self.remainingQuantity = remainingQuantity
+        self.executionAccountID = executionAccountID
     }
 }
 

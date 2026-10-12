@@ -206,6 +206,9 @@ struct PlanExecutionSheet: View {
     /// an instrument, not about a ledger, so the user names where the fill
     /// actually landed; `draftAccount` above stays the source plan's account
     /// and is what the stale guard checks.
+    ///
+    /// A sell consumes the chosen account's actual shares. Unbound plans may
+    /// execute across accounts; a portion-bound plan stays with its own card.
     @State private var selectedBrokerageAccount: BrokerageAccountID?
     /// For a sell that spans several sources: how many shares to take from each
     /// portion card. Empty means the caller has not named a selection, which
@@ -239,17 +242,33 @@ struct PlanExecutionSheet: View {
             entry.remainingQuantity > 0 ? entry.remainingQuantity : entry.plan.quantity
         ))
         _date = State(initialValue: Calendar.current.startOfDay(for: .now))
-        // The destination starts at the account this sheet was opened from when
-        // that account is a real one. `unassigned` is a source of legacy
+        // The destination starts at the plan's own default execution account
+        // when it named one — that is the whole purpose of recording the
+        // default — and otherwise at the ledger this sheet was opened from,
+        // when that ledger is a real one. `unassigned` is a source of legacy
         // records and never a place to file a new fill, so it starts empty and
         // the user has to name a ledger.
-        _selectedBrokerageAccount = State(initialValue: account == .unassigned ? nil : account)
+        //
+        // A bound sell is the one case where the default cannot simply be
+        // pre-selected across ledgers: the store only accepts a sale in the
+        // ledger the plan is stored in, so a default naming another account is
+        // not a usable start. Falling back to `draftAccount` keeps the form
+        // submittable while the header still explains which account the sale
+        // comes out of.
+        let planned = PlanExecutionAccountDisplay.namedAccount(entry.plan)
+        let sellFallbackNeeded = entry.plan.kind == .sell
+            && entry.plan.positionPortionID != nil
+            && planned != nil && planned != account
+        let start = entry.plan.kind == .sell && sellFallbackNeeded
+            ? (account == .unassigned ? nil : account)
+            : (planned ?? (account == .unassigned ? nil : account))
+        _selectedBrokerageAccount = State(initialValue: start)
         // Ordinary capital unless the plan itself intended margin *and* the
         // starting account can hold it. The shared fields enforce the same
         // pairing after this.
         _fundingSource = State(initialValue:
             entry.plan.kind == .buy
-                && account == .financing
+                && start == .financing
                 && entry.plan.fundingSource == .margin
                 ? .margin : .own
         )
@@ -293,7 +312,7 @@ struct PlanExecutionSheet: View {
                     // are the two answers that decide whether this fill can be
                     // recorded at all. Price and quantity are meaningless if
                     // the destination refuses the combination.
-                    if kind == .buy { buyAccountMethodFields }
+                    if kind == .buy { buyAccountMethodFields } else { sellAccountFields }
                     HStack(spacing: 8) {
                         PositionInputCell(
                             label: PulseLocalization.localizedString(
@@ -351,7 +370,9 @@ struct PlanExecutionSheet: View {
         // means a later allocation edit on another surface cannot have this
         // sheet's card selection applied to different shares.
         .onAppear {
-            loadedAllocationRevision = appState.watchlist.draftItem(for: symbol, account: draftAccount)?.positionAllocation?.revision
+            loadedAllocationRevision = appState.watchlist
+                .draftItem(for: symbol, account: chosenFillAccount ?? draftAccount)?
+                .positionAllocation?.revision
         }
     }
 
@@ -431,22 +452,19 @@ struct PlanExecutionSheet: View {
         .padding(12)
     }
 
-    /// The account the header names. A buy names its chosen destination — the
-    /// dot colour has to belong to that account, or the caption would describe
-    /// a different ledger than the fill does.
+    /// The account the header names.
+    ///
+    /// Both sides name the actual executing ledger. The toolbar's current
+    /// account is a separate stale-draft guard; the plan default preselects
+    /// the destination but does not determine the saved trade's ownership.
     private var headerAccount: BrokerageAccountID {
-        guard kind == .buy else { return draftAccount }
-        return selectedBrokerageAccount ?? .unassigned
+        selectedBrokerageAccount ?? .unassigned
     }
 
-    /// "记入账户：萌萌账号", or the question itself while a buy still has no
+    /// "记入账户：萌萌账号", or the question itself while a fill still has no
     /// destination. Asking here rather than showing a bare placeholder is what
     /// makes the missing answer visible in the chrome as well as in the form.
     private var headerAccountText: String {
-        guard kind == .buy else {
-            return poolCopy("记入账号：\(AccountIdentity.title(draftAccount))",
-                            "Recording into: \(AccountIdentity.title(draftAccount))")
-        }
         guard let account = selectedBrokerageAccount else {
             return poolCopy("记入账户：请选择账户", "Recording into: Select account")
         }
@@ -480,10 +498,9 @@ struct PlanExecutionSheet: View {
         PlanValueText.quantityUnit(symbol: symbol, instrumentType: sourceItem?.resolvedInstrumentType)
     }
 
-    /// The planned instrument as this ledger stores it, which is the same
-    /// resolution the plan list uses for its card.
+    /// Read quantities and portion revisions from the executing ledger.
     private var sourceItem: WatchItem? {
-        appState.watchlist.draftItem(for: symbol, account: draftAccount)
+        appState.watchlist.draftItem(for: symbol, account: chosenFillAccount ?? draftAccount)
     }
 
     private var remainingSuggestion: PositionInputCell.Suggestion? {
@@ -537,9 +554,10 @@ struct PlanExecutionSheet: View {
                 saleSelectionSection
             } else {
                 VStack(alignment: .leading, spacing: 4) {
-                    if draftAccount != .mengmeng {
+                    let cardAccount = chosenFillAccount ?? draftAccount
+                    if cardAccount != .mengmeng {
                         Text(poolCopy("资金来源：", "Funding: ")
-                            + fundingSourceTitle(saleCandidates.first?.fundingSource, account: draftAccount))
+                            + fundingSourceTitle(saleCandidates.first?.fundingSource, account: cardAccount))
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                     Text(plan.positionPool == nil
@@ -549,6 +567,102 @@ struct PlanExecutionSheet: View {
                 }
             }
         }
+    }
+
+    /// The account row a sale gets, which is the buy row's account half without
+    /// the method half.
+    ///
+    /// A sale does not choose money — it consumes shares — so the method
+    /// question does not exist here and offering it would imply the sale could
+    /// be funded some other way. What it does have is the same account question
+    /// the buy has, and it has to be visible for the same reason: the user is
+    /// looking at a form that will reduce one specific ledger's position, and
+    /// the form must say which one. The plan's default execution account
+    /// pre-selects it, which is what makes recording a run of fills against one
+    /// plan cheap.
+    ///
+    /// A bound sale is locked to the ledger that holds its card. The picker
+    /// still renders — hiding it would hide which ledger is being reduced — but
+    /// it is disabled and the line below says why, because the store refuses a
+    /// sale that names another account and a control that silently snapped back
+    /// would look broken rather than deliberate.
+    private var sellAccountFields: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(poolCopy("执行账户", "Execution account"))
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                Picker(poolCopy("执行账户", "Execution account"),
+                       selection: $selectedBrokerageAccount) {
+                    Text(poolCopy("请选择账户", "Select account"))
+                        .tag(nil as BrokerageAccountID?)
+                    ForEach(AccountIdentity.destinations) { destination in
+                        Text(AccountIdentity.title(destination))
+                            .tag(Optional(destination))
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .disabled(isSellAccountLocked)
+                .accessibilityIdentifier("plan.fill.sell.account")
+                .accessibilityLabel(poolCopy("执行账户", "Execution account"))
+                .onChange(of: selectedBrokerageAccount) { _, _ in resetSaleSelection() }
+            }
+            if isSellAccountLocked {
+                // Naming the card's ledger is the whole explanation: the user
+                // knows which card they bound, and this says that the binding
+                // is what removes the choice.
+                Text(poolCopy("此计划绑定该账户的具体份额，卖出只能记入该账户。",
+                              "This plan is bound to specific shares in this account, so the sale can only be recorded here."))
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if isSellAccountLocked, selectedBrokerageAccount != draftAccount {
+                // Reached only if a caller seeds a default the store will
+                // refuse. Saying so next to the field is better than a
+                // rejection after the whole form is filled in.
+                Text(poolCopy("卖出只能记录在该计划所在的账户。",
+                              "A sale can only be recorded in the account this plan lives in."))
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Whether the sale's ledger is fixed by its card binding.
+    private var isSellAccountLocked: Bool {
+        kind == .sell && plan.positionPortionID != nil
+    }
+
+    /// Drops a card selection that belonged to the account the user just left.
+    ///
+    /// A selection names portion ids from one ledger's allocation. Carrying it
+    /// across an account switch would apply those ids to a different ledger's
+    /// cards — or, worse, to the same ids in the new ledger — and the revision
+    /// the selection was built against would no longer describe anything. Both
+    /// go, and the revision is re-read from the ledger now chosen, so the next
+    /// submission is judged against the allocation actually on screen.
+    private func resetSaleSelection() {
+        saleSelection = [:]
+        loadedAllocationRevision = appState.watchlist
+            .draftItem(for: symbol, account: chosenFillAccount ?? draftAccount)?
+            .positionAllocation?.revision
+        errorMessage = nil
+    }
+
+    /// The account a sale's shares are read from, and the one a buy is written
+    /// into: the chosen ledger, or the plan's own when nothing was chosen.
+    ///
+    /// Every sale question that reads an allocation is asked through this, so
+    /// the cards on screen, the quantity check, and the revision all describe
+    /// the same ledger the submission will use. Reading `draftAccount` while
+    /// showing a different account's picker is how a form applies one ledger's
+    /// selection to another ledger's shares.
+    private var chosenFillAccount: BrokerageAccountID? {
+        selectedBrokerageAccount
     }
 
     /// The shared account-then-method block, the same one the direct buy form
@@ -582,15 +696,36 @@ struct PlanExecutionSheet: View {
         return selectedBrokerageAccount?.permitsBuy(fundingSource: fundingSource ?? .own) ?? false
     }
 
+    /// Whether the chosen ledger is one the store will accept for this sale.
+    ///
+    /// A sale consumes shares its own ledger holds, so the only recordable
+    /// destination is `draftAccount`. The rule is stated here as well as in the
+    /// store, the same way the buy rule is, so a form seeded with a default
+    /// from another ledger refuses locally instead of surfacing an error after
+    /// the user has filled in everything else.
+    private var isSellAccountRecordable: Bool {
+        guard kind == .sell else { return true }
+        guard let account = chosenFillAccount, account != .unassigned else { return false }
+        return !isSellAccountLocked || account == draftAccount
+    }
+
     /// The portion cards this sale may draw from.
     ///
     /// A plan with a pool competes only inside that pool — the plan already
     /// said which bucket it sells from. A plan with no pool competes across the
     /// whole position, which is what "整标的卖出" means. Only live, reconciled
     /// allocations qualify; an unreconciled one is refused by the store anyway.
+    ///
+    /// The item is read from the ledger the *sale* will be recorded in, not
+    /// from the ledger the sheet was opened for. Those are normally the same,
+    /// and for a bound sale the store requires them to be; reading the chosen
+    /// account is what keeps the cards, the available quantities, and the
+    /// revision describing the same ledger the submission names. A card from
+    /// one ledger can then never be spent against another ledger's write.
     private var saleCandidates: [PositionPortion] {
         guard kind == .sell,
-              let item = appState.watchlist.draftItem(for: symbol, account: draftAccount),
+              let ledger = chosenFillAccount,
+              let item = appState.watchlist.draftItem(for: symbol, account: ledger),
               let allocation = item.positionAllocation,
               !item.positionAllocationNeedsReconciliation else { return [] }
         if plan.positionPortionID != nil {
@@ -691,6 +826,11 @@ struct PlanExecutionSheet: View {
             ScrollView {
                 VStack(spacing: 4) {
                     ForEach(saleCandidates) { portion in
+                        // The card's ledger is the one the sale will be
+                        // recorded in, so the funding vocabulary and the
+                        // "source unknown" line read that ledger's own
+                        // convention instead of the sheet's opening account.
+                        let cardAccount = chosenFillAccount ?? draftAccount
                         HStack(spacing: 6) {
                             Circle().fill(portion.pool.tint).frame(width: 5, height: 5)
                                 .accessibilityHidden(true)
@@ -698,8 +838,8 @@ struct PlanExecutionSheet: View {
                                 .font(.system(size: 10))
                                 .lineLimit(1)
                             FundingSourceTag(source: portion.fundingSource,
-                                account: draftAccount == .mengmeng ? .mengmeng : (portion.brokerageAccountID ?? draftAccount))
-                            if draftAccount != .mengmeng, portion.fundingSource == nil {
+                                account: cardAccount)
+                            if cardAccount != .mengmeng, portion.fundingSource == nil {
                                 Text(poolCopy("来源未标注", "Source unknown"))
                                     .font(.system(size: 9)).foregroundStyle(.secondary)
                             }
@@ -952,7 +1092,7 @@ struct PlanExecutionSheet: View {
     /// submitted into an account/method pair the store would refuse, which
     /// would only surface as an error after the user had filled in the rest.
     private var isSubmittable: Bool {
-        isValid && isBuySelectionRecordable
+        isValid && isBuySelectionRecordable && isSellAccountRecordable
     }
 
     /// Records the fill, and optionally asks the journal to open it.
@@ -993,11 +1133,15 @@ struct PlanExecutionSheet: View {
                 // confirmed; a sell sends nothing here, because a sale consumes
                 // portions rather than choosing a source.
                 fundingSource: kind == .buy ? (fundingSource ?? .own) : nil,
-                // Where a buy's fill lands. The store keeps the source plan in
-                // its own ledger and records the transaction in this one. A
-                // sell sends nothing: a sale reduces shares where they already
-                // live, which is the plan's own account.
-                brokerageAccountID: kind == .buy ? selectedBrokerageAccount : nil,
+                // Where the fill lands. Both sides name it now: a buy names the
+                // destination the user picked, and a sell names the ledger the
+                // shares come out of — which the store re-checks against the
+                // plan's own and refuses if they differ, rather than filing the
+                // sale somewhere the shares are not. Sending the account
+                // explicitly is what makes the sheet's own form and its write
+                // agree; `nil` would fall back to whichever ledger is selected,
+                // which an account switch could have moved.
+                brokerageAccountID: selectedBrokerageAccount,
                 // Only a genuinely mixed sale names its cards. A single-source
                 // pool keeps the existing automatic deduction, so nothing about
                 // that path changes.
@@ -1015,13 +1159,21 @@ struct PlanExecutionSheet: View {
                 // gains nothing here.
                 historicalBackfill: isBackfill
             )
-            if openingReview, kind == .buy, let account = selectedBrokerageAccount {
-                // The journal opens a transaction in a ledger, so the app has
-                // to be on the destination before the id is handed over —
-                // otherwise the review would look for this fill in the source
-                // plan's account and find nothing. Selecting an account clears
-                // `pendingJournalTransactionID`, which is exactly why the order
-                // here is select first, then set.
+            // A recorded fill landed in the ledger the user named on this sheet,
+            // so the app follows it there — exactly as the ordinary buy form
+            // does. Without this the page would keep describing the source
+            // plan's ledger after the position had been created somewhere else,
+            // which is what made the plan and the ordinary form disagree about
+            // "where did my buy go". A sale names its own ledger too, and
+            // following it is a no-op when that is already the selected one, so
+            // one rule covers both sides rather than a buy-only branch. This
+            // runs strictly after the store accepted the write, so a refusal
+            // never moves the app.
+            if let account = selectedBrokerageAccount, account != draftAccount {
+                // `selectBrokerageAccount` clears `pendingJournalTransactionID`,
+                // so it has to come first when a review follows: selecting
+                // first, then setting the id, is what lets the journal open a
+                // fill that lives in the newly selected ledger.
                 _ = appState.selectBrokerageAccount(account)
             }
             if openingReview {
@@ -1109,7 +1261,20 @@ struct PlanWorkflowDetailView: View {
     private var quote: Quote? { appState.market.quote(for: symbol) }
     private var currencyCode: String? { quote?.currencyCode ?? symbol.currencyCode }
 
-    private var transactions: [PositionTransaction] { appState.watchlist.transactionsForPlan(symbol, account: account) }
+    /// The fills this plan counts, read from the ledger the page was opened
+    /// against — which is the ledger the plan is really stored in, since the
+    /// row that opened this page routed to the plan's own source entry.
+    ///
+    /// Naming the plan id matters here: it is what lets the reader follow the
+    /// explicit reference each fill carries back to *this* plan, wherever that
+    /// fill happens to be stored. A plan whose buy landed in another ledger
+    /// therefore still counts and still lists that fill. Naming the ledger is
+    /// equally load-bearing — it is the plan's own source, and a plan id that
+    /// also exists in another ledger is a different plan whose fills must not
+    /// be counted here.
+    private var transactions: [PositionTransaction] {
+        appState.watchlist.transactionsForPlan(symbol, account: account, planID: planID)
+    }
 
     var body: some View {
         Group {
@@ -1201,6 +1366,15 @@ struct PlanWorkflowDetailView: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
+                // The plan's intended ledger, said once in the header where the
+                // reader is deciding what to do with the plan. It is a
+                // *decision*, so a plan that has not made one says "choose when
+                // it fills" rather than printing the ledger it is stored in —
+                // that is a bookkeeping fact, not an instruction about where
+                // the fill should go.
+                Text(PlanExecutionAccountDisplay.title(plan))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
             let entry = TradePlanEntry(symbol: symbol, plan: plan, transactions: transactions)
@@ -1317,6 +1491,15 @@ struct PlanWorkflowDetailView: View {
             factLine(
                 PulseLocalization.localizedString("plan.pool"),
                 plan.positionPool?.title ?? PulseLocalization.localizedString("plan.pool.none")
+            )
+            // The plan's intended ledger, in the configuration block with the
+            // other intentions. It is a decision the user made, so it reads as
+            // one; a plan that has not decided says that instead of borrowing
+            // the ledger the plan happens to be stored in, which is a different
+            // fact and the one this line used to print.
+            factLine(
+                PulseLocalization.localizedString("plan.executionAccount"),
+                PlanExecutionAccountDisplay.value(plan)
             )
             factLine(
                 PulseLocalization.localizedString("plan.detail.updated"),
@@ -1648,6 +1831,12 @@ struct PlanWorkflowDetailView: View {
     private func linkedTradesSection(_ plan: TradePlan) -> some View {
         let progress = TradePlanExecutionProgress(plan: plan, transactions: transactions)
         let expectedKind: PositionTransaction.Kind = plan.kind == .buy ? .buy : .sell
+        // Each linked fill is paired with the ledger its own store entry was
+        // read from. That ledger — not the transaction's legacy
+        // `brokerageAccountID` field, which older records can carry a stale or
+        // conflicting value in — is where the trade really lives, and it is the
+        // ledger the journal has to be pointed at to open it.
+        let owners = fillOwners()
         let linked = transactions
             .filter { transaction in
                 transaction.planExecution?.planID == plan.id
@@ -1663,6 +1852,7 @@ struct PlanWorkflowDetailView: View {
                     .foregroundStyle(.tertiary)
             } else {
                 ForEach(linked) { transaction in
+                    let owner = owners[transaction.id]
                     HStack(spacing: 6) {
                         Text(Self.day(transaction.date))
                             .font(.system(size: 10, design: .monospaced))
@@ -1674,8 +1864,14 @@ struct PlanWorkflowDetailView: View {
                         .foregroundStyle(PlanSideStyle.color(for: transaction.kind))
                         Text("\(PriceFormatter.price(transaction.price, market: symbol.market)) × \(PriceFormatter.quantity(transaction.quantity))")
                             .font(.system(size: 10, design: .monospaced))
-                        Text(AccountIdentity.title(transaction.brokerageAccountID ?? account))
-                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                        // The real owning ledger, or nothing. A fill the store
+                        // could not locate in any ledger is not given the
+                        // plan's own account as a stand-in: that would print a
+                        // ledger the trade was never verified to be in.
+                        if let owner {
+                            Text(AccountIdentity.title(owner))
+                                .font(.system(size: 9)).foregroundStyle(.secondary)
+                        }
                         Spacer(minLength: 0)
                         if transaction.kind != expectedKind {
                             Text(PulseLocalization.localizedString("plan.detail.notCounted"))
@@ -1686,9 +1882,16 @@ struct PlanWorkflowDetailView: View {
                         // carries the intent: the journal resolves it against
                         // its own full entry list, so a row that a filter would
                         // have hidden still opens.
+                        //
+                        // The account is switched *first*, and only the ledger
+                        // the trade was actually found in is used: the journal
+                        // reads the selected ledger, so pointing it at a ledger
+                        // the trade is not in would open nothing, and writing
+                        // by this row into `transaction.brokerageAccountID`
+                        // would cross ledgers on a field old data can disagree
+                        // with reality about.
                         Button(PulseLocalization.localizedString("plan.detail.reviewTrade")) {
-                            if let owner = transaction.brokerageAccountID { _ = appState.selectBrokerageAccount(owner) }
-                            appState.pendingJournalTransactionID = transaction.id
+                            guard let owner, openJournal(transaction.id, in: owner) else { return }
                         }
                         .controlSize(.small)
                     }
@@ -1701,6 +1904,44 @@ struct PlanWorkflowDetailView: View {
                 }
             }
         }
+    }
+
+    /// The ledger each of this symbol's fills was really found in, keyed by the
+    /// transaction id.
+    ///
+    /// Read from the cross-account trade history, which walks every enabled
+    /// ledger's own position ledger and reports the account that produced each
+    /// entry. That is the authoritative answer to "where does this trade live",
+    /// and it is deliberately not `transaction.brokerageAccountID`: that field
+    /// is the fill's own statement of where it was executed, it is absent on
+    /// old records, and a fill that landed in another ledger can carry a value
+    /// that disagrees with the ledger holding it. The store's own replay is the
+    /// fact; the annotation is a claim.
+    private func fillOwners() -> [UUID: BrokerageAccountID] {
+        var owners: [UUID: BrokerageAccountID] = [:]
+        for entry in appState.watchlist.tradeHistory(for: symbol) {
+            owners[entry.transaction.id] = entry.accountID
+        }
+        return owners
+    }
+
+    /// Switches to the ledger holding `transactionID` and asks the journal to
+    /// open it, and only reports success when the trade is really there.
+    ///
+    /// The guard is the point: a row whose trade is no longer in the ledger the
+    /// history named — a classification moved it, a sync merged it away — must
+    /// not silently hand the journal an id it cannot resolve in the ledger now
+    /// selected. Switching and then checking is the only order that works,
+    /// because the check has to be asked of the ledger the journal will read.
+    @discardableResult
+    private func openJournal(_ transactionID: UUID, in account: BrokerageAccountID) -> Bool {
+        if appState.watchlist.activeBrokerageAccountID != account {
+            _ = appState.selectBrokerageAccount(account)
+        }
+        guard appState.watchlist.tradeHistory(for: symbol)
+            .contains(where: { $0.transaction.id == transactionID }) else { return false }
+        appState.pendingJournalTransactionID = transactionID
+        return true
     }
 
     // MARK: - History
@@ -1853,6 +2094,17 @@ struct PlanWorkflowDetailView: View {
             changes.append(PulseLocalization.localizedString(
                 "plan.detail.change.status",
                 PulseLocalization.localizedString("plan.status.\(current.status.rawValue)")
+            ))
+        }
+        // The execution default is part of what a revision froze, so moving it
+        // is a change the history has to report: a reader comparing two rows
+        // would otherwise see a difference the list never named. A revision
+        // that predates the field reads as undecided, which is what it meant.
+        if PlanExecutionAccountDisplay.namedAccount(previous.executionAccountID)
+            != PlanExecutionAccountDisplay.namedAccount(current.executionAccountID) {
+            changes.append(PulseLocalization.localizedString(
+                "plan.detail.change.executionAccount",
+                PlanExecutionAccountDisplay.value(current.executionAccountID)
             ))
         }
         return changes

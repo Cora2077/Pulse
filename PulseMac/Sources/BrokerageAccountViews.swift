@@ -64,10 +64,16 @@ enum AccountIdentity {
         }
     }
 
+    /// What one ledger *is*, in the user's words. The pending-assignment ledger
+    /// is described as where old records wait, never as a place money is kept:
+    /// it accepts no new buy, so a sentence that read
+    /// like the other two accounts would re-open the misunderstanding this
+    /// ledger's name was changed to close.
     static func subtitle(_ account: BrokerageAccountID) -> String {
         switch account {
         case .unassigned:
-            accountCopy("历史数据，尚未分配到具体账号", "Legacy records, not yet assigned to an account")
+            accountCopy("旧数据待归类；不能记录新的成交",
+                        "Legacy records awaiting classification; no new trades")
         case .financing:
             accountCopy("融资账号的独立账本，资金来源另行标注", "Independent account ledger; funding is annotated separately")
         case .mengmeng:
@@ -273,8 +279,8 @@ struct BrokerageAccountSwitcherPopover: View {
 
             if unassignedHoldingCount > 0 {
                 Divider().padding(.vertical, 4)
-                Text(accountCopy("历史数据从「未归属」开始分配",
-                                 "Legacy records start out unassigned; classify them when you know where they belong"))
+                Text(accountCopy("历史数据先进入「待确认记录」，确认归属后再归类",
+                                 "Legacy records wait in “Pending assignment”; classify them once you know where they belong"))
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -412,12 +418,22 @@ struct BrokerageAccountClassificationSheet: View {
 
     let onAssigned: ([SymbolID]) -> Void
     var initialDestination: BrokerageAccountID = .financing
+    var sourceAccountID: BrokerageAccountID = .unassigned
+    var initialSymbol: SymbolID?
+    var initialTransactionIDs: Set<UUID>?
 
-    /// What one row is moving. `nil` ids means the whole ledger.
+    /// What one row is moving, said outright rather than inferred.
+    ///
+    /// `wholeLedger` is the mode, and `transactionIDs` only has a meaning
+    /// inside the trade mode. A set that happens to hold every remaining trade
+    /// is still a *selection*: the whole point of the mode is that the user
+    /// chose one, and the store moves a selection without its plans. Deriving
+    /// the mode from `ids == allIDs` would silently rewrite that choice into
+    /// the one operation that can be refused for a pre-existing target record.
     private struct RowSelection: Equatable {
-        var transactionIDs: Set<UUID>?
+        var transactionIDs: Set<UUID>
         var wholeLedger = false
-        var isExpanded = false
+        static let whole = RowSelection(transactionIDs: [], wholeLedger: true)
     }
 
     @State private var destination: BrokerageAccountID = .financing
@@ -439,9 +455,9 @@ struct BrokerageAccountClassificationSheet: View {
     /// ledger, read through the store's public accessor rather than the mirrored
     /// arrays — so this list is the same whether or not 未归属 is selected.
     private var sourceItems: [WatchItem] {
-        let portfolio = appState.watchlist.brokeragePortfolio(for: .unassigned)
+        let portfolio = appState.watchlist.brokeragePortfolio(for: sourceAccountID)
         return (portfolio.items + portfolio.retainedHistoryItems)
-            .filter { $0.supportsPosition && ($0.hasPositionHistory || !$0.plans.isEmpty || !$0.events.isEmpty || $0.thesis != nil) }
+            .filter { $0.supportsPosition && $0.hasPositionHistory && (initialSymbol == nil || $0.symbol == initialSymbol) }
             .sorted { $0.symbol.displayCode < $1.symbol.displayCode }
     }
 
@@ -461,7 +477,12 @@ struct BrokerageAccountClassificationSheet: View {
         .frame(minWidth: 520, minHeight: 460)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
-            destination = initialDestination
+            destination = initialDestination == sourceAccountID
+                ? AccountIdentity.destinations.first { $0 != sourceAccountID } ?? .financing
+                : initialDestination
+            if selection.isEmpty, let symbol = initialSymbol, let ids = initialTransactionIDs {
+                selection[symbol] = RowSelection(transactionIDs: ids)
+            }
             backupBlocked = !appState.isMainWindowDemo && !appState.localBackups.isAvailable
         }
     }
@@ -470,8 +491,13 @@ struct BrokerageAccountClassificationSheet: View {
         VStack(alignment: .leading, spacing: 3) {
             Text(accountCopy("账户归属", "Account classification"))
                 .font(.system(size: 13, weight: .semibold))
-            Text(accountCopy("按标的整体账本或按成交分配；计划与事件跟随整体账本移动",
-                             "Assign a whole ledger or chosen trades; plans and events follow the whole ledger"))
+            Text(accountCopy("「整体账本」连同该标的的计划、事件等上下文一起移动；「选择成交」只整理成交，计划留在原账本。",
+                             "Whole ledger moves the instrument's plans, events and other context with it; choosing trades moves only those trades and leaves the plans behind."))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(accountCopy("持仓账户由成交记录确定；旧卡片标签保留在历史中，不影响账户统计。",
+                             "Holdings follow their recorded trades. Legacy card labels remain in history and do not affect account totals."))
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -506,10 +532,10 @@ struct BrokerageAccountClassificationSheet: View {
             Divider()
             if sourceItems.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(accountCopy("未归属没有可整理的持仓", "Nothing left to classify"))
+                    Text(accountCopy("「待确认记录」没有可整理的持仓", "Nothing left to classify"))
                         .font(.system(size: 12, weight: .medium))
-                    Text(accountCopy("持仓、成交历史和尚未归属的计划会出现在这里。",
-                                     "Positions, trade history and unassigned plans appear here."))
+                    Text(accountCopy("缺少可靠账户信息的历史成交会出现在这里。计划的执行账户在计划中单独设置。",
+                                     "Historical trades without reliable account ownership appear here. A plan's execution default is set on the plan."))
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
@@ -532,9 +558,9 @@ struct BrokerageAccountClassificationSheet: View {
     private var destinationBar: some View {
         HStack(spacing: 8) {
             HStack(spacing: 5) {
-                Image(systemName: AccountIdentity.symbolName(.unassigned))
+                Image(systemName: AccountIdentity.symbolName(sourceAccountID))
                     .font(.system(size: 11))
-                Text(AccountIdentity.title(.unassigned))
+                Text(AccountIdentity.title(sourceAccountID))
                     .font(.system(size: 11, weight: .medium))
                 Text("\(sourceItems.count)")
                     .font(.system(size: 10, design: .monospaced))
@@ -547,7 +573,7 @@ struct BrokerageAccountClassificationSheet: View {
             Image(systemName: "arrow.right").font(.system(size: 10)).foregroundStyle(.secondary)
 
             Picker("", selection: $destination) {
-                ForEach(AccountIdentity.destinations, id: \.self) { account in
+                ForEach(AccountIdentity.destinations.filter { $0 != sourceAccountID }, id: \.self) { account in
                     Text(AccountIdentity.title(account)).tag(account)
                 }
             }
@@ -564,8 +590,8 @@ struct BrokerageAccountClassificationSheet: View {
     // MARK: Row
 
     private func row(_ item: WatchItem) -> some View {
-        let state = selection[item.symbol] ?? RowSelection(transactionIDs: nil)
-        let isWhole = state.wholeLedger || state.transactionIDs == nil
+        let state = selection[item.symbol] ?? RowSelection(transactionIDs: [])
+        let isWhole = state.wholeLedger
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Button {
@@ -599,24 +625,33 @@ struct BrokerageAccountClassificationSheet: View {
                 // An existing margin annotation is shown, never inferred: the
                 // sheet reports what the record says, and moving an instrument
                 // to 融资账号 does not itself mark anything as margin-funded.
+                // The tag is tested against the ledger this sheet lists — the
+                // old per-portion label is historical evidence, not a scope.
                 FundingSourceTag(source: item.positionAllocation?.portions.first?.fundingSource,
-                    account: item.positionAllocation?.portions.first?.brokerageAccountID ?? .unassigned)
+                    account: sourceAccountID)
 
                 Menu {
                     Button(accountCopy("整体账本", "Whole ledger")) {
-                        selection = [item.symbol: RowSelection(transactionIDs: Set(item.materializedTransactions().map(\.id)),
-                                                              wholeLedger: true, isExpanded: false)]
+                        selection = [item.symbol: .whole]
                     }
-                    if item.materializedTransactions().count > 1 {
+                    // Offered whenever there is anything to select — one trade
+                    // included. Hiding it below two trades is what made the last
+                    // remaining trade impossible to move as a selection, and it
+                    // is exactly the case where the whole-ledger path is the one
+                    // the destination tends to refuse.
+                    if !item.materializedTransactions().isEmpty {
                         Button(accountCopy("选择成交…", "Choose trades…")) {
-                            let selected = selection[item.symbol]?.transactionIDs ?? []
-                            selection = [item.symbol: RowSelection(transactionIDs: selected, isExpanded: true)]
+                            let previous = selection[item.symbol]
+                            let selected = previous.map { previous in
+                                previous.wholeLedger ? [] : previous.transactionIDs
+                            } ?? []
+                            selection = [item.symbol: RowSelection(transactionIDs: selected)]
                         }
                     }
                 } label: {
                     Text(isWhole ? accountCopy("整体账本", "Whole ledger")
-                                 : accountCopy("\(state.transactionIDs?.count ?? 0) 笔成交",
-                                               "\(state.transactionIDs?.count ?? 0) trades"))
+                                 : accountCopy("已选 \(state.transactionIDs.count) 笔",
+                                               "\(state.transactionIDs.count) selected"))
                         .font(.system(size: 10))
                 }
                 .menuStyle(.borderlessButton)
@@ -630,9 +665,9 @@ struct BrokerageAccountClassificationSheet: View {
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                transactionRows(item, selected: state.transactionIDs ?? [])
-                Text(accountCopy("部分移动：计划与事件保留在未归属，本版本仅移动成交与对应持仓。",
-                                 "Partial move: plans and events stay unassigned; only the trades and their position move."))
+                transactionRows(item, selected: state.transactionIDs)
+                Text(accountCopy("部分移动：只移动所选成交与对应持仓，计划、事件与元数据保留在原账本。",
+                                 "Partial move: only the chosen trades and their position move; plans, events and metadata stay in the original ledger."))
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -665,7 +700,7 @@ struct BrokerageAccountClassificationSheet: View {
                             .font(.system(size: 10, design: .monospaced))
                         Spacer(minLength: 4)
                         FundingSourceTag(source: transaction.fundingSource,
-                            account: transaction.brokerageAccountID ?? .unassigned)
+                            account: sourceAccountID)
                     }
                     .contentShape(Rectangle())
                 }
@@ -707,8 +742,8 @@ struct BrokerageAccountClassificationSheet: View {
             return accountCopy("选择要移动的标的", "Pick the instruments to move")
         }
         let trades = chosen.reduce(0) { total, symbol in
-            guard let ids = selection[symbol]?.transactionIDs else { return total }
-            return total + ids.count
+            guard let state = selection[symbol], !state.wholeLedger else { return total }
+            return total + state.transactionIDs.count
         }
         let target = AccountIdentity.title(destination)
         return trades == 0
@@ -725,6 +760,7 @@ struct BrokerageAccountClassificationSheet: View {
     private var canConfirm: Bool {
         !isWorking && !backupBlocked
             && appState.watchlist.brokerageAccountsEnabled
+            && destination != sourceAccountID
             && !chosenSymbols.isEmpty
     }
 
@@ -734,18 +770,18 @@ struct BrokerageAccountClassificationSheet: View {
 
     private func isChosen(_ item: WatchItem) -> Bool {
         guard let state = selection[item.symbol] else { return false }
-        return state.wholeLedger || !(state.transactionIDs ?? []).isEmpty
+        return state.wholeLedger || !state.transactionIDs.isEmpty
     }
 
     private func toggle(_ item: WatchItem) {
         if isChosen(item) {
-            selection[item.symbol] = RowSelection(transactionIDs: nil, isExpanded: selection[item.symbol]?.isExpanded ?? false)
+            selection[item.symbol] = nil
         } else {
-            // Whole ledger by default: it is the honest default, because the
-            // store cannot reconstruct an instrument's plan/event ownership once
-            // a subset of its trades has moved.
-            let all = Set(item.materializedTransactions().map(\.id))
-            selection = [item.symbol: RowSelection(transactionIDs: all, wholeLedger: true, isExpanded: false)]
+            // Whole ledger by default: it is the honest default, because
+            // 待确认记录 holds context — plans, events, the thesis — that only
+            // a whole-ledger move carries. The trade mode stays one menu click
+            // away, and entering it is never undone by counting the trades.
+            selection = [item.symbol: .whole]
         }
     }
 
@@ -753,11 +789,16 @@ struct BrokerageAccountClassificationSheet: View {
         let existing = selection[item.symbol]
         selection = [:]
         var state = existing ?? RowSelection(transactionIDs: [])
-        var ids = state.transactionIDs ?? []
-        if ids.contains(transaction.id) { ids.remove(transaction.id) } else { ids.insert(transaction.id) }
-        state.transactionIDs = ids
-        state.wholeLedger = ids == Set(item.materializedTransactions().map(\.id))
-        state.isExpanded = true
+        if state.transactionIDs.contains(transaction.id) {
+            state.transactionIDs.remove(transaction.id)
+        } else {
+            state.transactionIDs.insert(transaction.id)
+        }
+        // Toggling inside the trade list is a statement about the *mode*: the
+        // row keeps moving selected trades even when the user happens to tick
+        // every remaining one. "All of them" is not the same operation as
+        // "the ledger", and only the menu can ask for the latter.
+        state.wholeLedger = false
         selection[item.symbol] = state
     }
 
@@ -780,14 +821,21 @@ struct BrokerageAccountClassificationSheet: View {
         var assigned: [SymbolID] = []
         var refused: [SymbolID] = []
         // Selection is one instrument at a time; each classification is atomic.
-        appState.watchlist.withBrokerageAccount(.unassigned) {
+        appState.watchlist.withBrokerageAccount(sourceAccountID) {
             for symbol in targets {
-                let ids = selection[symbol]?.wholeLedger == true ? nil : selection[symbol]?.transactionIDs
-                let ok = appState.watchlist.assignBrokerageRecords(
-                    for: symbol,
-                    transactionIDs: ids,
-                    to: destination
-                )
+                // The mode is taken from the row and handed over as a request:
+                // a whole ledger, or these exact trades. An empty selection is
+                // never submitted — there is nothing to move, and asking the
+                // store for it would only be answered with a refusal.
+                guard let state = selection[symbol],
+                      state.wholeLedger || !state.transactionIDs.isEmpty else { continue }
+                let request: BrokerageOwnership.ClassificationRequest = state.wholeLedger
+                    ? .wholeLedger
+                    : .selectedTrades(state.transactionIDs)
+                let ok = sourceAccountID == .unassigned
+                    ? appState.watchlist.assignBrokerageRecords(for: symbol, request: request, to: destination)
+                    : appState.watchlist.correctBrokerageOwnership(for: symbol, request: request,
+                        from: sourceAccountID, to: destination)
                 if ok { assigned.append(symbol) } else { refused.append(symbol) }
             }
         }
@@ -806,8 +854,8 @@ struct BrokerageAccountClassificationSheet: View {
 
         let names = refused.map(\.displayCode).joined(separator: "、")
         errorMessage = accountCopy(
-            "\(names) 未能分配：该标的的成交顺序无法形成有效持仓，或目标账号已有冲突记录。选择已保留，可改用整体账本重试。",
-            "\(names) could not be assigned: the trades do not replay to a valid chronology, or the destination already holds a conflicting record. Your selection was kept — try the whole ledger."
+            "\(names) 未能归类：请核对是否遗漏了相关买卖成交、份额是否需要核对，以及资金方式是否符合目标账户。整体迁移还要求目标记录没有冲突。选择已保留，数据未改变。",
+            "\(names) could not be classified. Check related buys and sells, allocation reconciliation, and the destination's permitted funding. A whole move also requires no conflicting destination record. Your selection was kept and the data was unchanged."
         )
     }
 
@@ -857,67 +905,41 @@ struct BrokerageClassificationFooterNote: View {
 
 // MARK: - Compact account tag
 
-/// The inline account tag: a dot, the account's own name, and a hairline
-/// chevron, opening a three-item menu.
+/// The inline account tag: a dot and the account's own name.
 ///
 /// It answers one question — which ledger does this row belong to — and answers
 /// nothing else. There are no counts, no totals, and no management affordance:
 /// a number here would turn an identity into a figure and invite reading the
-/// tag as a summary, and a fourth menu entry would re-open the switcher the
-/// toolbar already owns. The dot keeps the account's own colour and never the
+/// tag as a summary. The dot keeps the account's own colour and never the
 /// orange margin-funding tint, which is a fact about a trade rather than a place
 /// money is kept.
+///
+/// It is deliberately *not* a control. It used to open a switcher that wrote
+/// the legacy per-portion label, which never moved a trade and could only make
+/// the label disagree with the ledger underneath it; the tag now only states
+/// where the shares are. Moving a holding is the historical classification
+/// entrance, not a relabel.
 struct PositionAccountTag: View {
     let account: BrokerageAccountID
-    let isEnabled: Bool
-    let onSelect: (BrokerageAccountID) -> Void
 
     var body: some View {
-        Menu {
-            ForEach(BrokerageAccountID.allCases, id: \.self) { choice in
-                Button {
-                    onSelect(choice)
-                } label: {
-                    // A plain title plus a checkmark on the current choice; the
-                    // menu system supplies the checkmark, so it is added here as
-                    // a label rather than as a custom row.
-                    if choice == account {
-                        Label(AccountIdentity.title(choice), systemImage: "checkmark")
-                    } else {
-                        Text(AccountIdentity.title(choice))
-                    }
-                }
-                .accessibilityLabel(accountCopy("切换到\(AccountIdentity.title(choice))",
-                                                "Switch to \(AccountIdentity.title(choice))"))
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(AccountIdentity.dotColor(account))
-                    .frame(width: 5, height: 5)
-                Text(AccountIdentity.title(account))
-                    .font(.system(size: 10, weight: .medium))
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 7, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(AccountIdentity.dotColor(account).opacity(0.07))
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        HStack(spacing: 4) {
+            Circle()
+                .fill(AccountIdentity.dotColor(account))
+                .frame(width: 5, height: 5)
+            Text(AccountIdentity.title(account))
+                .font(.system(size: 10, weight: .medium))
+                .lineLimit(1)
         }
-        .buttonStyle(.plain)
-        .menuStyle(.borderlessButton)
-        // The label already draws its own chevron, so the native indicator would
-        // be a second one saying the same thing.
-        .menuIndicator(.hidden)
-        .disabled(!isEnabled)
-        .accessibilityLabel(accountCopy("账号：\(AccountIdentity.title(account))，打开账号选择",
-                                        "Account: \(AccountIdentity.title(account)); open account choices"))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(AccountIdentity.dotColor(account).opacity(0.07))
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accountCopy("账号：\(AccountIdentity.title(account))",
+                                        "Account: \(AccountIdentity.title(account))"))
     }
 }
 

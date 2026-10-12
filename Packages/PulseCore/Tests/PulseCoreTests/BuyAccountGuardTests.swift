@@ -100,7 +100,7 @@ struct BuyAccountGuardTests {
             #expect(marked.portions.first?.fundingSource == .margin)
             #expect(store.brokeragePortfolio(for: .financing).items.first?.positionAllocation == marked)
             let before = store.syncSnapshot()
-            #expect(throws: PositionAllocationError.incompatibleAccountFunding) {
+            #expect(throws: PositionAllocationError.accountOwnershipRequiresClassification) {
                 try store.withBrokerageAccount(.financing) {
                     _ = try store.setPositionBrokerageAccount(symbol: symbol, portionID: marked.portions[0].id,
                         accountID: .mengmeng, expectedRevision: marked.revision)

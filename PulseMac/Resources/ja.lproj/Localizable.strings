@@ -493,7 +493,7 @@
 
 /* Trade plans: the new-plan chooser sheet */
 "plan.newPlan" = "計画を追加";
-"plan.new.account" = "作成先の口座：%@";
+"plan.new.account" = "既定の執行アカウント：%@ に設定できます";
 "plan.new.empty" = "コードか名称を入力して銘柄を検索します。ウォッチリストの銘柄は下に並びます。";
 "plan.new.noMatches" = "一致する銘柄がありません。名前またはコードをお試しください。";
 "plan.new.searchError" = "検索に失敗しました：%@";
@@ -546,7 +546,7 @@
 "plan.execution.record" = "約定を記録";
 "plan.execution.recordAndReview" = "記録して振り返り";
 "plan.execution.note" = "メモ（任意）";
-"plan.execution.poolHelp" = "%@ に記録されます。ここはブローカーがすでに実行した約定を書くだけで、FFF が注文を出すことはありません。";
+"plan.execution.poolHelp" = "保有目的：%@。すでに成立した約定を記録します。";
 "plan.execution.notAnOrder" = "記録のみです。ここからブローカーに何かが送られることはありません。";
 "plan.execution.useRemaining" = "残り %@ を入力";
 "plan.execution.useRemainingHelp" = "この計画でまだ約定していない数量を入力します";
@@ -576,6 +576,15 @@
 "plan.detail.change.conditions" = "条件 %ld 件";
 "plan.detail.change.kind" = "売買 %@";
 "plan.detail.change.status" = "状態 %@";
+
+/* Trade plans: the plan's default execution account (an intention, not the ledger it is stored in). */
+"plan.executionAccount" = "既定の執行アカウント";
+"plan.executionAccount.help" = "これは意図であり制限ではありません。約定を記録する際に別のアカウントを選べます。";
+"plan.executionAccount.named" = "既定の執行：%@";
+"plan.executionAccount.choose" = "約定時に選択";
+"plan.defaultExecution.caption" = "既定の執行：%@";
+"plan.fillAccount.named" = "約定アカウント：%@";
+"plan.detail.change.executionAccount" = "執行アカウント %@";
 
 "settings.mcp.row" = "MCP";
 "settings.mcp.title" = "MCP";
@@ -1250,7 +1259,7 @@
 /* Account draft preservation */
 "draft.account.kept" = "%@の下書きを保持しています。保存するには戻ってください。";
 "draft.account.resume" = "%@に戻る";
-"account.unassigned" = "未分類";
+"account.unassigned" = "未確認の記録";
 "workspace.risk" = "リスク計算";
 "workspace.risk.help" = "購入リスクを計算";
 "workspace.retry" = "再試行";
@@ -1481,3 +1490,4 @@
 /* Trade plans: backfill mode and an unidentifiable quote currency. */
 "plans.backfill.date" = "実際の約定日";
 "plans.unit.unknownCurrency" = "通貨不明";
+"plan.executionAccount.budgetPending" = "既定口座が未選択の計画 %d 件は口座予算に含まれません。";

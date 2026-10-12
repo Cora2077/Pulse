@@ -109,21 +109,25 @@ struct PoolBudgetInput {
             $0.plan.status == .active && filter.includes($0.symbol.currencyCode)
                 && (planIDs == nil || planIDs!.contains($0.id))
         }
-        // Which group consumes each bound plan.
+        // Which group consumes each plan.
         //
-        // A binding (`positionPortionID`) names one exact card. The plan's own
-        // ledger is where the write lands, but the card it can *reach* is the
-        // one it names — the verified card inside that same ledger. Its display
-        // attribution (`brokerageAccountID ?? owner ledger`) decides which
-        // projection group consumes the plan, so the row the plan is judged
-        // against always contains that card.
+        // A plan belongs to the account it *defaults to executing* in — the one
+        // the user named — and to no named group when they named none. The
+        // ledger it is stored in (`entry.accountID`) is an internal namespace,
+        // so it never decides which group's cash a plan is judged against.
         //
-        // This is a routing decision only. It never moves a share between
+        // A binding (`positionPortionID`) only adds exact source metadata: the
+        // card it names must be verified in the plan's own storage ledger, so a
+        // stale binding or an unverified allocation leaves the plan with no live
+        // source. This is a routing decision only. It never moves a share between
         // groups and never adds one anywhere: each group still consumes a card
-        // solely through that card's own display attribution below, so a
-        // holding is counted exactly once, in exactly the group its label names.
-        let projections = Self.projectionGroups(entries: candidateEntries, records: records)
-        let entries = candidateEntries.filter { accountFilter == nil || projections[ProjectionPlanKey($0)] == accountFilter }
+        // solely through the ledger's own attribution below, so a holding is
+        // counted exactly once, in exactly the ledger that holds it.
+        let projections = Self.projectionGroups(entries: candidateEntries)
+        let entries = candidateEntries.filter {
+            projections[ProjectionPlanKey($0)] != nil
+                && (accountFilter == nil || projections[ProjectionPlanKey($0)] == accountFilter)
+        }
         let accounts = accountFilter.map { [$0] } ?? BrokerageAccountID.allCases
         var results: [PoolBudgetProjection.Result] = []
         var allPositions: [PoolBudgetProjection.Position] = []
@@ -132,26 +136,27 @@ struct PoolBudgetInput {
             let plans = entries.filter { projections[ProjectionPlanKey($0)] == account }
             let planSymbols = Set(plans.map(\.symbol))
             // The bound cards whose plan projects into this group. A card only
-            // qualifies when a selected bound plan names it *and* the plan was
-            // written in the ledger that owns the card: a same-id card in
-            // another ledger must never satisfy a plan whose own ledger holds
-            // no such card.
+            // qualifies when a selected bound plan names it *and* the plan is
+            // stored in the ledger that owns the card: a same-id card in another
+            // ledger must never satisfy a plan whose own ledger holds no such
+            // card. A plan with no default account has no group and so binds no
+            // card here.
             let boundCards = Set(entries.compactMap { entry -> BoundPortionKey? in
                 guard projections[ProjectionPlanKey(entry)] == account, let portionID = entry.plan.positionPortionID,
-                      let owner = entry.accountID else { return nil }
-                return BoundPortionKey(accountID: owner, symbol: entry.symbol, portionID: portionID)
+                      let ledger = entry.accountID else { return nil }
+                return BoundPortionKey(accountID: ledger, symbol: entry.symbol, portionID: portionID)
             })
             var grouped: [SymbolID: (item: WatchItem, quantity: Double, pools: [PositionPool: Double], portions: [PositionPortion])] = [:]
             for record in records {
                 let item = record.item
                 guard item.supportsPosition, filter.includes(item.symbol.currencyCode) else { continue }
-                // Totals always use the existing attribution. Bound plans
-                // only add exact source metadata; they never add/remove shares.
+                // Totals come from the ledger's own attribution: the shares this
+                // record actually holds, grouped by the account each one was
+                // truly bought into. The retired per-portion label has no vote.
                 let shares = item.positionAccountAttribution(enclosingAccountID: record.accountID)[account] ?? [:]
                 let boundPortions = Self.verifiedPortions(of: item).filter { portion in
-                    Self.projectedAccount(of: portion, in: record) == account
-                        && boundCards.contains(BoundPortionKey(accountID: record.accountID,
-                                                              symbol: item.symbol, portionID: portion.id))
+                    boundCards.contains(BoundPortionKey(accountID: record.accountID,
+                                                        symbol: item.symbol, portionID: portion.id))
                 }
                 let quantity = shares.values.reduce(0, +)
                 // A plan-bearing symbol of this ledger keeps its row even when
@@ -205,7 +210,7 @@ struct PoolBudgetInput {
 
     // MARK: Bound-plan projection groups
 
-    /// One bound plan's plan id, paired with the group that consumes it.
+    /// One plan's plan id, paired with the group that consumes it.
     private struct ProjectionPlanKey: Hashable {
         let accountID: BrokerageAccountID
         let symbol: SymbolID
@@ -228,46 +233,26 @@ struct PoolBudgetInput {
         let portionID: UUID
     }
 
-    /// The group a verified card projects into: its own display label when it
-    /// carries one, otherwise the ledger it was read out of. This is the *same*
-    /// fallback `positionAccountAttribution` applies, so a card's group here and
-    /// its contribution to the per-label totals can never disagree.
-    private static func projectedAccount(of portion: PositionPortion,
-                                        in record: BrokerageBoardItem) -> BrokerageAccountID {
-        portion.brokerageAccountID ?? record.accountID
-    }
-
-    /// Where each bound entry's plan projects.
+    /// Where each entry's plan projects: the account it defaults to executing
+    /// in, and nothing else.
     ///
-    /// The lookup is deliberately exact: the named card must exist among the
-    /// *verified* cards of a record in the plan's own ledger carrying the same
-    /// instrument. When it does, the card's group consumes the plan. When it
-    /// does not — a stale binding, an unverified allocation, or a plan whose
-    /// ledger holds no such card — the plan falls back to its owner ledger with
-    /// no source, which the projection reports as an over-sell rather than
-    /// quietly funding it from a card in another book.
+    /// A binding (`positionPortionID`) never changes that group. It gates exact
+    /// source metadata only — the card it names must be verified in the plan's
+    /// own storage ledger — so a stale binding or an unverified allocation
+    /// leaves the plan with no live source, which the calculator reports as an
+    /// over-sell rather than quietly funding it from a card in another book.
     ///
-    /// `entry.accountID` is never rewritten: it stays the ledger the plan was
-    /// written in, which is where any fill will be recorded.
+    /// A plan naming no default account projects into no named group, so `nil`
+    /// cash is never claimed on its behalf. `entry.accountID` is never
+    /// rewritten: it stays the plan's storage identity; fills use their actual
+    /// execution accounts.
     @MainActor
-    private static func projectionGroups(entries: [TradePlanEntry],
-                                         records: [BrokerageBoardItem]) -> PlanProjections {
-        var portionOwners: [BoundPortionKey: BrokerageAccountID] = [:]
-        for record in records {
-            for portion in verifiedPortions(of: record.item) {
-                let key = BoundPortionKey(accountID: record.accountID, symbol: record.item.symbol,
-                                          portionID: portion.id)
-                portionOwners[key] = projectedAccount(of: portion, in: record)
-            }
-        }
+    private static func projectionGroups(entries: [TradePlanEntry]) -> PlanProjections {
         var projections: PlanProjections = [:]
-        for entry in entries { projections[ProjectionPlanKey(entry)] = entry.accountID ?? .unassigned }
         for entry in entries {
-            // An entry with no ledger cannot name a card in one; it keeps the
-            // unassigned group, which is where such a plan is displayed.
-            guard let portionID = entry.plan.positionPortionID, let ledger = entry.accountID else { continue }
-            let key = BoundPortionKey(accountID: ledger, symbol: entry.symbol, portionID: portionID)
-            projections[ProjectionPlanKey(entry)] = portionOwners[key] ?? ledger
+            if let account = entry.plan.executionAccountID, account != .unassigned {
+                projections[ProjectionPlanKey(entry)] = account
+            }
         }
         return projections
     }
@@ -416,6 +401,16 @@ struct CapitalPanel: View {
         let currencies = result.currencies.filter(Self.hasContent)
         VStack(alignment: .leading, spacing: 8) {
             header
+            if appState.watchlist.brokerageAccountsEnabled {
+                let pending = BrokerageBoardReader.entries(store: appState.watchlist).filter {
+                    $0.plan.status == .active && $0.remainingQuantity > 0 && $0.plan.executionAccountID == nil
+                }.count
+                if pending > 0 {
+                    Text(PulseLocalization.localizedString("plan.executionAccount.budgetPending", pending))
+                        .font(PoolType.label).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             if currencies.isEmpty {
                 Text(PulseLocalization.localizedString("poolBudget.empty.noCurrency"))
                     .font(PoolType.label).foregroundStyle(.secondary)
@@ -1312,16 +1307,16 @@ struct PoolScenarioView: View {
     }
 
     var body: some View {
-        let allEntries = appState.watchlist.tradePlanEntries
+        let allEntries = BrokerageBoardReader.entries(store: appState.watchlist)
             .filter { $0.plan.status == .active && $0.remainingQuantity > 0 }
             .sorted { $0.plan.updatedAt > $1.plan.updatedAt }
-        let input = PoolBudgetInput(appState: appState, currencyFilter: currencyFilter)
+        let input = PoolBudgetInput(appState: appState, currencyFilter: currencyFilter, allAccounts: true)
         let visibleEntries = input.entries.filter { $0.remainingQuantity > 0 }
             .sorted { $0.plan.updatedAt > $1.plan.updatedAt }
         let selected = visibleEntries.filter { selectedPlanIDs.contains($0.id) }
         let hiddenCount = selectedPlanIDs.count - selected.count
         let result = PoolBudgetInput(appState: appState, currencyFilter: currencyFilter,
-                                     planIDs: selectedPlanIDs).calculate()
+                                     planIDs: selectedPlanIDs, allAccounts: true).calculate()
 
         VStack(alignment: .leading, spacing: 10) {
             HStack {

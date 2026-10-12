@@ -14,11 +14,11 @@ import Foundation
 /// adds a per-portion brokerage-account label; version 15 records the account
 /// selected for a buy on its transaction; version 16 identifies the source account
 /// of a cross-account plan fill; version 17 ties a sell plan to one existing
-/// position card.
+/// position card; version 18 adds the account a plan intends to execute in.
 /// Encoders keep older versions when the newer fields are absent.
 public enum WatchlistSyncWireCodec {
     public static let formatIdentifier = "pulse.device-sync"
-    public static let currentVersion = 17
+    public static let currentVersion = 18
     private static let reviewVersion = 4
     private static let tradingMetadataVersion = 5
     private static let allocationVersion = 6
@@ -41,6 +41,11 @@ public enum WatchlistSyncWireCodec {
     /// reader that stops at the declared version would drop it and let the plan
     /// widen back to its whole pool, so it is never declared below this.
     private static let positionSalePlanVersion = 17
+    /// The version a plan's intended execution account requires. It is the
+    /// newest field and so outranks every other threshold, including the card
+    /// binding it sits beside: raising `currentVersion` for this field must not
+    /// move any other payload off the version it already declared.
+    private static let planExecutionAccountVersion = 18
 
     public struct File: Sendable, Equatable {
         public let format: String
@@ -169,7 +174,19 @@ public enum WatchlistSyncWireCodec {
         } || snapshot.allAccountItems.flatMap(\.transactions).contains {
             $0.planExecution?.hasPositionPortionMetadata == true
         }
-        let version = hasPositionSalePlan
+        // A plan's intended execution account can live in the same three places
+        // the binding does — the plan itself, a revision's configuration, and a
+        // fill's immutable snapshot — and all three are scanned, named accounts
+        // included. It is the newest field, so a payload mixing it with a
+        // binding declares 18 rather than 17.
+        let hasPlanExecutionAccount = snapshot.allAccountItems.contains { item in
+            item.plans.contains { $0.hasExecutionAccountMetadata }
+        } || snapshot.allAccountItems.flatMap(\.transactions).contains {
+            $0.planExecution?.hasExecutionAccountMetadata == true
+        }
+        let version = hasPlanExecutionAccount
+            ? planExecutionAccountVersion
+            : hasPositionSalePlan
             ? positionSalePlanVersion
             : snapshot.allAccountItems.flatMap(\.transactions).contains { $0.planExecution?.sourceAccountID != nil }
             ? planSourceAccountVersion
@@ -279,6 +296,18 @@ public enum WatchlistSyncWireCodec {
         }
         let items = file.snapshot.items + file.snapshot.retainedHistoryItems
         let transactions = items.flatMap(\.transactions)
+        // A plan's intended execution account is the newest field. It is
+        // checked first and against the whole snapshot, named accounts
+        // included, because a payload claiming an older version while carrying
+        // one is claiming a reader that would drop the account the user named.
+        if file.version < planExecutionAccountVersion,
+           file.snapshot.allAccountItems.contains(where: { item in
+               item.plans.contains { $0.hasExecutionAccountMetadata }
+           }) || file.snapshot.allAccountItems.flatMap(\.transactions).contains(where: {
+               $0.planExecution?.hasExecutionAccountMetadata == true
+           }) {
+            throw CodecError.unsupportedVersion(planExecutionAccountVersion)
+        }
         // A sell plan's tie to one card is the newest field, and it is the one
         // whose loss changes behaviour rather than just losing an annotation:
         // without it the plan falls back to consuming its whole pool. It is
@@ -452,6 +481,7 @@ public enum WatchlistSyncWireCodec {
                   configuration.quantity.isFinite, configuration.quantity > 0,
                   configuration.createdAt.timeIntervalSince1970.isFinite,
                   (configuration.note.map { $0.count <= 4_000 } ?? true),
+                  TradePlanConfiguration.isValidExecutionAccount(configuration.executionAccountID),
                   TradePlan.hasValidPositionPortionBinding(
                       kind: configuration.kind, positionPool: configuration.positionPool,
                       positionPortionID: configuration.positionPortionID
@@ -466,14 +496,15 @@ public enum WatchlistSyncWireCodec {
     }
 
     /// The immutable plan snapshot on a fill has to be readable on its own,
-    /// including any event references its conditions carry and the card it was
-    /// tied to.
+    /// including any event references its conditions carry, the card it was
+    /// tied to, and the account it intended to execute in.
     private static func isValidPlanExecution(_ execution: TradePlanExecution) -> Bool {
         let configuration = execution.configuration
         guard configuration.price.isFinite, configuration.price > 0,
               configuration.quantity.isFinite, configuration.quantity > 0,
               configuration.createdAt.timeIntervalSince1970.isFinite,
               (configuration.note.map { $0.count <= 4_000 } ?? true),
+              TradePlanConfiguration.isValidExecutionAccount(configuration.executionAccountID),
               TradePlan.hasValidPositionPortionBinding(
                   kind: configuration.kind, positionPool: configuration.positionPool,
                   positionPortionID: configuration.positionPortionID

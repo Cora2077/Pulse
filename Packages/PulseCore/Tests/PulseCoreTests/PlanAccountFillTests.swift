@@ -278,11 +278,14 @@ struct PlanAccountFillTests {
     @Test("A plan sell stays in the source ledger and a cross-account sale is refused")
     func planSellsStayInTheSourceLedger() throws {
         try withStore { store in
-            // A buy of 20 lands in the source ledger, where the sell plan lives.
+            // The plan's own ledger is a real account, because a new buy must
+            // name one: `nil` resolves to the selected ledger, and the pending
+            // `unassigned` book is not a place a new fill may be filed.
+            store.selectBrokerageAccount(.financing)
             let buy = TradePlan(kind: .buy, price: 10, quantity: 20, positionPool: .tactical)
             #expect(store.setTradePlan(buy, for: symbol))
             _ = try fill(store, buy, quantity: 20, funding: .own)
-            #expect(sourceItem(store)?.positionQuantity == 20)
+            #expect(targetItem(store, .financing)?.positionQuantity == 20)
 
             let sell = TradePlan(kind: .sell, price: 12, quantity: 10, positionPool: .tactical)
             #expect(store.setTradePlan(sell, for: symbol))
@@ -291,15 +294,16 @@ struct PlanAccountFillTests {
             // rather than quietly moving shares between accounts.
             let before = store.syncSnapshot()
             #expect(throws: TradePlanExecutionError.self) {
-                try fill(store, sell, quantity: 4, account: .financing)
+                try fill(store, sell, quantity: 4, account: .mengmeng)
             }
             #expect(store.syncSnapshot() == before, "a cross-account sale must not half-apply")
 
             // Without a destination the sale records in the source ledger.
             let recorded = try fill(store, sell, quantity: 4)
-            #expect(recorded.brokerageAccountID == nil || recorded.brokerageAccountID == .unassigned)
-            #expect(sourceItem(store)?.positionQuantity == 16)
-            #expect(targetItem(store, .financing)?.transactions.isEmpty != false)
+            #expect(recorded.brokerageAccountID == .financing)
+            #expect(targetItem(store, .financing)?.positionQuantity == 16)
+            #expect(targetItem(store, .mengmeng)?.transactions.isEmpty != false)
+            store.selectBrokerageAccount(.unassigned)
         }
     }
 
@@ -474,9 +478,10 @@ struct PlanAccountFillTests {
 
     @Test("Snapshots without a source field stay readable at their declared version")
     func oldSnapshotsStayReadable() throws {
-        // A same-account fill never records a source account, so it stays on the
-        // plan-workflow version and remains readable by builds older than the
-        // source-account field.
+        // Legacy records — written before the store named a fill's plan source,
+        // and still readable here — genuinely have no source field, so they stay
+        // on the plan-workflow version. New fills always name their source; see
+        // the store-produced assertion at the end.
         let configuration = TradePlanConfiguration(plan: TradePlan(kind: .buy, price: 1, quantity: 1))
         let local = PositionTransaction(
             kind: .buy, price: 1, quantity: 1,
@@ -511,6 +516,25 @@ struct PlanAccountFillTests {
         #expect(throws: WatchlistSyncWireCodec.CodecError.unsupportedVersion(sourceAccountVersion)) {
             try WatchlistSyncWireCodec.decode(JSONSerialization.data(withJSONObject: object))
         }
+
+        // A fill the store writes itself names its plan's ledger even when both
+        // live in the same account, so it declares the source-account version
+        // rather than relying on where the record happens to be stored.
+        let suite = "Pulse.PlanAccountFill.same-account-source.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = WatchlistStore(defaults: defaults, defaultGroupName: "Test")
+        store.enableBrokerageAccounts()
+        store.add(SymbolInfo(symbol: symbol, name: "Apple"))
+        store.selectBrokerageAccount(.financing)
+        store.add(SymbolInfo(symbol: symbol, name: "Apple"))
+        let target = plan(10)
+        #expect(store.setTradePlan(target, for: symbol))
+        let sameAccount = try fill(store, target, quantity: 10, funding: .margin)
+        #expect(sameAccount.planExecution?.sourceAccountID == .financing)
+        #expect(sameAccount.brokerageAccountID == .financing)
+        let ownWire = try WatchlistSyncWireCodec.encode(deviceID: "fixture", snapshot: store.syncSnapshot())
+        #expect(try WatchlistSyncWireCodec.decode(ownWire).version == sourceAccountVersion)
     }
 
     @Test("An archive carries the plan source and its version gate")

@@ -390,7 +390,7 @@ struct TradeEntryView: View {
     /// ledger it was built against while the store keeps moving — and reading
     /// the global selection would answer for a different account's money.
     private var effectiveAccount: BrokerageAccountID {
-        editing?.brokerageAccountID ?? draftAccount
+        draftAccount
     }
 
     /// Whether this draft edits a record that belongs to the mengmeng account.
@@ -789,14 +789,24 @@ struct TradeEntryView: View {
             // A new sell: the existing non-throwing path, untouched. A sale
             // consumes portions and never chooses its own funding here.
             guard let item else { return }
-            didSave = true
-            appState.watchlist.addTransaction(item.symbol, PositionTransaction(
+            let transaction = PositionTransaction(
                 kind: .sell,
                 price: price,
                 quantity: quantity,
                 date: date,
                 fee: parsedFee
-            ))
+            )
+            do {
+                if appState.watchlist.brokerageAccountsEnabled {
+                    _ = try appState.watchlist.addNamedTransaction(item.symbol, transaction, account: draftAccount)
+                } else {
+                    appState.watchlist.addTransaction(item.symbol, transaction)
+                }
+            } catch {
+                errorMessage = Self.describe(error)
+                return
+            }
+            didSave = true
             route = dismissRoute
             return
         }

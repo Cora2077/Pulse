@@ -493,7 +493,7 @@
 
 /* Trade plans: the new-plan chooser sheet */
 "plan.newPlan" = "新增计划";
-"plan.new.account" = "写入账户：%@";
+"plan.new.account" = "默认执行账户可设为：%@";
 "plan.new.empty" = "输入代码或名称搜索标的。自选里的标的会直接列在下面。";
 "plan.new.noMatches" = "暂无匹配标的，请尝试名称或代码。";
 "plan.new.searchError" = "搜索失败：%@";
@@ -546,7 +546,7 @@
 "plan.execution.record" = "记录成交";
 "plan.execution.recordAndReview" = "记录并复盘";
 "plan.execution.note" = "备注（可选）";
-"plan.execution.poolHelp" = "记入 %@。这里只是记录券商已经完成的成交 —— FFF 从不发送委托。";
+"plan.execution.poolHelp" = "仓位用途：%@。这里只记录已经发生的成交。";
 "plan.execution.notAnOrder" = "仅作记账。这里不会向券商发出任何指令。";
 "plan.execution.useRemaining" = "填入剩余 %@";
 "plan.execution.useRemainingHelp" = "填入这条计划尚未成交的数量";
@@ -576,6 +576,15 @@
 "plan.detail.change.conditions" = "条件 %ld 条";
 "plan.detail.change.kind" = "方向 %@";
 "plan.detail.change.status" = "状态 %@";
+
+/* Trade plans: the plan's default execution account (an intention, not the ledger it is stored in). */
+"plan.executionAccount" = "默认执行账户";
+"plan.executionAccount.help" = "计划意向，不限制实际成交；记录成交时可另选账户。";
+"plan.executionAccount.named" = "默认执行：%@";
+"plan.executionAccount.choose" = "成交时选择";
+"plan.defaultExecution.caption" = "默认执行：%@";
+"plan.fillAccount.named" = "成交账户：%@";
+"plan.detail.change.executionAccount" = "默认执行 %@";
 
 "settings.mcp.row" = "MCP";
 "settings.mcp.title" = "MCP";
@@ -1249,7 +1258,7 @@
 /* Account draft preservation */
 "draft.account.kept" = "草稿已保留在「%@」，返回该账号后可保存。";
 "draft.account.resume" = "返回%@";
-"account.unassigned" = "未归属";
+"account.unassigned" = "待确认记录";
 "workspace.risk" = "风险计算";
 "workspace.risk.help" = "买入风险计算";
 "workspace.retry" = "重试";
@@ -1480,3 +1489,4 @@
 /* Trade plans: backfill mode and an unidentifiable quote currency. */
 "plans.backfill.date" = "实际成交日期";
 "plans.unit.unknownCurrency" = "币种未知";
+"plan.executionAccount.budgetPending" = "还有 %d 个计划未选默认账户，暂不计入账户预算。";

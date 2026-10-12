@@ -392,20 +392,35 @@ enum TacticalBoardSelfTest {
             expect(store.syncSnapshot() == baseline, "portion-sale-render", "rendering a new draft must not mutate holdings or plans")
             let sample = TradePlan(kind: .sell, price: 12.5, quantity: 100, positionPool: .tactical, positionPortionID: portion.id)
             expect(store.setTradePlan(sample, for: symbols.tactical), "portion-sale-fixture", "valid card plan must save")
-            // Legacy labels may differ from the owning ledger. A plan must
-            // neither duplicate that holding nor borrow a lookalike elsewhere.
+            // A legacy card label may disagree with the ledger that holds it. It
+            // is historical evidence only: the totals and the plan's group must
+            // not move when it is set, and must not move back when it is cleared.
+            //
+            // The label is written straight into a snapshot rather than through
+            // `setPositionBrokerageAccount`, which is no longer a production path
+            // for this meaning — routing through it would test the writer rather
+            // than the reading rule.
             let beforeLabel = PoolBudgetInput(appState: appState, currencyFilter: "USD", allAccounts: true).calculate()
-            if let allocation = store.item(for: symbols.tactical)?.positionAllocation {
-                let labelled = try store.setPositionBrokerageAccount(symbol: symbols.tactical,
-                    portionID: portion.id, accountID: .financing, expectedRevision: allocation.revision)
+            if let allocation = store.item(for: symbols.tactical)?.positionAllocation,
+               let portionIndex = allocation.portions.firstIndex(where: { $0.id == portion.id }) {
+                expect(applyLegacyPortionLabel(store: store, symbol: symbols.tactical,
+                                               portionIndex: portionIndex, label: .financing),
+                       "portion-sale-label", "the legacy-label fixture must write")
                 let afterLabel = PoolBudgetInput(appState: appState, currencyFilter: "USD", allAccounts: true).calculate()
                 expect(beforeLabel.currencies.first?.holdingsBefore == afterLabel.currencies.first?.holdingsBefore
                        && beforeLabel.currencies.first?.holdingsAfter == afterLabel.currencies.first?.holdingsAfter,
-                       "portion-sale-label", "cross-labelled source must preserve total holdings before and after projection")
+                       "portion-sale-label", "a legacy label must preserve total holdings in the projection")
+                expect(afterLabel.currencies.first?.cashShortfall == beforeLabel.currencies.first?.cashShortfall,
+                       "portion-sale-label", "a legacy label must not move a plan into another account's cash")
                 expect(!afterLabel.overSellWarnings.contains(where: { $0.planID == sample.id }),
                        "portion-sale-label", "the exact source must remain available in its attributed group")
-                _ = try store.setPositionBrokerageAccount(symbol: symbols.tactical,
-                    portionID: portion.id, accountID: .unassigned, expectedRevision: labelled.revision)
+                expect(applyLegacyPortionLabel(store: store, symbol: symbols.tactical,
+                                               portionIndex: portionIndex, label: nil),
+                       "portion-sale-label", "clearing the legacy label must write")
+                let afterClear = PoolBudgetInput(appState: appState, currencyFilter: "USD", allAccounts: true).calculate()
+                expect(afterClear.currencies.first?.holdingsBefore == beforeLabel.currencies.first?.holdingsBefore
+                       && afterClear.currencies.first?.cashShortfall == beforeLabel.currencies.first?.cashShortfall,
+                       "portion-sale-label", "clearing a legacy label must restore the same reading")
             }
             guard let linked = store.item(for: symbols.tactical) else { return }
             for scheme in [ColorScheme.light, .dark] {
@@ -489,6 +504,26 @@ enum TacticalBoardSelfTest {
             expect(store.brokeragePortfolio(for: otherAccountID) == otherAccount,
                    "portion-sale-ui", "another ledger must stay untouched")
         } catch { report("portion-sale", error.localizedDescription) }
+    }
+
+    /// Writes one fictional legacy card label straight into a snapshot.
+    ///
+    /// The retired `setPositionBrokerageAccount` writer is deliberately not
+    /// used: this label must no longer be a production meaning, so the fixture
+    /// puts the bytes in the shape legacy data already has and lets the reading
+    /// rule be the thing under test. `label == nil` clears it again, which the
+    /// assertions need so a labelled state cannot leak into later cases.
+    private static func applyLegacyPortionLabel(store: WatchlistStore, symbol: SymbolID,
+                                                portionIndex: Int, label: BrokerageAccountID?) -> Bool {
+        var snapshot = store.syncSnapshot()
+        guard let index = snapshot.items.firstIndex(where: { $0.symbol == symbol }),
+              var allocation = snapshot.items[index].positionAllocation,
+              allocation.portions.indices.contains(portionIndex) else { return false }
+        var portions = allocation.portions
+        portions[portionIndex].brokerageAccountID = label
+        allocation.portions = portions
+        snapshot.items[index].positionAllocation = allocation
+        return store.applySyncSnapshot(snapshot)
     }
 
     /// View-only copies of a fictional card; never persisted or accounted as a
@@ -1192,29 +1227,64 @@ enum TacticalBoardSelfTest {
                "pool-header-render", "rendering the header must not change stored data")
     }
 
+    /// `accountFilter` now scopes by the ledger that really holds the shares, so
+    /// the fixture has to put shares in the named ledgers rather than only
+    /// label them.
+    ///
+    /// Two things are staged at once, and both are the point. Each named ledger
+    /// receives a real fictional buy, so 融资 and 萌萌 have something to show and
+    /// the filter has something to find. The 未归属 ledger keeps its own position
+    /// whose cards carry *disagreeing* legacy labels, staged straight into a
+    /// snapshot: those cards must still render under 未归属 and must never appear
+    /// under a named account, which is exactly what would have happened while
+    /// the label decided the group.
     private static func renderAccountTags(appState: AppState, into directory: URL) {
-        appState.watchlist.enableBrokerageAccounts()
-        let items = appState.watchlist.allItems.filter { $0.positionQuantity > 0 && $0.positionAllocation != nil }
+        let store = appState.watchlist
+        store.enableBrokerageAccounts()
+        // A real fictional holding in each named ledger, so the filter is
+        // scoped by a ledger that actually owns shares.
+        for account in [BrokerageAccountID.financing, .mengmeng] {
+            store.withBrokerageAccount(account) {
+                let symbol = SymbolID(market: .us, code: account == .financing ? "TAGFIN" : "TAGMENG")
+                store.add(SymbolInfo(symbol: symbol, name: account == .financing ? "虚构融资持仓" : "虚构萌萌持仓"))
+                store.addTransaction(symbol, .init(kind: .buy, price: 50, quantity: 20, date: .now))
+            }
+        }
+        // The 未归属 ledger's cards carry legacy labels that contradict each
+        // other and the ledger they sit in. Written as bytes, not through the
+        // retired writer: this is the pre-existing shape being guarded.
+        let items = store.allItems.filter { $0.positionQuantity > 0 && $0.positionAllocation != nil }
         for (index, item) in items.enumerated() {
             guard let allocation = item.positionAllocation, let portion = allocation.portions.first else { continue }
-            do {
-                var current = allocation
-                if index == 0, portion.quantity > 1 {
-                    current = try appState.watchlist.transferPositionPortion(symbol: item.symbol, portionID: portion.id,
+            var current = allocation
+            if index == 0, portion.quantity > 1 {
+                do {
+                    current = try store.transferPositionPortion(symbol: item.symbol, portionID: portion.id,
                         quantity: portion.quantity / 2, to: portion.pool == .tactical ? .strategic : .tactical,
                         reason: "", expectedRevision: current.revision)
-                }
-                for (offset, part) in current.portions.enumerated() {
-                    current = try appState.watchlist.setPositionBrokerageAccount(symbol: item.symbol, portionID: part.id,
-                        accountID: (index + offset) % 2 == 0 ? .financing : .mengmeng, expectedRevision: current.revision)
-                    if part.fundingSource != .own {
-                        current = try appState.watchlist.markPositionFundingSource(symbol: item.symbol,
+                } catch { report("account-tags", error.localizedDescription); continue }
+            }
+            for (offset, part) in current.portions.enumerated() {
+                guard let portionIndex = current.portions.firstIndex(where: { $0.id == part.id }) else { continue }
+                _ = applyLegacyPortionLabel(store: store, symbol: item.symbol, portionIndex: portionIndex,
+                                            label: (index + offset) % 2 == 0 ? .financing : .mengmeng)
+                current = store.item(for: item.symbol)?.positionAllocation ?? current
+                if part.fundingSource != .own {
+                    do {
+                        current = try store.markPositionFundingSource(symbol: item.symbol,
                             portionID: part.id, quantity: part.quantity, source: .own,
                             reason: "Synthetic funding display", expectedRevision: current.revision)
-                    }
+                    } catch { report("account-tags", error.localizedDescription) }
                 }
-            } catch { report("account-tags", error.localizedDescription) }
+            }
         }
+        // A legacy label that disagrees with its ledger must not pull the card
+        // into a named account's filter reading.
+        let unassignedCards = store.brokeragePortfolio(for: .unassigned).items
+            .filter { $0.positionQuantity > 0 }
+            .flatMap { $0.positionAllocation?.portions ?? [] }
+        expect(unassignedCards.contains { $0.brokerageAccountID != nil },
+               "account-tags", "the fixture must actually stage a legacy label to be meaningful")
         let cases: [(String, CGFloat, ColorScheme, BrokerageAccountID?)] = [
             ("account-tags-all", 1440, .dark, nil),
             ("account-tags-financing", 1440, .dark, .financing),
@@ -1222,7 +1292,7 @@ enum TacticalBoardSelfTest {
         ]
         let baseline = appState.watchlist.syncSnapshot()
         for (name, width, scheme, account) in cases {
-            let view = PositionPoolsView(onSelect: { _ in }, tactical: .init(currencyFilter: "USD", accountFilter: account))
+            let view = PositionPoolsView(onSelect: { _ in }, tactical: .init(currencyFilter: "*", accountFilter: account))
                 .environment(appState).environment(\.colorScheme, scheme).environment(\.locale, Locale(identifier: "zh_CN"))
                 .frame(width: width, height: 900)
             do {
@@ -2650,12 +2720,12 @@ enum TacticalBoardSelfTest {
         let ownSymbol = symbols.oversell
         let currency = ownSymbol.currencyCode.uppercased()
         let baseline = BrokerageAccountOverviewReader.rows(store: store, market: appState.market, budgets: appState.poolBudgets)
-            .first { $0.accountID == .unassigned && $0.currencyCode == currency }!
-        var ownBuy = TradePlan(kind: .buy, price: 10, quantity: 100)
+            .first { $0.accountID == .financing && $0.currencyCode == currency }!
+        var ownBuy = TradePlan(kind: .buy, price: 10, quantity: 100, executionAccountID: .financing)
         ownBuy.fundingSource = .own
-        var marginBuy = TradePlan(kind: .buy, price: 10, quantity: 200)
+        var marginBuy = TradePlan(kind: .buy, price: 10, quantity: 200, executionAccountID: .financing)
         marginBuy.fundingSource = .margin
-        var unmarkedBuy = TradePlan(kind: .buy, price: 10, quantity: 300)
+        var unmarkedBuy = TradePlan(kind: .buy, price: 10, quantity: 300, executionAccountID: .financing)
         unmarkedBuy.fundingSource = .unmarked
         _ = store.setTradePlan(ownBuy, for: ownSymbol)
         _ = store.setTradePlan(marginBuy, for: ownSymbol)
@@ -2669,7 +2739,7 @@ enum TacticalBoardSelfTest {
 
         let rows = BrokerageAccountOverviewReader.rows(
             store: store, market: appState.market, budgets: appState.poolBudgets)
-        guard let row = rows.first(where: { $0.accountID == .unassigned && $0.currencyCode == currency }) else {
+        guard let row = rows.first(where: { $0.accountID == .financing && $0.currencyCode == currency }) else {
             report("overview", "the funding breakdown fixture produced no \(currency) row")
             return
         }

@@ -20,7 +20,8 @@ import Foundation
 /// scopes the archive to one brokerage account; version 12 adds a
 /// per-portion brokerage-account label; version 13 records the account selected
 /// for a buy on its transaction; version 14 identifies the source account of a cross-account plan fill;
-/// version 15 ties a sell plan to one existing position card.
+/// version 15 ties a sell plan to one existing position card; version 16 adds
+/// the account a plan intends to execute in.
 /// Exports use the oldest version that describes their data. Everything except `market` and
 /// `code` is optional. An entry as small as `{"market": "us", "code": "NVDA"}`
 /// imports correctly; the display name is then filled in by the first quote
@@ -28,7 +29,7 @@ import Foundation
 public struct WatchlistArchive: Codable, Sendable, Equatable {
     public static let formatIdentifier = "pulse.watchlist"
     /// Newest archive schema. Older data keeps its existing version.
-    public static let currentVersion = 15
+    public static let currentVersion = 16
     private static let reviewVersion = 3
     private static let tradingMetadataVersion = 4
     private static let allocationVersion = 5
@@ -52,6 +53,11 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
     /// version: a payload carrying a binding must not claim 14, whose reader
     /// would drop the binding and let the plan fall back to spending the pool.
     private static let positionSalePlanVersion = 15
+    /// The version a plan's intended execution account requires. It is the
+    /// newest field, so it outranks every other reason to raise the version —
+    /// including the card binding beside it — while leaving a payload that does
+    /// not carry one on the version it already declared.
+    private static let planExecutionAccountVersion = 16
     private static let unixReferenceOffset: TimeInterval = 978_307_200
 
     public var format: String
@@ -243,7 +249,16 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         let hasPositionSalePlan = entries.contains { entry in
             entry.plans?.contains { $0.hasPositionPortionMetadata } == true
         } || transactions.contains { $0.planExecution?.hasPositionPortionMetadata == true }
-        version = hasPositionSalePlan ? Self.positionSalePlanVersion
+        // A plan's intended execution account lives in the same three places the
+        // binding does — the plan, a revision's configuration, and a fill's
+        // immutable snapshot — and all three are scanned, because a reader that
+        // stopped at the declared version would drop whichever copy was left
+        // out. It is the newest field, so it outranks the binding.
+        let hasPlanExecutionAccount = entries.contains { entry in
+            entry.plans?.contains { $0.hasExecutionAccountMetadata } == true
+        } || transactions.contains { $0.planExecution?.hasExecutionAccountMetadata == true }
+        version = hasPlanExecutionAccount ? Self.planExecutionAccountVersion
+            : hasPositionSalePlan ? Self.positionSalePlanVersion
             : transactions.contains { $0.planExecution?.sourceAccountID != nil } ? Self.planSourceAccountVersion
             : transactions.contains { $0.brokerageAccountID != nil } ? Self.transactionAccountVersion
             : hasBrokerageTag ? Self.brokerageTagVersion
@@ -402,6 +417,16 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
         }
         let entries = archive.lists.flatMap(\.entries)
         let transactions = entries.flatMap { $0.transactions ?? [] }
+        // A plan's intended execution account is the newest field, and it is
+        // invisible to a reader that stops at the declared version. A payload
+        // claiming an older one while carrying an account is therefore rejected
+        // rather than quietly downgraded to a plan whose reader would drop it.
+        if archive.version < planExecutionAccountVersion,
+           entries.contains(where: { entry in
+               entry.plans?.contains { $0.hasExecutionAccountMetadata } == true
+           }) || transactions.contains(where: { $0.planExecution?.hasExecutionAccountMetadata == true }) {
+            throw DecodingFailure.unsupportedVersion(planExecutionAccountVersion)
+        }
         // A sell plan's tie to one card is invisible to a reader that stops at
         // the declared version, and it is the one field whose silent loss
         // changes what the plan *does* rather than merely what it records: the
@@ -559,6 +584,7 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
                   configuration.quantity.isFinite, configuration.quantity > 0,
                   configuration.createdAt.timeIntervalSince1970.isFinite,
                   (configuration.note.map { $0.count <= 4_000 } ?? true),
+                  TradePlanConfiguration.isValidExecutionAccount(configuration.executionAccountID),
                   TradePlan.hasValidPositionPortionBinding(
                       kind: configuration.kind, positionPool: configuration.positionPool,
                       positionPortionID: configuration.positionPortionID
@@ -574,13 +600,15 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
 
     /// A transaction's plan snapshot is immutable context: it has to point at a
     /// plan and carry a configuration the ledger can still read back, including
-    /// any event references its conditions hold and any card it was tied to.
+    /// any event references its conditions hold, any card it was tied to, and
+    /// the account it intended to execute in.
     private static func isValidPlanExecution(_ execution: TradePlanExecution) -> Bool {
         let configuration = execution.configuration
         guard configuration.price.isFinite, configuration.price > 0,
               configuration.quantity.isFinite, configuration.quantity > 0,
               configuration.createdAt.timeIntervalSince1970.isFinite,
               (configuration.note.map { $0.count <= 4_000 } ?? true),
+              TradePlanConfiguration.isValidExecutionAccount(configuration.executionAccountID),
               TradePlan.hasValidPositionPortionBinding(
                   kind: configuration.kind, positionPool: configuration.positionPool,
                   positionPortionID: configuration.positionPortionID
@@ -634,6 +662,8 @@ public struct WatchlistArchive: Codable, Sendable, Equatable {
             /// The archive names an account other than the one the import would
             /// land in. Merging would join two independently recorded ledgers.
             case accountMismatch(archiveAccountID: BrokerageAccountID, destinationAccountID: BrokerageAccountID)
+            case transactionAccountConflict(transactionID: UUID, accountID: BrokerageAccountID)
+            case incompatibleAccountFunding(accountID: BrokerageAccountID)
         }
 
         public struct Item: Sendable, Equatable, Identifiable {

@@ -122,7 +122,16 @@ struct PositionPoolsView: View {
         var portion: PositionPortion
         var needsReview: Bool
         var ownerAccountID: BrokerageAccountID = .unassigned
-        var accountID: BrokerageAccountID { portion.brokerageAccountID ?? ownerAccountID }
+        /// The ledger this card is actually held in — the one account label the
+        /// card may speak with.
+        ///
+        /// It is deliberately *not* `portion.brokerageAccountID`: the legacy
+        /// per-portion label is retained as historical evidence and no longer
+        /// decides where a holding sits, how the budget groups it, or which
+        /// ledger an edit lands in. A card whose stored label disagrees with its
+        /// ledger therefore reads as its ledger, in the totals and on the face
+        /// alike, and the two can no longer drift apart.
+        var accountID: BrokerageAccountID { ownerAccountID }
         var id: String { "\(ownerAccountID.rawValue):\(item.symbol.description):\(portion.id.uuidString)" }
         var symbol: SymbolID { item.symbol }
         /// The purpose this card is *read* as. A portion stored against the
@@ -369,8 +378,18 @@ struct PositionPoolsView: View {
 
     private var boardRecords: [BrokerageBoardItem] { BrokerageBoardReader.records(store: appState.watchlist) }
     private var allBoardItems: [WatchItem] { boardRecords.map(\.item) }
+    /// Every plan entry, scoped by the account the plan *defaults to executing*
+    /// in, never by the storage namespace it happens to sit in.
+    ///
+    /// `entry.accountID` is where the record lives, which is an internal
+    /// storage detail; the user's own statement of where the trade happens is
+    /// `plan.executionAccountID`. A plan with no default belongs to no named
+    /// account, so a named filter excludes it rather than guessing its source
+    /// ledger, and only 全部账户 shows it.
     private var allPlanEntries: [TradePlanEntry] {
-        BrokerageBoardReader.entries(store: appState.watchlist).filter { accountFilter == nil || $0.accountID == accountFilter }
+        BrokerageBoardReader.entries(store: appState.watchlist).filter {
+            accountFilter == nil || $0.plan.executionAccountID == accountFilter
+        }
     }
     private func storedItem(_ symbol: SymbolID, in account: BrokerageAccountID) -> WatchItem? {
         let portfolio = appState.watchlist.brokeragePortfolio(for: account)
@@ -382,20 +401,6 @@ struct PositionPoolsView: View {
         if account != appState.watchlist.activeBrokerageAccountID { appState.selectBrokerageAccount(account) }
         activeSheet = sheet
     }
-    private func setAccount(_ account: BrokerageAccountID, on card: PortionCard) {
-        guard !isWriteBlocked, !card.needsReview, let revision = card.allocationRevision,
-              !conflictedSymbols.contains(card.symbol) else { return }
-        do {
-            let updated = try appState.watchlist.withBrokerageAccount(card.ownerAccountID) {
-                try appState.watchlist.setPositionBrokerageAccount(symbol: card.symbol, portionID: card.portion.id,
-                    accountID: account, expectedRevision: revision)
-            }
-            if updated.revision != revision, let previous = card.item.positionAllocation {
-                undo = UndoState(symbol: card.symbol, previous: previous, expectedRevision: updated.revision, accountID: card.ownerAccountID)
-            }
-        } catch { showError(error.localizedDescription) }
-    }
-
     private func newPlan(for item: WatchItem) {
         let account = accountFilter ?? appState.watchlist.activeBrokerageAccountID
         guard !isWriteBlocked else { return }
@@ -408,10 +413,7 @@ struct PositionPoolsView: View {
     }
     /// Opens a new sell plan bound to one exact card.
     ///
-    /// The account is always `card.ownerAccountID` — the ledger that owns the
-    /// trade — never `card.accountID`, which is a display-only label the user
-    /// may have set differently. Writing through the label would file the plan
-    /// in an account that does not hold the shares.
+    /// The bound card and its sell plan share the actual ledger owner.
     private func newSalePlan(for card: PortionCard) {
         guard !isWriteBlocked, !card.needsReview, card.item.positionQuantity > 0,
               card.item.availableSalePlanQuantity(for: card.portion.id) > 0 else { return }
@@ -547,8 +549,11 @@ struct PositionPoolsView: View {
             guard item.supportsPosition, item.hasPositionHistory || item.positionAllocation != nil,
                   currencyFilter == "*" || currencyCode(for: item.symbol) == currencyFilter else { return false }
             guard let accountFilter else { return true }
+            // Scope is the enclosing ledger, or the ledger an attributed share
+            // actually landed in. The legacy per-portion label is not a scope:
+            // it never decided where shares sit.
             return record.accountID == accountFilter
-                || item.positionAllocation?.portions.contains(where: { ($0.brokerageAccountID ?? record.accountID) == accountFilter }) == true
+                || item.positionAccountQuantities(enclosingAccountID: record.accountID)[accountFilter] != nil
         }
     }
 
@@ -878,7 +883,9 @@ struct PositionPoolsView: View {
         var usedPortionIDs = Set<UUID>()
         var fills: [PlanFillLineage] = []
         for transaction in matched {
-            let owner = transaction.brokerageAccountID ?? entry.accountID ?? appState.watchlist.activeBrokerageAccountID
+            let owner = appState.watchlist.tradeHistory(for: entry.symbol)
+                .first { $0.transaction.id == transaction.id }?.accountID
+                ?? entry.accountID ?? appState.watchlist.activeBrokerageAccountID
             let held = storedItem(entry.symbol, in: owner)
             let ownerPortions = held.flatMap { value in
                 value.positionAllocation.flatMap { allocation in
@@ -941,7 +948,9 @@ struct PositionPoolsView: View {
             let needsReview = item.positionAllocationNeedsReconciliation || conflictedSymbols.contains(item.symbol)
             return allocation.portions.compactMap { portion in
                 let card = PortionCard(item: item, portion: portion, needsReview: needsReview, ownerAccountID: record.accountID)
-                return accountFilter == nil || card.accountID == accountFilter ? card : nil
+                // The card is scoped by the ledger that holds it — the same
+                // label it displays — never by its retired per-portion tag.
+                return accountFilter == nil || card.ownerAccountID == accountFilter ? card : nil
             }
         }
     }
@@ -1831,7 +1840,12 @@ struct PositionPoolsView: View {
             code: entry.symbol.displayCode,
             detail: "\(entry.plan.kind == .buy ? copy("买入", "Buy") : copy("卖出", "Sell")) \(PriceFormatter.price(entry.plan.price, market: entry.symbol.market)) × \(poolQuantity(entry.remainingQuantity))",
             isSplit: false,
-            fundingTag: entry.accountID != .mengmeng && entry.plan.fundingSource == .margin
+            // The intention is judged against the account the plan defaults to
+            // executing in, which is the one the user actually named. A plan
+            // with no default carries no account to test the funding method
+            // against, so it reads as unassigned rather than borrowing its
+            // storage ledger's identity.
+            fundingTag: (entry.plan.executionAccountID ?? .unassigned) != .mengmeng && entry.plan.fundingSource == .margin
                 ? poolCopy("拟融资", "Planned margin") : nil,
             side: entry.plan.kind,
             source: moving.source,
@@ -2310,7 +2324,6 @@ struct PositionPoolsView: View {
             onEditVerification: { openSheet(.verification(VerificationDraft(symbol: card.symbol, portionID: card.portion.id)), in: card.ownerAccountID) },
             onAddSalePlan: { newSalePlan(for: card) },
             onEditSalePlan: { editSalePlan($0, on: card) },
-            onSetAccount: { setAccount($0, on: card) },
             onLinkBuySource: { openSheet(.buySource(FundingDraft(symbol: card.symbol, portionID: card.portion.id)), in: card.ownerAccountID) },
             onDragChanged: { value, shift in updateDrag(card, value: value, shift: shift) },
             onDragEnded: { value in endDrag(card, value: value) },
@@ -2573,7 +2586,7 @@ struct PositionPoolsView: View {
             Text(copy("计划意图", "Intent"))
                 .font(PoolType.label).foregroundStyle(.secondary)
             Text(planIntentTitle(entry)).font(PoolType.labelMedium)
-            PlannedFundingTag(source: entry.plan.fundingSource, account: entry.accountID ?? .unassigned)
+            PlannedFundingTag(source: entry.plan.fundingSource, account: entry.plan.executionAccountID ?? .unassigned)
             Spacer(minLength: 0)
             Text(railDestinationLabel(entry))
                 .font(PoolType.label)
@@ -3315,7 +3328,6 @@ struct PortionCardFace: View {
     /// already bound to it. Defaults are no-ops so existing fixtures compile.
     var onAddSalePlan: () -> Void = {}
     var onEditSalePlan: (UUID) -> Void = { _ in }
-    var onSetAccount: (BrokerageAccountID) -> Void = { _ in }
     var onLinkBuySource: () -> Void = {}
     let onDragChanged: (DragGesture.Value, Bool) -> Void
     let onDragEnded: (DragGesture.Value) -> Void
@@ -3448,12 +3460,12 @@ struct PortionCardFace: View {
             // an unannotated card grows no row because `verificationBadge` is
             // nil when there are no conditions.
             HStack(spacing: 5) {
-                PositionAccountTag(account: card.accountID, isEnabled: !isWriteBlocked && !card.needsReview, onSelect: onSetAccount)
-                if card.accountID != card.ownerAccountID {
-                    Text(copy("账本：\(AccountIdentity.title(card.ownerAccountID))", "Ledger: \(AccountIdentity.title(card.ownerAccountID))"))
-                        .font(PoolType.label).foregroundStyle(.secondary)
-                        .help(copy("这张卡的账户标签与成交账本不同；修改标签不会迁移成交记录。", "This card's account label differs from its trade ledger. Changing the label does not move trades."))
-                }
+                // A read-only statement of where the shares actually sit. It is
+                // not a switcher: relabelling a card never moved a trade, so the
+                // menu that offered it only ever produced a label that disagreed
+                // with the ledger. Real re-attribution is the historical
+                // classification entrance, which moves the recorded trades.
+                PositionAccountTag(account: card.ownerAccountID)
                 if let verificationBadge {
                     VerificationBadge(badge: verificationBadge, compact: true)
                 }
@@ -4030,12 +4042,16 @@ struct FundingSourceSheet: View {
         return value
     }
 
-    /// The account this marking will land on: the card's own label when it has
-    /// one, otherwise the ledger the draft was opened against. Mengmeng holds no
-    /// funding annotation and only ever makes ordinary buys, so this sheet
-    /// neither offers a choice nor accepts a submission there.
+    /// The ledger this marking lands in: the one the sheet was opened against.
+    ///
+    /// The retired per-portion label is deliberately not consulted — it never
+    /// decided where shares sit, so letting it choose whether 萌萌's ordinary-buy
+    /// restriction applies would let a stale label re-open a funding choice that
+    /// account cannot represent. Mengmeng holds no funding annotation and only
+    /// ever makes ordinary buys, so this sheet neither offers a choice nor
+    /// accepts a submission there.
     private var targetAccount: BrokerageAccountID {
-        portion.brokerageAccountID ?? draftAccount ?? .unassigned
+        draftAccount ?? .unassigned
     }
 
     private var offersFundingChoice: Bool {
@@ -4342,7 +4358,7 @@ struct PoolReconciliationSheet: View {
     /// The card's own account label when it carries one, otherwise the ledger
     /// that encloses it — never a guess at a new owner.
     private func portionAccountLabel(_ portion: PositionPortion) -> String {
-        AccountIdentity.title(portion.brokerageAccountID ?? frozenAccount)
+        AccountIdentity.title(frozenAccount)
     }
 
     /// A reconciliation row's description. The funding suffix is dropped for a
@@ -4350,8 +4366,8 @@ struct PoolReconciliationSheet: View {
     /// beside it would invent an axis that account does not have.
     private func fundingReconciliationLine(_ portion: PositionPortion) -> String {
         let head = "\(portion.pool.title) · \(portionAccountLabel(portion)) · \(originLabel(portion))"
-        guard (portion.brokerageAccountID ?? frozenAccount) != .mengmeng else { return head }
-        return "\(head) · \(fundingSourceTitle(portion.fundingSource, account: portion.brokerageAccountID ?? frozenAccount))"
+        guard (frozenAccount) != .mengmeng else { return head }
+        return "\(head) · \(fundingSourceTitle(portion.fundingSource, account: frozenAccount))"
     }
 
     private func valueBinding(_ id: UUID) -> Binding<String> {

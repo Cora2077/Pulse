@@ -57,9 +57,10 @@ struct MainInstrumentView: View {
     @AppStorage("pulse.chart.movingAverages.v2") private var movingAverageMask = MovingAveragePeriod.allMask
     @AppStorage("pulse.chart.macd.v1") private var showsMACD = false
 
-    init(symbol: SymbolID, initialShowsPlans: Bool = false) {
+    init(symbol: SymbolID, initialShowsPlans: Bool = false, initialShowsTransactions: Bool = false, initialPeriod: CandlePeriod? = nil) {
         self.symbol = symbol
-        _selectedTab = State(initialValue: initialShowsPlans ? .plans : .position)
+        _selectedTab = State(initialValue: initialShowsTransactions ? .transactions : initialShowsPlans ? .plans : .position)
+        _chartMode = State(initialValue: MainChartMode.allCases.first { $0.period == initialPeriod } ?? .intraday)
         _route = State(initialValue: .detail(symbol))
     }
 
@@ -192,12 +193,19 @@ struct MainInstrumentView: View {
             }
         }
         .sheet(item: $planExecutionEntry) { entry in
-            PlanExecutionSheet(entry: entry, account: appState.watchlist.activeBrokerageAccountID,
+            // The ledger the plan was actually read from, not whatever the
+            // toolbar has selected now. The board lists plans from every
+            // account, so the row that carries a fill action carries its own
+            // source with it, and the sheet's stale guard is built against the
+            // same value.
+            PlanExecutionSheet(entry: entry,
+                account: entry.accountID ?? appState.watchlist.activeBrokerageAccountID,
                 onClose: { planExecutionEntry = nil })
         }
         .sheet(item: $planWorkflowEntry) { entry in
             PlanWorkflowDetailView(symbol: entry.symbol, planID: entry.plan.id,
-                account: appState.watchlist.activeBrokerageAccountID).frame(width: 650, height: 600)
+                account: entry.accountID ?? appState.watchlist.activeBrokerageAccountID)
+                .frame(width: 650, height: 600)
         }
         .modifier(PlanDeletionConfirmation(request: $planDeletionRequest))
         .onChange(of: symbol) { _, newSymbol in
@@ -660,7 +668,7 @@ struct MainInstrumentView: View {
                     market: symbol.market,
                     highlightsExtendedHours: chartMode.isIntradayKline
                         && appState.showsExtendedHours(for: symbol),
-                    transactions: chartMode.period == .day ? item?.materializedTransactions() ?? [] : [],
+                    transactions: chartMode.period == .day ? appState.watchlist.transactionsForDisplay(symbol) : [],
                     currencyCode: currencyCode,
                     viewport: candleViewport,
                     annotations: chartAnnotations,
@@ -958,7 +966,13 @@ struct MainInstrumentView: View {
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
             }
-            if appState.watchlist.brokerageAccountsEnabled, selectedTab != .thesis {
+            // The account selector belongs to the position tab alone. It picks
+            // the ledger a *position* is read from, and that is only what this
+            // tab shows: the trade list is explicitly cross-account, and a plan
+            // belongs to the ledger that holds it rather than to whatever is
+            // selected. Leaving it on every tab made an account switch look like
+            // a filter over the transactions and plans below, which it is not.
+            if appState.watchlist.brokerageAccountsEnabled, selectedTab == .position {
                 Menu {
                     ForEach(BrokerageAccountID.allCases) { account in
                         Button {
@@ -977,8 +991,8 @@ struct MainInstrumentView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("这部分持仓、成交和计划所属的账户")
-                .accessibilityLabel("持仓与交易账户：\(AccountIdentity.title(appState.watchlist.activeBrokerageAccountID))")
+                .help("持仓账本：持仓数量、成本与盈亏按此账本重放；成交列表和已有成交的计划跨账户显示")
+                .accessibilityLabel("持仓账本：\(AccountIdentity.title(appState.watchlist.activeBrokerageAccountID))")
             }
         }
         .padding(.top, 3)
@@ -1132,7 +1146,7 @@ struct MainInstrumentView: View {
                     metricCell("position.realizedPnL", PriceFormatter.signedMoney(item.realizedPnL, currencyCode: currencyCode), color: item.realizedPnL)
                         .help(PulseLocalization.localizedString("position.realizedPnLHelp"))
                     metricCell("position.combinedPnL", PriceFormatter.signedMoney(item.realizedPnL, currencyCode: currencyCode), color: item.realizedPnL)
-                    metricCell("position.historyTrades", PulseLocalization.localizedString("position.tradeCount", item.transactions.count))
+                    metricCell("position.historyTrades", PulseLocalization.localizedString("position.tradeCount", appState.watchlist.tradeHistory(for: symbol).count))
                     metricCell("position.totalFees", (item.ledger?.totalFees ?? 0) > 0
                         ? PriceFormatter.money(item.ledger?.totalFees ?? 0, currencyCode: currencyCode)
                         : "—")
@@ -1164,7 +1178,7 @@ struct MainInstrumentView: View {
     // MARK: - Transactions
 
     private var transactionsTab: some View {
-        let entries = Array((item?.ledger?.entries ?? []).reversed())
+        let entries = appState.watchlist.tradeHistory(for: symbol)
         return VStack(spacing: 0) {
             HStack(spacing: 8) {
                 if symbolSupportsPosition {
@@ -1212,8 +1226,9 @@ struct MainInstrumentView: View {
                 } else {
                     LazyVStack(spacing: 0) {
                         ForEach(entries) { entry in
-                            TransactionRow(
-                                entry: entry,
+                            AccountTradeHistoryRow(
+                                record: entry,
+                                symbol: symbol,
                                 palette: appState.palette,
                                 currencyCode: currencyCode,
                                 onOpen: {
@@ -1234,8 +1249,7 @@ struct MainInstrumentView: View {
     // MARK: - Trade plans
 
     private var plansTab: some View {
-        let transactions = appState.watchlist.transactionsForPlan(symbol)
-        let entries = (item?.plans ?? []).map { TradePlanEntry(symbol: symbol, plan: $0, transactions: transactions) }
+        let entries = BrokerageBoardReader.displayPlans(store: appState.watchlist, symbol: symbol)
         return VStack(spacing: 0) {
             HStack {
                 Text(PulseLocalization.localizedString("main.plans.caption"))
@@ -1314,6 +1328,7 @@ struct MainInstrumentView: View {
                 .fill(PlanSideStyle.color(for: plan.kind))
                 .frame(width: 2, height: 26)
             Button {
+                if let owner = entry.accountID { _ = appState.selectBrokerageAccount(owner) }
                 route = .plan(symbol, plan.id, .detail(symbol))
             } label: {
                 VStack(alignment: .leading, spacing: 2) {
@@ -1342,12 +1357,25 @@ struct MainInstrumentView: View {
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                         .lineLimit(2)
+                    // Which ledger the plan means to be executed in, or which
+                    // ledger its fills really landed in. The two are different
+                    // statements and the row prints whichever it has: a fill is
+                    // a fact and wins, an intention is a plan and is shown only
+                    // when nothing has happened yet. Neither is the plan's
+                    // source — printing the storage ledger here is exactly what
+                    // made a foreign-account plan look wrongly owned.
+                    if let line = executionAccountLine(entry) {
+                        Text(line)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
                 }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if symbolSupportsPosition {
+            if symbolSupportsPosition && entry.accountID == appState.watchlist.activeBrokerageAccountID {
                 Menu {
                     if isWaiting {
                         Button(PulseLocalization.localizedString("plans.action.recordFill")) { planExecutionEntry = entry }
@@ -1388,6 +1416,29 @@ struct MainInstrumentView: View {
             }
         }
         .padding(.vertical, 5)
+    }
+
+    /// The one account sentence this row can carry.
+    ///
+    /// A fill that happened outranks an intention about a fill that has not:
+    /// once a plan has real trades, where they landed is what the reader needs,
+    /// and the default has already served its purpose. Before any fill, the
+    /// plan's own default is the useful line — but only when it made one, so an
+    /// undecided plan stays silent rather than growing a repeated non-answer on
+    /// every row.
+    ///
+    /// The fill's ledger comes from the store's cross-account replay rather
+    /// than the transaction's own account field, which older records can carry
+    /// a conflicting value in. It never falls back to the plan's source: a
+    /// source is an internal storage reference, not a statement about where the
+    /// money went.
+    private func executionAccountLine(_ entry: TradePlanEntry) -> String? {
+        if entry.filledQuantity > 0,
+           let accountText = entry.actualFillAccountText(store: appState.watchlist, symbol: symbol) {
+            return accountText
+        }
+        guard PlanExecutionAccountDisplay.isDecided(entry.plan) else { return nil }
+        return PlanExecutionAccountDisplay.title(entry.plan)
     }
 
     /// The instrument's resolved type, from the stored item when there is one.

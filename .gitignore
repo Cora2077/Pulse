@@ -21,6 +21,7 @@
 
 # Swift, Xcode, and generated app artifacts
 .build/
+.build-local/
 /.build-scratch/
 /build/
 DerivedData/

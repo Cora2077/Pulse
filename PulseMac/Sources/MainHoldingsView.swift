@@ -1294,11 +1294,14 @@ struct MainHoldingsView: View {
             ))
             .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
-            if let ledger = item.ledger {
+            let history = appState.watchlist.tradeHistory(for: item.symbol)
+            if !history.isEmpty {
                 let currency = appState.market.quote(for: item.symbol)?.currencyCode ?? item.symbol.currencyCode
-                ForEach(ledger.entries) { entry in
+                ForEach(history.reversed()) { record in
+                    let entry = record.entry
                     let transaction = entry.transaction
                     HStack(spacing: 12) {
+                        Text(AccountIdentity.title(record.accountID)).frame(width: 72, alignment: .leading)
                         Text(transaction.date.formatted(date: .abbreviated, time: .omitted)).frame(width: 92, alignment: .leading)
                         Text(PulseLocalization.localizedString(transaction.kind == .adjustment
                                                                ? "main.holdings.entry.adjustment"

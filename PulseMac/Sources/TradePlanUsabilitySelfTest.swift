@@ -46,6 +46,7 @@ enum TradePlanUsabilitySelfTest {
         checkBackfillWorkflow(state)
         checkDeletionSheet(state)
         checkWrongAccountAndRevisionRefusal(state)
+        checkDefaultExecutionAccounts(state)
         for report in reports { print("PULSE_PLAN_USABILITY_SELFTEST note \(report)") }
         for failure in failures { print("PULSE_PLAN_USABILITY_SELFTEST failure: \(failure)") }
         print("PULSE_PLAN_USABILITY_SELFTEST \(failures.isEmpty ? "passed" : "failed") checks=\(checks) failures=\(failures.count)")
@@ -54,6 +55,52 @@ enum TradePlanUsabilitySelfTest {
     }
 
     // MARK: - PlanValueText
+
+    /// Exercise the actual save button with a plan stored outside its executing
+    /// ledger. This catches a source-account guard that would disable valid sales.
+    private static func checkDefaultExecutionAccounts(_ state: AppState) {
+        let store = state.watchlist
+        let symbol = SymbolID(market: .us, code: "QACROSS")
+        store.withBrokerageAccount(.unassigned) {
+            store.add(SymbolInfo(symbol: symbol, name: "虚构跨账户成交"))
+        }
+        do {
+            _ = try store.recordBuyTransaction(symbol, PositionTransaction(kind: .buy, price: 100,
+                quantity: 10, date: .now, fundingSource: .own), account: .financing)
+        } catch { expect(false, "execution-account: synthetic opening buy failed"); return }
+        for (kind, target, quantity) in [(TradePlan.Kind.buy, BrokerageAccountID.mengmeng, 6.0), (.sell, .financing, 3.0)] {
+            _ = state.selectBrokerageAccount(.unassigned)
+            let plan = TradePlan(kind: kind, price: 110, quantity: quantity, executionAccountID: target)
+            expect(store.setTradePlan(plan, for: symbol), "execution-account: the global plan must save")
+            guard let row = BrokerageBoardReader.entries(store: store).first(where: { $0.plan.id == plan.id }) else {
+                expect(false, "execution-account: plan entry not found"); return
+            }
+            var closed = false
+            host(view: AnyView(PlanExecutionSheet(entry: row, account: .unassigned,
+                onClose: { closed = true }).environment(state)), width: 380, height: 520,
+                scheme: .light, name: "default-account-\(kind.rawValue).png",
+                directory: artifactDirectory("plan-usability")) { form in
+                    let before = store.syncSnapshot()
+                    submitFillSheet(form)
+                    settle(form)
+                    expect(closed && store.syncSnapshot() != before,
+                           "execution-account: real save button must accept \(kind.rawValue) in its default account")
+                    let fills = store.transactionsForPlan(symbol, account: .unassigned, planID: plan.id)
+                    expect(fills.count == 1 && fills.first?.quantity == quantity,
+                           "execution-account: exactly one fill must be recorded")
+                    expect(fills.first?.brokerageAccountID == target,
+                           "execution-account: the chosen ledger owns the fill")
+                    expect(fills.first?.planExecution?.sourceAccountID == .unassigned,
+                           "execution-account: the source plan reference is preserved")
+                    expect(store.activeBrokerageAccountID == target,
+                           "execution-account: the page follows the executing account")
+                }
+        }
+        expect(store.brokeragePortfolio(for: .financing).items.first { $0.symbol == symbol }?.positionQuantity == 7,
+               "execution-account: the sale reduces only the financing ledger")
+        expect(store.brokeragePortfolio(for: .mengmeng).items.first { $0.symbol == symbol }?.positionQuantity == 6,
+               "execution-account: the purchase lands only in the Mengmeng ledger")
+    }
 
     /// The shared formatter must print each market's own money and unit without
     /// converting anything, and must never turn a real small number into a zero.

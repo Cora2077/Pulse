@@ -82,7 +82,7 @@ struct MainPlanListView: View {
         _statusFilter = State(initialValue: initialFilter)
     }
 
-    private var entries: [TradePlanEntry] { appState.watchlist.tradePlanEntries }
+    private var entries: [TradePlanEntry] { BrokerageBoardReader.displayPlans(store: appState.watchlist) }
 
     private func currentPrice(_ symbol: SymbolID) -> Double? {
         guard let quote = appState.market.quote(for: symbol), TradingQuoteHealth.isCurrent(quote) else { return nil }
@@ -197,7 +197,7 @@ struct MainPlanListView: View {
         }
         .sheet(item: $workflowEntry) { entry in
             PlanWorkflowDetailView(symbol: entry.symbol, planID: entry.plan.id,
-                                   account: appState.watchlist.activeBrokerageAccountID)
+                                   account: entry.accountID ?? appState.watchlist.activeBrokerageAccountID)
                 .frame(width: 650, height: 600)
         }
         .sheet(item: $editorPresentation) { presentation in
@@ -404,11 +404,20 @@ struct MainPlanListView: View {
     /// The header reads the same constants, so the two cannot drift.
     private static let priceColumnWidth: CGFloat = 122
     private static let quantityColumnWidth: CGFloat = 118
-    private static let statusColumnWidth: CGFloat = 130
+    /// The status cell now carries a third line naming the row's real fill
+    /// account (or the plan's default), and that sentence is longer than any
+    /// status word. The column grew by 28pt so the account reads in full rather
+    /// than truncating to "Fill acc…", which would say less than nothing. The
+    /// table's own minimum grew with it: the note column is already only wide
+    /// enough for a short remark, and taking the difference out of the symbol
+    /// column would start clipping instrument names to pay for a sentence about
+    /// money. A row is allowed to make the table a little wider; a row that
+    /// hides which account a fill went to is not.
+    private static let statusColumnWidth: CGFloat = 158
     /// The row's own minimum, so the horizontal scroll view and the header
     /// agree on how wide the table really is. It grows with the two widened
     /// value columns so the table still scrolls rather than clipping.
-    private static let tableMinWidth: CGFloat = 1_143
+    private static let tableMinWidth: CGFloat = 1_171
 
     private var tableHeader: some View {
         HStack(spacing: Self.columnSpacing) {
@@ -585,6 +594,18 @@ struct MainPlanListView: View {
                     PriceFormatter.quantity(entry.filledQuantity), PriceFormatter.quantity(entry.remainingQuantity)))
                     .font(.system(size: 8.5).monospacedDigit()).foregroundStyle(.secondary)
             }
+            // The account that matters for this row: where the fills really
+            // landed once there are any, otherwise the plan's own default. It is
+            // never the ledger the plan is stored in — that is an internal
+            // reference and printing it here is what made a cross-account plan
+            // read as belonging to the wrong ledger.
+            if let line = executionAccountLine(entry) {
+                Text(line)
+                    .font(.system(size: 8.5))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
             if isPending(entry) {
                 if reached {
                     Text(PulseLocalization.localizedString("plan.reached"))
@@ -599,10 +620,27 @@ struct MainPlanListView: View {
         .help(entry.displayState == .stopped ? PulseLocalization.localizedString("plans.display.missingFillHelp") : entry.displayStatusTitle)
     }
 
+    /// The one account sentence this row's status cell can carry: the fills'
+    /// real ledger once there are fills, otherwise the plan's own default when
+    /// it has decided. Silence when neither applies.
+    private func executionAccountLine(_ entry: TradePlanEntry) -> String? {
+        if entry.filledQuantity > 0,
+           let accountText = entry.actualFillAccountText(store: appState.watchlist, symbol: entry.symbol) {
+            return accountText
+        }
+        guard PlanExecutionAccountDisplay.isDecided(entry.plan) else { return nil }
+        return PlanExecutionAccountDisplay.title(entry.plan)
+    }
+
     private func rowActions(_ entry: TradePlanEntry) -> some View {
         HStack(spacing: 2) {
             Button {
-                editorPresentation = PlanEditorPresentation(symbol: entry.symbol, planID: entry.plan.id)
+                if entry.accountID != appState.watchlist.activeBrokerageAccountID, let owner = entry.accountID {
+                    _ = appState.selectBrokerageAccount(owner)
+                    route = .plan(entry.symbol, entry.plan.id, .planList)
+                } else {
+                    editorPresentation = PlanEditorPresentation(symbol: entry.symbol, planID: entry.plan.id)
+                }
             } label: {
                 Image(systemName: "pencil")
                     .font(.system(size: 9))
@@ -614,32 +652,36 @@ struct MainPlanListView: View {
             .accessibilityLabel(PulseLocalization.localizedString("main.planList.action.edit"))
 
             Menu {
-                if isPending(entry) {
-                    Button(PulseLocalization.localizedString("plans.action.recordFill")) { executionEntry = entry }
-                } else if entry.canBackfillFill {
-                    // A stopped record with an incomplete real fill: the fill
-                    // sheet detects the mode itself and performs the guarded
-                    // backfill. The row is never revived first — that would
-                    // resurrect an intention the user already settled.
-                    Button(PulseLocalization.localizedString("plans.action.backfill")) { executionEntry = entry }
-                }
-                Button(PulseLocalization.localizedString("plans.action.logicHistory")) { workflowEntry = entry }
-                Divider()
-                if isPending(entry) {
-                    Button(PulseLocalization.localizedString("plans.action.snooze")) { appState.planAlerts.snooze(entry.plan) }
+                if entry.accountID != appState.watchlist.activeBrokerageAccountID {
+                    Button(PulseLocalization.localizedString("plans.action.logicHistory")) { workflowEntry = entry }
+                } else {
+                    if isPending(entry) {
+                        Button(PulseLocalization.localizedString("plans.action.recordFill")) { executionEntry = entry }
+                    } else if entry.canBackfillFill {
+                        // A stopped record with an incomplete real fill: the fill
+                        // sheet detects the mode itself and performs the guarded
+                        // backfill. The row is never revived first — that would
+                        // resurrect an intention the user already settled.
+                        Button(PulseLocalization.localizedString("plans.action.backfill")) { executionEntry = entry }
+                    }
+                    Button(PulseLocalization.localizedString("plans.action.logicHistory")) { workflowEntry = entry }
                     Divider()
-                }
-                if isPending(entry) {
-                    Button(PulseLocalization.localizedString("main.planList.action.markDropped")) { restate(entry, as: .cancelled) }
-                } else if entry.displayState != .filled {
-                    Button(PulseLocalization.localizedString("plan.menu.revive")) { restate(entry, as: .active) }
-                }
-                Divider()
-                Button(PulseLocalization.localizedString("main.planList.action.delete"), role: .destructive) {
-                    deletionRequest = PlanDeletionRequest(
-                        entry: entry,
-                        account: appState.watchlist.activeBrokerageAccountID
-                    )
+                    if isPending(entry) {
+                        Button(PulseLocalization.localizedString("plans.action.snooze")) { appState.planAlerts.snooze(entry.plan) }
+                        Divider()
+                    }
+                    if isPending(entry) {
+                        Button(PulseLocalization.localizedString("main.planList.action.markDropped")) { restate(entry, as: .cancelled) }
+                    } else if entry.displayState != .filled {
+                        Button(PulseLocalization.localizedString("plan.menu.revive")) { restate(entry, as: .active) }
+                    }
+                    Divider()
+                    Button(PulseLocalization.localizedString("main.planList.action.delete"), role: .destructive) {
+                        deletionRequest = PlanDeletionRequest(
+                            entry: entry,
+                            account: appState.watchlist.activeBrokerageAccountID
+                        )
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis")

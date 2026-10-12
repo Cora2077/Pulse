@@ -48,6 +48,11 @@ enum SelfTest {
     @MainActor
     static func runIfRequested() {
         #if DEBUG
+        if CommandLine.arguments.contains("--trade-history-selftest") {
+            let passed = TradeHistoryDisplaySelfTest.run()
+            fflush(stdout)
+            exit(passed ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--plan-usability-selftest") {
             guard CommandLine.arguments.contains("--main-window-demo") else {
                 print("PULSE_PLAN_USABILITY_SELFTEST failed: isolated demo required")

@@ -400,7 +400,11 @@ struct PlanEventCheckpointTests {
         ))
 
         let archive = source.archive()
-        #expect(archive.version == 10, "inherited portion conditions must raise the declared version")
+        // A same-account fill now writes its plan's ledger down explicitly, so
+        // the payload also claims the source-account version (14). Ownership is
+        // the newer fact here and outranks the condition it travels with; the
+        // decoded assertions just below still require both to survive.
+        #expect(archive.version == 14, "a fill naming its plan source raises the declared version")
         let decoded = try WatchlistArchive.decoded(from: try archive.encoded())
         let entry = try #require(decoded.lists.first?.entries.first)
         #expect(entry.plans?.first?.conditions?.first?.eventReference == event)

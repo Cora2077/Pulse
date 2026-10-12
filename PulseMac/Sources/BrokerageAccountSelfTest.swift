@@ -70,12 +70,12 @@ enum BrokerageAccountSelfTest {
         market.apply(quotes: [Quote(symbol: symbol, price: 15, previousClose: 14,
                                    sourceName: "Fixture", timestamp: .now)])
         store.withBrokerageAccount(.financing) {
-            var plan = TradePlan(kind: .buy, price: 5, quantity: 100)
+            var plan = TradePlan(kind: .buy, price: 5, quantity: 100, executionAccountID: .financing)
             plan.fundingSource = .margin
             _ = store.setTradePlan(plan, for: symbol)
         }
         store.withBrokerageAccount(.mengmeng) {
-            var plan = TradePlan(kind: .buy, price: 6, quantity: 100)
+            var plan = TradePlan(kind: .buy, price: 6, quantity: 100, executionAccountID: .mengmeng)
             plan.fundingSource = .own
             _ = store.setTradePlan(plan, for: symbol)
         }
@@ -145,50 +145,117 @@ enum BrokerageAccountSelfTest {
         print("BROKERAGE_ACCOUNT_SELFTEST_PASSED mcp-account-required scoped-ledgers selection-restore budget-isolation settings-migration sync-restore all-account-alerts snooze-isolation")
         return true
     }
+    /// The retired per-portion label is historical evidence and must not decide
+    /// where a holding sits.
+    ///
+    /// The fiction is written straight into a sync snapshot rather than through
+    /// `setPositionBrokerageAccount`: that writer is no longer a production
+    /// path for this meaning, so using it would test the fixture instead of the
+    /// rule. One unassigned ledger buys 10 and splits it into two cards that
+    /// *disagree* — one labelled 融资, one 萌萌 — while both named ledgers hold
+    /// nothing. Every surface must still read the whole 10 under 未归属, and the
+    /// named accounts must show no holding and no budget at all.
+    ///
+    /// The second half proves the same convergence from the other side: when
+    /// each named ledger really does buy 5, those two ledgers own the 10 — 5
+    /// apiece — and the ledger, not the old cards, is what the totals follow.
     private static func assertCardAccountBoard() -> Bool {
         guard CommandLine.arguments.contains("--main-window-demo") else { return false }
         let app = AppState()
         let store = app.watchlist
-        _ = store.applySyncSnapshot(.init(items: [], groups: [], brokerageAccounts: [
-            .init(accountID: .financing, settings: .init()), .init(accountID: .mengmeng, settings: .init())
-        ], accountSettings: .init()))
+        func emptyFixture() -> WatchlistSyncSnapshot {
+            .init(items: [], groups: [WatchlistGroup(name: "虚构账户")], brokerageAccounts: [
+                .init(accountID: .financing, groups: [WatchlistGroup(name: "虚构融资")]),
+                .init(accountID: .mengmeng, groups: [WatchlistGroup(name: "虚构普通")])])
+        }
+        _ = store.applySyncSnapshot(emptyFixture())
         store.enableBrokerageAccounts()
         _ = app.poolBudgets.attach(to: store, migrating: [])
         let symbol = SymbolID(market: .sz, code: "000001")
         store.add(SymbolInfo(symbol: symbol, name: "账户标签测试"))
         store.addTransaction(symbol, .init(kind: .buy, price: 100, quantity: 10, date: .now))
-        do {
-            guard let allocation = store.item(for: symbol)?.positionAllocation, let first = allocation.portions.first else { return false }
-            let split = try store.transferPositionPortion(symbol: symbol, portionID: first.id, quantity: 5,
-                to: .tactical, reason: "", expectedRevision: allocation.revision)
-            guard let original = split.portions.first(where: { $0.id == first.id }),
-                  let second = split.portions.first(where: { $0.id != first.id }) else { return false }
-            let labelled = try store.setPositionBrokerageAccount(symbol: symbol, portionID: original.id,
-                accountID: .financing, expectedRevision: split.revision)
-            _ = try store.setPositionBrokerageAccount(symbol: symbol, portionID: second.id,
-                accountID: .mengmeng, expectedRevision: labelled.revision)
-            for account in [BrokerageAccountID.financing, .mengmeng] {
-                store.withBrokerageAccount(account) {
-                    store.add(SymbolInfo(symbol: symbol, name: "账户标签测试"))
-                    _ = store.setTradePlan(.init(kind: .buy, price: 100, quantity: 5), for: symbol)
-                }
-                _ = app.poolBudgets.setCashBalance(amount: account == .financing ? 100 : 1000, currency: "CNY", in: account)
+        for account in [BrokerageAccountID.financing, .mengmeng] {
+            _ = app.poolBudgets.setCashBalance(amount: account == .financing ? 100 : 1000, currency: "CNY", in: account)
+        }
+        app.market.apply(quotes: [.init(symbol: symbol, price: 100, previousClose: 100, sourceName: "Fixture", timestamp: .now)])
+
+        // Half one: the legacy labels disagree with the only ledger that holds
+        // the shares, and with each other.
+        guard applyLegacyLabelSnapshot(store: store, symbol: symbol,
+                                       labels: [.financing, .mengmeng]) else {
+            print("BROKERAGE_SELFTEST legacy-label fixture failed"); return false
+        }
+        let baseline = store.syncSnapshot()
+        let pendingTotal = PoolBudgetInput(appState: app, currencyFilter: "CNY", allAccounts: true).calculate()
+        let pendingFinance = PoolBudgetInput(appState: app, currencyFilter: "CNY", accountFilter: .financing, allAccounts: true).calculate()
+        let pendingMengmeng = PoolBudgetInput(appState: app, currencyFilter: "CNY", accountFilter: .mengmeng, allAccounts: true).calculate()
+        let pendingOverview = BrokerageAccountOverviewReader.rows(store: store, market: app.market, budgets: app.poolBudgets)
+        guard pendingTotal.currency("CNY")?.holdingsBefore == 1000,
+              // The named accounts are asked for their own reading and must
+              // find nothing: the label minted no shares anywhere.
+              pendingFinance.currency("CNY")?.holdingsBefore ?? 0 == 0,
+              pendingFinance.currency("CNY")?.plannedBuyAmount ?? 0 == 0,
+              pendingMengmeng.currency("CNY")?.holdingsBefore ?? 0 == 0,
+              pendingMengmeng.currency("CNY")?.plannedBuyAmount ?? 0 == 0,
+              // 未归属 carries the whole position, not a label-split remainder.
+              pendingOverview.first(where: { $0.accountID == .unassigned && $0.currencyCode == "CNY" })?.holdingValue == 1000,
+              pendingOverview.first(where: { $0.accountID == .financing && $0.currencyCode == "CNY" })?.holdingValue ?? 0 == 0,
+              pendingOverview.first(where: { $0.accountID == .mengmeng && $0.currencyCode == "CNY" })?.holdingValue ?? 0 == 0,
+              store.syncSnapshot() == baseline, store.activeBrokerageAccountID == .unassigned else {
+            print("BROKERAGE_SELFTEST legacy-label attribution failed"); return false
+        }
+
+        // Half two: real ledger buys in each named account. The totals follow
+        // the ledgers — 5 and 5 — regardless of what the old cards still say.
+        _ = store.applySyncSnapshot(emptyFixture())
+        store.add(SymbolInfo(symbol: symbol, name: "账户标签测试"))
+        for account in [BrokerageAccountID.financing, .mengmeng] {
+            store.withBrokerageAccount(account) {
+                store.add(SymbolInfo(symbol: symbol, name: "账户标签测试"))
+                store.addTransaction(symbol, .init(kind: .buy, price: 100, quantity: 5, date: .now))
+                _ = store.setTradePlan(.init(kind: .buy, price: 100, quantity: 5, executionAccountID: account), for: symbol)
             }
-            app.market.apply(quotes: [.init(symbol: symbol, price: 100, previousClose: 100, sourceName: "Fixture", timestamp: .now)])
-            let baseline = store.syncSnapshot()
-            let total = PoolBudgetInput(appState: app, currencyFilter: "CNY", allAccounts: true).calculate()
-            let finance = PoolBudgetInput(appState: app, currencyFilter: "CNY", accountFilter: .financing, allAccounts: true).calculate()
-            let mengmeng = PoolBudgetInput(appState: app, currencyFilter: "CNY", accountFilter: .mengmeng, allAccounts: true).calculate()
-            let overview = BrokerageAccountOverviewReader.rows(store: store, market: app.market, budgets: app.poolBudgets)
-            guard total.currency("CNY")?.holdingsBefore == 1000,
-                  total.currency("CNY")?.cashBalance == 1100, total.currency("CNY")?.cashShortfall == 400,
-                  finance.currency("CNY")?.holdingsBefore == 500, finance.currency("CNY")?.cashShortfall == 400,
-                  mengmeng.currency("CNY")?.holdingsBefore == 500, mengmeng.currency("CNY")?.cashShortfall == 0,
-                  overview.first(where: { $0.accountID == .financing && $0.currencyCode == "CNY" })?.holdingValue == 500,
-                  overview.first(where: { $0.accountID == .mengmeng && $0.currencyCode == "CNY" })?.holdingValue == 500,
-                  store.syncSnapshot() == baseline, store.activeBrokerageAccountID == .unassigned else { return false }
-            return true
-        } catch { print("BROKERAGE_SELFTEST card-attribution \(error)"); return false }
+        }
+        let ledgerBaseline = store.syncSnapshot()
+        let total = PoolBudgetInput(appState: app, currencyFilter: "CNY", allAccounts: true).calculate()
+        let finance = PoolBudgetInput(appState: app, currencyFilter: "CNY", accountFilter: .financing, allAccounts: true).calculate()
+        let mengmeng = PoolBudgetInput(appState: app, currencyFilter: "CNY", accountFilter: .mengmeng, allAccounts: true).calculate()
+        let overview = BrokerageAccountOverviewReader.rows(store: store, market: app.market, budgets: app.poolBudgets)
+        guard total.currency("CNY")?.holdingsBefore == 1000,
+              finance.currency("CNY")?.holdingsBefore == 500,
+              mengmeng.currency("CNY")?.holdingsBefore == 500,
+              overview.first(where: { $0.accountID == .financing && $0.currencyCode == "CNY" })?.holdingValue == 500,
+              overview.first(where: { $0.accountID == .mengmeng && $0.currencyCode == "CNY" })?.holdingValue == 500,
+              store.syncSnapshot() == ledgerBaseline, store.activeBrokerageAccountID == .unassigned else {
+            print("BROKERAGE_SELFTEST ledger attribution failed"); return false
+        }
+        return true
+    }
+
+    /// Writes the fiction of an old two-card position whose cards disagree about
+    /// their account, with the shares actually sitting in 未归属.
+    ///
+    /// The snapshot is built by hand — `brokerageAccountID` is set on the stored
+    /// positions, never through a store writer — because the point is to prove
+    /// that data already in this shape no longer decides anything.
+    private static func applyLegacyLabelSnapshot(store: WatchlistStore, symbol: SymbolID,
+                                                 labels: [BrokerageAccountID]) -> Bool {
+        var snapshot = store.syncSnapshot()
+        guard let index = snapshot.items.firstIndex(where: { $0.symbol == symbol }),
+              let allocation = snapshot.items[index].positionAllocation,
+              let original = allocation.portions.first, !labels.isEmpty else { return false }
+        let portions = labels.enumerated().map { offset, label in
+            var portion = original
+            portion.id = UUID()
+            portion.quantity = snapshot.items[index].positionQuantity / Double(labels.count)
+            portion.pool = offset == 0 ? .strategic : .tactical
+            portion.brokerageAccountID = label
+            return portion
+        }
+        var updated = allocation
+        updated.portions = portions
+        snapshot.items[index].positionAllocation = updated
+        return store.applySyncSnapshot(snapshot)
     }
 
 }

@@ -208,6 +208,15 @@ final class AppState {
                 watchlist.enableBrokerageAccounts()
             }
             _ = preparePositionAllocations()
+            let pending = watchlist.brokeragePortfolio(for: .unassigned)
+            let hasRecordedOwnership = (pending.items + pending.retainedHistoryItems).contains { item in
+                item.transactions.contains { transaction in
+                    transaction.brokerageAccountID.map { $0 != .unassigned } ?? false
+                }
+            }
+            if hasRecordedOwnership, isOfflinePreview || localBackups.createManualBackup() {
+                _ = watchlist.repairExplicitBrokerageOwnership()
+            }
         }
         if watchlist.brokerageAccountsEnabled {
             let migrationAccounts = Set(BrokerageAccountID.allCases.filter { watchlist.brokerageSettings(for: $0) == nil })

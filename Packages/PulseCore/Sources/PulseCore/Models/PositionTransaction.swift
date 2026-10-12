@@ -44,7 +44,7 @@ public struct PositionTransaction: Codable, Sendable, Hashable, Identifiable {
     /// inherits *this* value, never the plan's. `nil` on records written before
     /// the field existed; see `PositionFundingSource`.
     public var fundingSource: PositionFundingSource?
-    /// The account explicitly selected for this purchase, independently of its
+    /// The account explicitly selected for this trade, independently of its
     /// funding. Legacy records inherit their enclosing ledger when absent.
     public var brokerageAccountID: BrokerageAccountID?
 

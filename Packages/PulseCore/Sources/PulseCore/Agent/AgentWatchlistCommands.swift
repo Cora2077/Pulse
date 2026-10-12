@@ -325,12 +325,14 @@ public struct AgentWatchlistCommands {
                 ))
             }
             let funding = draft.kind == .buy ? (draft.fundingSource ?? (store.brokerageAccountsEnabled ? .own : nil)) : nil
-            if draft.kind == .buy, store.brokerageAccountsEnabled {
+            if store.brokerageAccountsEnabled {
                 guard store.activeBrokerageAccountID != .unassigned else { return .failure(.invalidBuyAccount) }
-                guard store.activeBrokerageAccountID.permitsBuy(fundingSource: funding) else { return .failure(.invalidBuyMethod) }
+                if draft.kind == .buy {
+                    guard store.activeBrokerageAccountID.permitsBuy(fundingSource: funding) else { return .failure(.invalidBuyMethod) }
+                }
             }
             let recordedID = draft.id ?? UUID()
-            store.addTransaction(symbol, PositionTransaction(
+            let transaction = PositionTransaction(
                 id: recordedID,
                 kind: draft.kind.positionKind,
                 price: draft.price,
@@ -338,8 +340,17 @@ public struct AgentWatchlistCommands {
                 date: draft.date,
                 fee: draft.fee,
                 fundingSource: funding,
-                brokerageAccountID: draft.kind == .buy && store.brokerageAccountsEnabled ? store.activeBrokerageAccountID : nil
-            ))
+                brokerageAccountID: store.brokerageAccountsEnabled ? store.activeBrokerageAccountID : nil
+            )
+            do {
+                if store.brokerageAccountsEnabled {
+                    _ = try store.addNamedTransaction(symbol, transaction, account: store.activeBrokerageAccountID)
+                } else {
+                    store.addTransaction(symbol, transaction)
+                }
+            } catch {
+                return .failure(.invalidQuantity)
+            }
             guard let updated = store.item(for: symbol), updated.transactions.contains(where: { $0.id == recordedID }) else {
                 return .failure(.invalidPrice)
             }
@@ -452,7 +463,10 @@ public struct AgentWatchlistCommands {
                         status: resolvedStatus,
                         note: resolvedNote,
                         positionPool: existing?.positionPool,
-                        conditions: existing?.conditions
+                        conditions: existing?.conditions,
+                        fundingSource: existing?.fundingSource,
+                        positionPortionID: existing?.positionPortionID,
+                        executionAccountID: existing?.executionAccountID
                     ),
                     for: symbol
                 )
@@ -674,7 +688,8 @@ public struct AgentWatchlistCommands {
             transactions: item.transactions.map(transactionSnapshot),
             quote: quote.map(quoteSnapshot),
             thesis: item.thesis,
-            plans: item.plans.map { planSnapshot($0, quote: quote, transactions: store.transactionsForPlan(item.symbol)) },
+            plans: item.plans.map { planSnapshot($0, quote: quote,
+                transactions: store.transactionsForPlan(item.symbol, planID: $0.id)) },
             tradingProfile: item.tradingProfile,
             events: item.events,
             positionAllocation: item.positionAllocation
@@ -700,7 +715,8 @@ public struct AgentWatchlistCommands {
             conditions: plan.conditions,
             history: plan.history,
             fillQuantity: progress.filledQuantity,
-            remainingQuantity: progress.remainingQuantity
+            remainingQuantity: progress.remainingQuantity,
+            executionAccountID: plan.executionAccountID
         )
     }
 

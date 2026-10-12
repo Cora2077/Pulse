@@ -66,6 +66,22 @@ public struct TradePlan: Codable, Sendable, Hashable, Identifiable {
     /// binding for a plan the user did not tie. Only a sell may carry one, and
     /// only against an explicitly named active pool.
     public var positionPortionID: UUID?
+    /// The account the user *plans* to execute this plan in, if they named one
+    /// in advance.
+    ///
+    /// `nil` is the ordinary default and means "decide when the fill is
+    /// recorded": the plan carries no account intent, and the fill's own
+    /// brokerage account is the only thing that says where the money went. A
+    /// non-nil id is a default, never a constraint — the user may record the
+    /// fill in another ledger, or split one plan across accounts. It is metadata
+    /// only: it never creates, moves, or relabels a transaction, and it never
+    /// overrides a recorded fill.
+    ///
+    /// `.unassigned` is refused rather than stored. Leaving the account blank is
+    /// exactly the `nil` this field already has, so the one legacy label that
+    /// historically meant "not decided yet" would be a second spelling of the
+    /// same thing, and a stored value the reader cannot tell from a real choice.
+    public var executionAccountID: BrokerageAccountID?
 
     public init(
         id: UUID = UUID(),
@@ -81,7 +97,8 @@ public struct TradePlan: Codable, Sendable, Hashable, Identifiable {
         conditions: [TradePlanCondition]? = nil,
         history: [TradePlanRevision]? = nil,
         fundingSource: PositionFundingSource? = nil,
-        positionPortionID: UUID? = nil
+        positionPortionID: UUID? = nil,
+        executionAccountID: BrokerageAccountID? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -97,6 +114,7 @@ public struct TradePlan: Codable, Sendable, Hashable, Identifiable {
         self.history = history
         self.fundingSource = fundingSource
         self.positionPortionID = positionPortionID
+        self.executionAccountID = executionAccountID
     }
 }
 
@@ -205,6 +223,13 @@ public struct TradePlanConfiguration: Codable, Sendable, Hashable {
     /// pool and funding so a revision and a fill's immutable snapshot both
     /// answer "which shares was this written against" after the plan changes.
     public var positionPortionID: UUID?
+    /// The account this configuration intended to execute in, copied from the
+    /// plan for the same reason the funding and the card are: a revision and a
+    /// fill's snapshot both answer "which ledger was meant then" after the user
+    /// changes or clears the plan's default. Changing the default therefore
+    /// never rewrites what an already-recorded fill says was intended at the
+    /// time. `nil` means no account was named, exactly as on the plan.
+    public var executionAccountID: BrokerageAccountID?
 
     public init(plan: TradePlan) {
         kind = plan.kind
@@ -217,6 +242,23 @@ public struct TradePlanConfiguration: Codable, Sendable, Hashable {
         createdAt = plan.createdAt
         fundingSource = plan.fundingSource
         positionPortionID = plan.positionPortionID
+        executionAccountID = plan.executionAccountID
+    }
+
+    /// Whether an account id may be stored as a plan's execution default. The
+    /// one rule, asked everywhere the value is accepted: a real account, or
+    /// nothing at all. `.unassigned` is the legacy "not decided yet" label, and
+    /// storing it would give the field a second, indistinguishable spelling of
+    /// `nil` — so it is refused rather than normalized away silently.
+    public static func isValidExecutionAccount(_ accountID: BrokerageAccountID?) -> Bool {
+        accountID != .unassigned
+    }
+
+    /// Whether any configuration in the list names an execution account. Checked
+    /// beside the other metadata predicates so the archive and sync version
+    /// gates ask one shared question instead of each walking the tree.
+    public static func hasExecutionAccountMetadata(in configurations: [TradePlanConfiguration]) -> Bool {
+        configurations.contains { $0.executionAccountID != nil }
     }
 
     public static func hasFundingMetadata(in configurations: [TradePlanConfiguration]) -> Bool {
@@ -274,6 +316,18 @@ public extension TradePlan {
             || TradePlanConfiguration.hasPositionPortionMetadata(in: (history ?? []).map(\.configuration))
     }
 
+    /// Whether a planned execution account lives anywhere under this plan: its
+    /// own field, or a configuration a revision captured.
+    ///
+    /// The revisions are walked for the same reason the other metadata
+    /// predicates walk them: a plan whose default was cleared leaves the live
+    /// field with nothing to detect, and a reader that stopped at the declared
+    /// version would drop the record of which account was once intended.
+    var hasExecutionAccountMetadata: Bool {
+        executionAccountID != nil
+            || TradePlanConfiguration.hasExecutionAccountMetadata(in: (history ?? []).map(\.configuration))
+    }
+
     /// The single badge a plan card shows for its reasoning.
     ///
     /// Delegates to `PositionVerificationBadge.derived` so a plan and the
@@ -310,6 +364,10 @@ public extension TradePlanConfiguration {
     /// Whether this configuration names a position card. Its own field only:
     /// a configuration has no history to walk.
     var hasPositionPortionMetadata: Bool { positionPortionID != nil }
+
+    /// Whether this configuration names a planned execution account. Its own
+    /// field only, for the same reason as the card above.
+    var hasExecutionAccountMetadata: Bool { executionAccountID != nil }
 }
 
 public extension TradePlanExecution {
@@ -320,6 +378,10 @@ public extension TradePlanExecution {
     /// Whether the immutable fill snapshot names the card it consumed. A fill
     /// whose plan was later unbound still records which shares actually moved.
     var hasPositionPortionMetadata: Bool { configuration.hasPositionPortionMetadata }
+
+    /// Whether the immutable fill snapshot names the account that was intended
+    /// when the fill was recorded, even if the plan's default has since moved.
+    var hasExecutionAccountMetadata: Bool { configuration.hasExecutionAccountMetadata }
 }
 
 public struct TradePlanRevision: Codable, Sendable, Hashable, Identifiable {
@@ -468,14 +530,16 @@ public enum TradePlanExecutionError: LocalizedError, Equatable {
 
 extension TradePlan {
     /// The one payload contract every write path shares: a plan whose price,
-    /// size, timestamps, note, conditions, revisions, or position-card binding
-    /// could not have been written is not a plan to act on either.
+    /// size, timestamps, note, conditions, revisions, position-card binding, or
+    /// planned execution account could not have been written is not a plan to
+    /// act on either.
     var hasValidPayload: Bool {
         guard price.isFinite, price > 0, quantity.isFinite, quantity > 0,
               createdAt.timeIntervalSince1970.isFinite, updatedAt.timeIntervalSince1970.isFinite,
               (note.map { $0.count <= 4_000 } ?? true),
               Self.validConditions(conditions),
               (history.map(Self.validHistory) ?? true),
+              TradePlanConfiguration.isValidExecutionAccount(executionAccountID),
               Self.hasValidPositionPortionBinding(
                   kind: kind, positionPool: positionPool, positionPortionID: positionPortionID
               ) else { return false }
@@ -517,6 +581,11 @@ extension TradePlan {
             && value.createdAt.timeIntervalSince1970.isFinite
             && (value.note.map { $0.count <= 4_000 } ?? true)
             && validConditions(value.conditions)
+            // A revision is a configuration of this same plan, so the account it
+            // captured has to have been a legal one: a configuration naming the
+            // legacy "not decided yet" label is not a plan the store ever wrote,
+            // and a later edit must not carry one forward through history.
+            && TradePlanConfiguration.isValidExecutionAccount(value.executionAccountID)
             // A revision is a configuration of this same plan, so the binding
             // it captured has to have been a legal one: a captured card on a
             // buy, or on a sell with no active pool, is not a plan the store

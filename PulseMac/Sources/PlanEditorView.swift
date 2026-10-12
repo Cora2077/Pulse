@@ -30,6 +30,18 @@ struct PlanEditorView: View {
     /// had. It is metadata only: it never creates a fill, and recording a fill
     /// asks for the funding that actually moved instead of reusing this.
     @State private var fundingSource: PositionFundingSource?
+    /// The ledger this plan means to be executed in, or `nil` for "decide when
+    /// it fills".
+    ///
+    /// A default, never a constraint: a fill names its own destination, so a
+    /// plan may be executed somewhere else entirely, and the same plan may be
+    /// filled in several ledgers over time. Storing it here only spares the
+    /// user from re-answering a question they have already answered. `nil`
+    /// stays `nil` — an old plan that never carried the field is not silently
+    /// assigned the ledger it happens to live in, because the ledger a plan is
+    /// *stored* in is bookkeeping and the ledger it is *meant* for is a
+    /// decision the user makes.
+    @State private var executionAccount: BrokerageAccountID?
     /// Always non-nil while editing. An empty array saves as `[]` (an explicit
     /// "no conditions"); `nil` is reserved for plans that never had the field.
     @State private var conditions: [TradePlanCondition] = []
@@ -86,6 +98,16 @@ struct PlanEditorView: View {
 
     private var accountMatchesDraft: Bool {
         appState.watchlist.activeBrokerageAccountID == draftAccount
+    }
+
+    /// The draft's execution default with `unassigned` folded away.
+    ///
+    /// The picker cannot produce it — its two options are named ledgers and the
+    /// first tag is `nil` — but the value is also read on the dirty check and on
+    /// save, and those must agree with the display helpers about what counts as
+    /// a decision. One fold, asked once.
+    private var normalizedExecutionAccount: BrokerageAccountID? {
+        PlanExecutionAccountDisplay.namedAccount(executionAccount)
     }
 
     /// Whether the draft's account no longer matches the store: writes are
@@ -145,6 +167,26 @@ struct PlanEditorView: View {
         appState.palette.color(isUp: kind == .buy)
     }
 
+    /// The caption under the editor's title.
+    ///
+    /// It names the plan's *default execution account* — the ledger the user
+    /// decided the fill should go to — and never the ledger this draft writes
+    /// into. Those are two different facts and the header used to print the
+    /// second one where the reader expects the first, which made a plan stored
+    /// in the pending-history ledger read as unowned. A plan that has not
+    /// decided yet says so, in the same words the picker's first option uses.
+    ///
+    /// The storage ledger is not lost: it is the `AccountDraftNotice` below,
+    /// which is where a source that must be returned to belongs, and the
+    /// account mismatch guard is unchanged.
+    private var defaultExecutionCaption: String {
+        let account = normalizedExecutionAccount
+        return PulseLocalization.localizedString(
+            "plan.defaultExecution.caption",
+            PlanExecutionAccountDisplay.value(account)
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             PositionPageHeader(
@@ -153,7 +195,7 @@ struct PlanEditorView: View {
                 title: (PulseLocalization.localizedString(
                     planID == nil ? "plan.title.add" : "plan.title.edit"
                 ), sideColor),
-                accountCaption: AccountIdentity.title(draftAccount),
+                accountCaption: defaultExecutionCaption,
                 onBack: { route = returnRoute.popoverRoute }
             )
             AccountDraftNotice(account: draftAccount)
@@ -181,6 +223,7 @@ struct PlanEditorView: View {
                     statusPicker
                     if boundPortionID == nil {
                         poolPicker
+                        executionAccountPicker
                         fundingPicker
                     }
                     conditionSection
@@ -273,6 +316,20 @@ struct PlanEditorView: View {
         return item.availableSalePlanQuantity(for: boundPortionID, excludingPlanID: planID)
     }
 
+    /// The one ledger a card-bound sell can be executed in: the ledger the card
+    /// is stored in.
+    ///
+    /// A bound sell's shares are a row inside `draftAccount`'s own position
+    /// allocation, and the store refuses a sale that names any other ledger.
+    /// The editor therefore locks the default to that ledger rather than
+    /// offering a choice the write path would reject — and it is still written
+    /// as a *default*, so nothing here overrides the account the fill itself
+    /// names on the sheet.
+    private var boundExecutionAccount: BrokerageAccountID? {
+        guard boundPortionID != nil else { return nil }
+        return PlanExecutionAccountDisplay.namedAccount(draftAccount)
+    }
+
     private var filledQuantity: Double {
         guard let existingPlan, let item else { return 0 }
         return TradePlanExecutionProgress(plan: existingPlan, transactions: item.transactions).filledQuantity
@@ -357,6 +414,7 @@ struct PlanEditorView: View {
         return kind == plan.kind && parsedPrice == plan.price && parsedQuantity == plan.quantity
             && status == plan.status && Self.normalizedNote(noteText) == plan.note
             && positionPool == plan.positionPool && fundingSource == plan.fundingSource
+            && normalizedExecutionAccount == PlanExecutionAccountDisplay.namedAccount(plan)
             && boundPortionID == plan.positionPortionID && conditions == (plan.conditions ?? [])
     }
 
@@ -430,9 +488,66 @@ struct PlanEditorView: View {
         }
     }
 
-    /// The intended funding. It is a plan *intention*, so it never touches a
-    /// transaction: recording the fill asks separately what money actually
-    /// moved, and answers can differ without anything being inconsistent.
+    /// The ledger this plan means to be executed in — a *default*, offered as a
+    /// suggestion when a fill is recorded, never a constraint on where the fill
+    /// may go. The first option is a real answer, not a placeholder: a plan
+    /// whose execution ledger has not been decided keeps saying so, and a fill
+    /// then asks the question at the moment the answer is actually known.
+    ///
+    /// The row is compact and sits with the other plan-level intentions (pool,
+    /// funding) rather than in a card of its own. It is one more optional
+    /// decision about the same intention, so it reads as a sibling of those two
+    /// and not as a warning about this editor's account.
+    ///
+    /// The options are the two named ledgers. `unassigned` is deliberately
+    /// absent: it is where old records wait, it accepts no new buy, and a plan
+    /// that said "execute in the pending-history bucket" would be a claim the
+    /// write path refuses. A plan stored in the unassigned ledger may still
+    /// name a real account here — that is the whole point of separating the two
+    /// — and its caption says which one it will fill in.
+    private var executionAccountPicker: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(PulseLocalization.localizedString("plan.executionAccount"))
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+            Picker("", selection: $executionAccount) {
+                Text(PlanExecutionAccountDisplay.undecidedTitle)
+                    .tag(nil as BrokerageAccountID?)
+                ForEach(AccountIdentity.destinations) { account in
+                    Text(AccountIdentity.title(account)).tag(Optional(account))
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .accessibilityIdentifier("plan.execution.account")
+            .accessibilityLabel(PulseLocalization.localizedString("plan.executionAccount"))
+            .onChange(of: executionAccount) { _, _ in
+                // A funding intention that names margin only means anything in
+                // an account that can hold it. Moving the default to mengmeng
+                // therefore drops a stored `.margin` back to ordinary capital —
+                // exactly the pairing `BuyAccountMethodFields` enforces at fill
+                // time. Clearing the default (`nil`) changes nothing: "not
+                // decided" makes no claim about money, so an existing funding
+                // annotation is left alone rather than silently rewritten.
+                if let account = normalizedExecutionAccount,
+                   !account.permitsBuy(fundingSource: fundingSource ?? .own),
+                   fundingSource == .margin {
+                    fundingSource = .own
+                }
+                clearError()
+            }
+            Text(PulseLocalization.localizedString("plan.executionAccount.help"))
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The money the user *intends* to use. It is a plan *intention*, so it
+    /// never touches a transaction: recording the fill asks separately what
+    /// money actually moved, and answers can differ without anything being
+    /// inconsistent.
     ///
     /// The picker is absent on the mengmeng account, which buys with its own
     /// money by construction: there is no intention left to express, and the
@@ -440,6 +555,10 @@ struct PlanEditorView: View {
     /// for here. The account still reaches the row wherever the row exists, so
     /// its wording — 担保品 inside the financing account — is the one the
     /// account actually uses.
+    ///
+    /// The picker's *account* is the storage ledger, not the execution default:
+    /// the two are independent, and a margin intention belongs to the money,
+    /// not to whichever ledger the plan happens to be filed in.
     @ViewBuilder
     private var fundingPicker: some View {
         if draftAccount != .mengmeng {
@@ -787,6 +906,22 @@ struct PlanEditorView: View {
             kind = .sell
             positionPool = boundSource?.pool.effectivePurpose
             quantityText = Self.fieldText(availableSourceQuantity)
+            // A sell bound to one card can only ever be executed in the ledger
+            // that holds that card: the store refuses a sale that names another
+            // account, because a sale consumes shares where they already live
+            // and moving them between ledgers behind the user's back is exactly
+            // what that refusal prevents. The default is therefore the card's
+            // own ledger, and `executionAccountPicker` is not offered on this
+            // path at all.
+            executionAccount = boundExecutionAccount
+        } else {
+            // A brand-new plan opened from a named ledger may pre-fill that
+            // ledger as the visible default — the user is standing in it, and
+            // they can still change the answer or clear it. A new plan opened
+            // from the pending-history ledger gets `nil`: that ledger is not
+            // somewhere a fill can go, so offering it would be a default the
+            // write path would have to refuse.
+            executionAccount = PlanExecutionAccountDisplay.namedAccount(draftAccount)
         }
     }
 
@@ -799,6 +934,7 @@ struct PlanEditorView: View {
                 loadedAllocationRevision = item?.positionAllocation?.revision
                 positionPool = boundSource?.pool.effectivePurpose
                 quantityText = Self.fieldText(availableSourceQuantity)
+                executionAccount = boundExecutionAccount
                 clearError()
                 return
             }
@@ -823,6 +959,9 @@ struct PlanEditorView: View {
         // stored plan stays unchanged until Save accepts the draft.
         positionPool = boundPortionID == nil ? plan.positionPool : (boundSource?.pool.effectivePurpose ?? plan.positionPool)
         fundingSource = plan.fundingSource
+        // The stored default, folded so a legacy `unassigned` reads as "not
+        // decided" rather than as a ledger the user chose.
+        executionAccount = PlanExecutionAccountDisplay.namedAccount(plan)
         conditions = plan.conditions ?? []
         expandedConditionIDs = []
         loadedUpdatedAt = plan.updatedAt
@@ -934,6 +1073,15 @@ struct PlanEditorView: View {
         // moment a stored `.margin` (or a deliberate clearing) is rewritten.
         plan.fundingSource = fundingSource
             ?? (existingPlan == nil && kind == .buy && draftAccount == .mengmeng ? .own : nil)
+        // The default execution ledger, written through the same fold the
+        // picker, the caption, and the dirty check read: a bound sell keeps the
+        // ledger that holds its card, an unbound plan keeps whatever the user
+        // chose (including a deliberate "decide when it fills"), and a plan that
+        // is stored in the pending-history ledger may still name a real account
+        // — the storage ledger and the execution default are independent facts.
+        plan.executionAccountID = boundPortionID != nil
+            ? boundExecutionAccount
+            : normalizedExecutionAccount
         // An empty list is an explicit "no conditions"; a plan that never had
         // the field keeps `nil` so the two stay distinguishable.
         plan.conditions = conditions.isEmpty && existingPlan?.conditions == nil ? nil : conditions

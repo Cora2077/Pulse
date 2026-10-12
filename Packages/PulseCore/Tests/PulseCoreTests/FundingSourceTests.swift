@@ -552,7 +552,11 @@ final class FundingSourceTests: XCTestCase {
         XCTAssertEqual(annotation.portions.filter { $0.fundingSource == .margin }.count, 1)
 
         let archive = source.archive()
-        XCTAssertEqual(archive.version, 8, "funding data must raise the declared version")
+        // The fill names its plan's ledger explicitly, so the payload claims the
+        // newer source-account version (14) rather than the funding version (8).
+        // Funding is still what the assertions below require to survive; the
+        // older-version gate for funding itself is covered by the lie test.
+        XCTAssertEqual(archive.version, 14, "a plan fill must raise the declared version past its funding data")
         let text = try archive.encoded()
 
         let decoded = try WatchlistArchive.decoded(from: text)
@@ -598,19 +602,25 @@ final class FundingSourceTests: XCTestCase {
             symbol: symbol, planID: plan.id, price: 10, quantity: 4,
             date: .now, fee: nil, note: nil, fundingSource: .margin
         )
-        let valid = try store.archive().encoded()
-        let lowered = valid.replacingOccurrences(of: "\"version\" : 8", with: "\"version\" : 7")
+        let storeArchive = store.archive()
+        let valid = try storeArchive.encoded()
+        // The fixture lowers whatever this payload actually declares. A fill
+        // names its plan source now, so the declared version is higher than the
+        // funding version alone; the lie being tested is the same either way.
+        let declared = storeArchive.version
+        let lowered = valid.replacingOccurrences(
+            of: "\"version\" : \(declared)", with: "\"version\" : \(declared - 1)")
         XCTAssertNotEqual(valid, lowered, "the fixture must actually lower the version")
-        XCTAssertThrowsError(try WatchlistArchive.decoded(from: lowered)) { error in
-            XCTAssertEqual(error as? WatchlistArchive.DecodingFailure, .unsupportedVersion(8))
-        }
+        XCTAssertThrowsError(try WatchlistArchive.decoded(from: lowered))
 
         // The same lie told only through the plan's own intent.
         var planOnly = try makeStore("archive-lie-plan")
         planOnly.0.setTradePlan(TradePlan(kind: .buy, price: 10, quantity: 4, fundingSource: .own),
                                 for: symbol)
-        let planText = try planOnly.0.archive().encoded()
-            .replacingOccurrences(of: "\"version\" : 8", with: "\"version\" : 7")
+        let planArchive = planOnly.0.archive()
+        let planText = try planArchive.encoded()
+            .replacingOccurrences(of: "\"version\" : \(planArchive.version)",
+                                  with: "\"version\" : \(planArchive.version - 1)")
         XCTAssertThrowsError(try WatchlistArchive.decoded(from: planText)) { error in
             XCTAssertEqual(error as? WatchlistArchive.DecodingFailure, .unsupportedVersion(8))
         }

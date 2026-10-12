@@ -614,7 +614,7 @@ struct PopoverRootView: View {
     /// thesis section past the bottom edge, where it gets clipped.
     private func detailHeight(for symbol: SymbolID) -> CGFloat {
         guard plansApply(to: symbol) else { return 560 }
-        let planCount = appState.watchlist.item(for: symbol)?.plans.count ?? 0
+        let planCount = BrokerageBoardReader.displayPlans(store: appState.watchlist, symbol: symbol).count
         return min(Self.maxHeight, 560 + PlanSection.sectionHeight(planCount: planCount))
     }
 
@@ -653,10 +653,12 @@ struct PopoverRootView: View {
             // budgeted from the measured height above the trade rows plus one
             // row per trade, so it neither leaves the old 40pt of dead space
             // nor crowds the rows it shows.
-            guard let item = appState.watchlist.item(for: symbol) else { return 360 }
+            guard let item = appState.watchlist.item(for: symbol) else {
+                return appState.watchlist.tradeHistory(for: symbol).isEmpty ? 360 : 480
+            }
             if item.hasPosition {
                 let rows = min(
-                    item.ledger?.entries.count ?? 0,
+                    appState.watchlist.tradeHistory(for: symbol).count,
                     PositionHubView.visibleTransactionCount
                 )
                 return PositionHubView.summaryHeightAboveTrades
@@ -664,7 +666,7 @@ struct PopoverRootView: View {
             }
             // A closed position stacks fewer blocks; it still uses the older
             // fixed heights until it is measured the same way.
-            return item.transactions.isEmpty ? 300 : 380
+            return item.transactions.isEmpty && appState.watchlist.tradeHistory(for: symbol).isEmpty ? 300 : 480
         case .trade(_, .buy, _):
             // Account and buy method each have a labelled row before the
             // confirmation; leave room for both in the menu-bar panel.

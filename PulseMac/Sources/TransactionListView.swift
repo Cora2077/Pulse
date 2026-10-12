@@ -12,12 +12,11 @@ struct TransactionListView: View {
     let returnRoute: PositionReturnRoute
     @Binding var route: PopoverRoute
 
-    private var item: WatchItem? { appState.watchlist.item(for: symbol) }
     private var quote: Quote? { appState.market.quote(for: symbol) }
     private var currencyCode: String? { quote?.currencyCode ?? symbol.currencyCode }
 
-    private var entries: [PositionLedger.Entry] {
-        Array((item?.ledger?.entries ?? []).reversed())
+    private var entries: [AccountTradeHistoryEntry] {
+        appState.watchlist.tradeHistory(for: symbol)
     }
 
     var body: some View {
@@ -32,8 +31,9 @@ struct TransactionListView: View {
                             .padding(.top, 10)
                             .padding(.bottom, 2)
                         ForEach(group.entries) { entry in
-                            TransactionRow(
-                                entry: entry,
+                            AccountTradeHistoryRow(
+                                record: entry,
+                                symbol: symbol,
                                 palette: appState.palette,
                                 currencyCode: currencyCode,
                                 onOpen: {
@@ -78,7 +78,7 @@ struct TransactionListView: View {
 
     private struct MonthGroup {
         var title: String
-        var entries: [PositionLedger.Entry]
+        var entries: [AccountTradeHistoryEntry]
     }
 
     /// Entries are already newest-first; walking them in order keeps months

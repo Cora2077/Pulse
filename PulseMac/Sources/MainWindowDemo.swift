@@ -4,7 +4,7 @@ import PulseCore
 
 @MainActor
 enum MainWindowDemo {
-    static let userDefaultsSuite = "app.pulse.mac.main-window-demo"
+    static let userDefaultsSuite = "app.pulse.mac.main-window-demo.\(ProcessInfo.processInfo.processIdentifier)"
 
     static let infos: [SymbolInfo] = [
         SymbolInfo(symbol: SymbolID(market: .us, code: "AAPL"), name: "Apple Inc.", type: .equity),
@@ -157,6 +157,19 @@ enum MainWindowDemo {
                 ),
                 for: apple
             )
+        }
+
+        // Optional native regression fixture: a source plan and its fill live
+        // in different accounts. The active account has no copy of that fill.
+        if CommandLine.arguments.contains("--trade-history-demo") {
+            state.watchlist.enableBrokerageAccounts()
+            if let plan = state.watchlist.item(for: apple)?.plans.first(where: { $0.kind == .buy }) {
+                _ = try? state.watchlist.recordTradePlanFill(
+                    symbol: apple, planID: plan.id, price: 214, quantity: plan.quantity,
+                    date: today, fee: nil, note: "Cross-account display fixture",
+                    fundingSource: .own, brokerageAccountID: .financing
+                )
+            }
         }
 
         let intradayCandles = makeCandles(for: apple, period: .minute1, basePrice: quoteValues(for: apple).0)

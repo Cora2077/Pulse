@@ -150,24 +150,149 @@ public final class WatchlistStore {
         adoptAccount(id)
     }
 
-    /// Ownership classification, never a broker transfer. Whole ledgers retain
-    /// every original annotation; selected trades retain their immutable payload.
+    /// Ownership classification, never a broker transfer.
+    ///
+    /// The whole move is built in a candidate copy of every ledger, validated
+    /// once, and committed once. A refusal therefore leaves every account exactly
+    /// as it was — including the ones the caller never named.
+    ///
+    /// Two explicit modes, named by the caller and never inferred from a count:
+    ///
+    /// - `.wholeLedger` moves the instrument and its plans. Every fill that
+    ///   refers to a moving plan is re-pointed at the destination, *wherever it
+    ///   is stored*, so a plan filled from another account keeps its progress.
+    ///   The match is the symbol, the plan id and the pre-move source together;
+    ///   a different plan that happens to reuse the plan's UUID is never touched.
+    /// - `.selectedTrades` moves exactly those fills. The source keeps its plans
+    ///   and context, and a moved fill that never named a source is frozen to
+    ///   the ledger it is leaving, so it cannot later be re-read as belonging to
+    ///   wherever it landed.
     @discardableResult
     public func assignBrokerageRecords(for symbol: SymbolID, transactionIDs: Set<UUID>?,
                                        to destination: BrokerageAccountID) -> Bool {
-        guard brokerageAccountsEnabled, activeBrokerageAccountID == .unassigned,
+        assignBrokerageRecords(
+            for: symbol,
+            request: BrokerageOwnership.request(transactionIDs: transactionIDs),
+            to: destination
+        )
+    }
+
+    /// The same classification with the mode stated outright. Selecting every
+    /// remaining trade is still a selection: it moves those trades and leaves the
+    /// source's plans behind, which is what lets the last trade be classified.
+    @discardableResult
+    public func assignBrokerageRecords(for symbol: SymbolID,
+                                       request: BrokerageOwnership.ClassificationRequest,
+                                       to destination: BrokerageAccountID) -> Bool {
+        // The pending-history route, unchanged: it classifies the ledger the user
+        // is currently looking at, and it only ever runs from pending history.
+        // Correcting one *real* ledger into another is a different question with
+        // its own entry point, so a caller who reaches this one from a named
+        // ledger is refused exactly as before.
+        guard activeBrokerageAccountID == .unassigned else { return false }
+        return assignBrokerageRecords(for: symbol, request: request, to: destination,
+                                      from: activeBrokerageAccountID)
+    }
+
+    /// Corrects the *real* ledger of selected trades between two named accounts.
+    ///
+    /// The pending-history route answers "this old record belongs to a real
+    /// account now". This answers the other direction of the same question: the
+    /// user recorded a fill into the wrong real account and is correcting it.
+    /// Both ends must therefore be named — a correction cannot move a record
+    /// *into* pending history, because "belongs to nobody" is not a fact a trade
+    /// can acquire, and it cannot move one *out of* pending history by this
+    /// route, because that is what the classification route above is for.
+    ///
+    /// Everything else is the same machinery: the request mode is still stated
+    /// by the caller, the move is still built in a candidate copy of every
+    /// ledger, and the same structural and semantic checks still gate the single
+    /// commit. A refusal therefore leaves every account exactly as it was.
+    @discardableResult
+    public func correctBrokerageOwnership(for symbol: SymbolID,
+                                          request: BrokerageOwnership.ClassificationRequest,
+                                          from source: BrokerageAccountID,
+                                          to destination: BrokerageAccountID) -> Bool {
+        guard BrokerageOwnership.permitsAccountCorrection(from: source, to: destination)
+        else { return false }
+        return assignBrokerageRecords(for: symbol, request: request, to: destination, from: source)
+    }
+
+    /// The one classification implementation, parameterized by the ledger being
+    /// classified so the pending-history route and the real-account correction
+    /// route cannot drift apart.
+    @discardableResult
+    private func assignBrokerageRecords(for symbol: SymbolID,
+                                        request: BrokerageOwnership.ClassificationRequest,
+                                        to destination: BrokerageAccountID,
+                                        from requestedSource: BrokerageAccountID) -> Bool {
+        guard brokerageAccountsEnabled,
               destination != .unassigned,
-              let source = item(for: symbol) ?? retainedHistoryItem(for: symbol),
-              var target = accountPortfolios[destination] else { return false }
-        let existing = (target.items + target.retainedHistoryItems).first { $0.symbol == symbol }
+              requestedSource != destination,
+              accountPortfolios[requestedSource] != nil,
+              accountPortfolios[destination] != nil else { return false }
+        // The pre-move ledger, captured before anything moves: it is the value
+        // every frozen or re-pointed source reference has to be matched against.
+        // The source is read from the caller's own selection, so a correction is
+        // explicit about which real ledger the record is leaving.
+        let sourceAccount = requestedSource
+
+        // One candidate copy of the whole store. Nothing outside it is mutated
+        // until the finished result has been validated. The active ledger's live
+        // values are folded in first, because the caller may have unsaved edits
+        // in the account it is looking at.
+        var candidate = accountPortfolios
+        candidate[activeBrokerageAccountID] = currentPortfolio()
+        // The instrument has to be *in* the ledger being classified. A symbol
+        // that only exists in the destination is not a source record, and
+        // picking it up from anywhere would let a correction move a trade the
+        // caller never pointed at.
+        guard let source = ((candidate[sourceAccount]?.items ?? [])
+                + (candidate[sourceAccount]?.retainedHistoryItems ?? []))
+                .first(where: { $0.symbol == symbol }),
+              var targetPortfolio = candidate[destination] else { return false }
+        let existing = (targetPortfolio.items + targetPortfolio.retainedHistoryItems)
+            .first { $0.symbol == symbol }
+
         var moved: WatchItem
         var remainder: WatchItem?
-        if let ids = transactionIDs {
+        let movedTransactions: [PositionTransaction]
+        switch request {
+        case .wholeLedger:
             if let existing,
-               existing.thesis != nil || !existing.plans.isEmpty || !existing.events.isEmpty
-                || existing.tradingProfile != nil || !existing.drawings.isEmpty { return false }
+               existing.hasPositionHistory || existing.thesis != nil || !existing.plans.isEmpty
+                || !existing.events.isEmpty || existing.tradingProfile != nil
+                || existing.positionAllocation != nil || !existing.drawings.isEmpty { return false }
+            moved = source
+            for index in moved.plans.indices {
+                var plan = moved.plans[index]
+                if plan.status == .active, plan.positionPortionID != nil,
+                   let intended = plan.executionAccountID, intended != destination {
+                    let prior = TradePlanConfiguration(plan: plan)
+                    plan.executionAccountID = destination
+                    plan.history = (plan.history ?? []) + [TradePlanRevision(configuration: prior)]
+                    plan.updatedAt = .now
+                    moved.plans[index] = plan
+                }
+            }
+            movedTransactions = source.materializedTransactions()
+            remainder = nil
+        case .selectedTrades(let ids):
+            guard !ids.isEmpty else { return false }
+            // A selection moves *trades*, not the instrument's context. The
+            // destination keeping its own plans, thesis, events or drawings is
+            // therefore not a conflict: those records are not being replaced or
+            // rewritten, and the source keeps its own copy of everything but the
+            // trades that left. Refusing on their presence would block exactly
+            // the correction this mode exists for — a fill recorded into the
+            // wrong real account, where the right account already holds plans.
+            //
+            // What still has to hold is the trades themselves: they must be in
+            // the source, they must not already be in the destination, and the
+            // source allocation must be reconcilable so the move can be checked
+            // against real quantities.
             let trades = source.materializedTransactions()
-            guard !ids.isEmpty, ids.isSubset(of: Set(trades.map(\.id))),
+            guard ids.isSubset(of: Set(trades.map(\.id))),
                   !source.positionAllocationNeedsReconciliation else { return false }
             let selected = trades.filter { ids.contains($0.id) }
             let staying = trades.filter { !ids.contains($0.id) }
@@ -178,11 +303,32 @@ public final class WatchlistStore {
             if staying.isEmpty { sourceAfter.lots = [] }
             let template = existing ?? WatchItem(symbol: symbol, displayName: source.displayName,
                 displayNameSource: source.displayNameSource, instrumentType: source.instrumentType, addedAt: source.addedAt)
-            moved = Self.applyingTransactions(prior + selected, to: template)
+            // A fill that already carries `planExecution` but never named a
+            // source is frozen to the ledger it leaves, so it cannot later be
+            // re-read as belonging to wherever it landed.
+            //
+            // Nothing else is touched. In particular a trade whose only link is
+            // a plan's legacy `filledTransactionID` is *not* given a
+            // `planExecution` here: building one from the plan as it stands now
+            // would write a fill-time snapshot that never existed, and that
+            // history is not ours to invent. The link survives the move through
+            // the plan's own id instead, read on demand — see
+            // `transactionsForPlan(_:account:planID:)`.
+            // A moved fill now *is* in the destination ledger, so its own
+            // statement of where it was executed has to follow it. Only that one
+            // reference is touched: the id, price, quantity, date, fee, funding
+            // and captured plan configuration are the trade's history and are
+            // carried across unchanged. The source reference is repaired at the
+            // same time, for the same reason: both describe where the record now
+            // lives relative to the rest of the store.
+            let frozen = Self.repointingMovedFills(selected, to: destination,
+                                                   leaving: sourceAccount)
+            movedTransactions = frozen
+            moved = Self.applyingTransactions(prior + frozen, to: template)
             let sourceLedger = PositionLedger(transactions: trades)
             let targetLedger = PositionLedger(transactions: prior)
             let afterSource = PositionLedger(transactions: staying)
-            let afterTarget = PositionLedger(transactions: prior + selected)
+            let afterTarget = PositionLedger(transactions: prior + frozen)
             guard Self.validAccountLedger(afterSource), Self.validAccountLedger(afterTarget),
                   abs(afterSource.quantity + afterTarget.quantity - sourceLedger.quantity - targetLedger.quantity)
                     <= PositionAllocation.quantityTolerance(afterSource.quantity + afterTarget.quantity,
@@ -212,22 +358,27 @@ public final class WatchlistStore {
             }
             if moved.positionAllocation == nil { _ = initializePositionAllocation(&moved) }
             remainder = sourceAfter
-        } else {
-            if let existing,
-               existing.hasPositionHistory || existing.thesis != nil || !existing.plans.isEmpty
-                || !existing.events.isEmpty || existing.tradingProfile != nil
-                || existing.positionAllocation != nil || !existing.drawings.isEmpty { return false }
-            moved = source
         }
-        target.retainedHistoryItems.removeAll { $0.symbol == symbol }
-        target.items.removeAll { $0.symbol == symbol }
+
+        // A destination that cannot represent a record refuses the whole move
+        // rather than relabelling it. Unmarked and legacy `nil` records are
+        // allowed through untouched.
+        let incomingFunding = movedTransactions
+        let incomingPortions = moved.positionAllocation?.portions ?? []
+        guard BrokerageOwnership.permits(incomingFunding, in: destination),
+              BrokerageOwnership.permits(incomingPortions, in: destination) else { return false }
+
+        targetPortfolio.retainedHistoryItems.removeAll { $0.symbol == symbol }
+        targetPortfolio.items.removeAll { $0.symbol == symbol }
         // Make assigned holdings visible, including a previously dormant ledger.
-        target.items.append(moved)
+        targetPortfolio.items.append(moved)
         let sourceGroupName = groups.first { $0.symbols.contains(symbol) }?.name ?? initialGroupName
-        if let index = target.groups.firstIndex(where: { $0.name == sourceGroupName }) {
-            if !target.groups[index].symbols.contains(symbol) { target.groups[index].symbols.append(symbol) }
-        } else { target.groups.append(WatchlistGroup(name: sourceGroupName, symbols: [symbol])) }
-        var sourcePortfolio = currentPortfolio()
+        if let index = targetPortfolio.groups.firstIndex(where: { $0.name == sourceGroupName }) {
+            if !targetPortfolio.groups[index].symbols.contains(symbol) { targetPortfolio.groups[index].symbols.append(symbol) }
+        } else { targetPortfolio.groups.append(WatchlistGroup(name: sourceGroupName, symbols: [symbol])) }
+        candidate[destination] = targetPortfolio
+
+        var sourcePortfolio = candidate[sourceAccount] ?? currentPortfolio()
         if let remainder {
             if let index = sourcePortfolio.items.firstIndex(where: { $0.symbol == symbol }) {
                 sourcePortfolio.items[index] = remainder
@@ -243,19 +394,250 @@ public final class WatchlistStore {
                 sourcePortfolio.groups[index].manualOrder?.removeAll { $0 == symbol }
             }
         }
-        var proposed = syncSnapshot()
-        proposed.items = sourcePortfolio.items; proposed.groups = sourcePortfolio.groups
-        proposed.retainedHistoryItems = sourcePortfolio.retainedHistoryItems
-        proposed.brokerageAccounts = BrokerageAccountID.allCases.filter { $0 != .unassigned }.compactMap {
-            $0 == destination ? target : accountPortfolios[$0]
+        candidate[sourceAccount] = sourcePortfolio
+
+        // A whole ledger takes its plans with it, so every fill referring to one
+        // of those plans has to follow the plan. That includes the fills that
+        // travelled *inside* the moved instrument — a same-account fill names
+        // the ledger it was written in, so its reference would otherwise still
+        // point at the source and the moved plan would look unfilled — and it
+        // includes fills sitting in accounts this call never named.
+        //
+        // The match is symbol + plan id + the fill's *resolved* pre-move source.
+        // Resolving the source is what keeps a legacy `nil` already sitting in
+        // the destination out of the rewrite (for that fill the source is the
+        // destination itself, which is not the ledger being classified). It is
+        // also what keeps an unrelated plan that merely reuses the plan's UUID
+        // from being rewritten in place of the real one.
+        if request.movesWholeLedger {
+            let planIDs = Set(source.plans.map(\.id))
+            if !planIDs.isEmpty {
+                for account in candidate.keys {
+                    guard var portfolio = candidate[account] else { continue }
+                    var changed = false
+                    func repoint(_ items: inout [WatchItem]) {
+                        for index in items.indices where items[index].symbol == symbol {
+                            for transactionIndex in items[index].transactions.indices {
+                                guard let execution = items[index].transactions[transactionIndex].planExecution,
+                                      planIDs.contains(execution.planID),
+                                      BrokerageOwnership.planSourceAccount(
+                                        for: items[index].transactions[transactionIndex],
+                                        enclosingAccount: account) == sourceAccount,
+                                      execution.sourceAccountID != destination else { continue }
+                                items[index].transactions[transactionIndex].planExecution?.sourceAccountID = destination
+                                changed = true
+                            }
+                        }
+                    }
+                    repoint(&portfolio.items)
+                    repoint(&portfolio.retainedHistoryItems)
+                    if changed { candidate[account] = portfolio }
+                }
+            }
         }
-        guard (try? WatchlistSyncWireCodec.encode(deviceID: "classification-check", snapshot: proposed)) != nil,
-              (try? LocalBackupStore.validateSnapshot(proposed)) != nil else { return false }
-        accountPortfolios[destination] = target
-        accountPortfolios[.unassigned] = sourcePortfolio
-        adoptAccount(.unassigned)
+
+        // Two questions before anything is committed, and both have to hold.
+        // First the structure: the candidate has to encode and validate as a
+        // whole snapshot. Then the meaning: no plan may lose (or gain) linked
+        // fills because it changed ledgers. A structurally valid snapshot with a
+        // broken plan link is exactly the failure this refuses.
+        guard Self.validatedClassificationSnapshot(candidate: candidate) != nil,
+              planProgressIsPreserved(in: candidate, sourceAccount: sourceAccount,
+                  destination: destination, symbol: symbol, movesWholeLedger: request.movesWholeLedger)
+        else { return false }
+        accountPortfolios = candidate
+        // The selection is put back, not moved: a classification from pending
+        // history has always landed the user back there, and a correction between
+        // two real ledgers must leave the user looking at the ledger they chose.
+        adoptAccount(activeBrokerageAccountID)
         save()
         return true
+    }
+
+    /// Freezes the leaving ledger into every plan reference a selected fill
+    /// carries, so classification cannot silently re-interpret old data.
+    ///
+    /// Exactly one shape is touched: a fill that already has a `planExecution`
+    /// and no recorded source gets the ledger it is leaving. A fill that has no
+    /// `planExecution` is returned unchanged — it has no fill-time snapshot to
+    /// preserve, and manufacturing one from the plan's current configuration
+    /// would attribute to the trade a plan it was never recorded against.
+    private static func freezingPlanSource(
+        _ transactions: [PositionTransaction],
+        to source: BrokerageAccountID
+    ) -> [PositionTransaction] {
+        transactions.map { transaction in
+            guard var execution = transaction.planExecution, execution.sourceAccountID == nil else {
+                return transaction
+            }
+            execution.sourceAccountID = source
+            var frozen = transaction
+            frozen.planExecution = execution
+            return frozen
+        }
+    }
+
+    /// Prepares the fills a selection is moving: each one now lives in
+    /// `destination`, so its own `brokerageAccountID` follows it there, and its
+    /// plan source is frozen to the ledger it is leaving when it never named one.
+    ///
+    /// Only those two references change. The id, price, quantity, date, fee,
+    /// funding source and the captured plan configuration are the trade's
+    /// history and travel unchanged — a move re-files a record, it does not
+    /// re-price it. A fill that already names a source keeps it: the fill's
+    /// statement about which ledger owned the plan is a fact recorded at fill
+    /// time, and re-interpreting it here would be exactly the silent rewrite the
+    /// source field exists to prevent.
+    ///
+    /// A fill with no `planExecution` is returned otherwise untouched. It has no
+    /// fill-time snapshot to preserve, and manufacturing one from the plan's
+    /// current configuration would attribute to the trade a plan it was never
+    /// recorded against.
+    private static func repointingMovedFills(
+        _ transactions: [PositionTransaction],
+        to destination: BrokerageAccountID,
+        leaving source: BrokerageAccountID
+    ) -> [PositionTransaction] {
+        freezingPlanSource(transactions, to: source).map { transaction in
+            guard transaction.brokerageAccountID != destination else { return transaction }
+            var moved = transaction
+            moved.brokerageAccountID = destination
+            return moved
+        }
+    }
+
+    /// Builds the snapshot a candidate classification *would* produce and
+    /// validates it as a whole, named accounts included. Nothing is written; the
+    /// caller commits only after this returns. Every account in `candidate` is
+    /// carried over, so a re-pointed fill in an account the caller never named
+    /// is validated rather than dropped.
+    ///
+    /// This is the structural half of the commit check only. It says the bytes
+    /// encode; whether the plan links still mean what they meant is a separate
+    /// question, asked by `planProgressIsPreserved`.
+    private static func validatedClassificationSnapshot(
+        candidate: [BrokerageAccountID: BrokerageAccountPortfolio]
+    ) -> WatchlistSyncSnapshot? {
+        guard let unassigned = candidate[.unassigned] else { return nil }
+        let snapshot = WatchlistSyncSnapshot(
+            items: unassigned.items,
+            groups: unassigned.groups,
+            retainedHistoryItems: unassigned.retainedHistoryItems,
+            brokerageAccounts: BrokerageAccountID.allCases
+                .filter { $0 != .unassigned }
+                .compactMap { candidate[$0] },
+            accountSettings: unassigned.settings
+        )
+        guard (try? WatchlistSyncWireCodec.encode(deviceID: "classification-check", snapshot: snapshot)) != nil,
+              (try? LocalBackupStore.validateSnapshot(snapshot)) != nil else { return nil }
+        return snapshot
+    }
+
+    /// The semantic half of the commit check: every plan that existed before the
+    /// move still exists under the name it should have afterwards, and still
+    /// counts the same fills.
+    ///
+    /// The plan's identity here is symbol + plan id + the ledger that should hold
+    /// it — a whole move carries the classified ledger's plans to `destination`,
+    /// while every other plan keeps the ledger it already had. So this asks two
+    /// things at once: did the plans land where the ownership rules say they
+    /// should, and did the linked fills come with them. A structurally valid
+    /// snapshot is not enough on its own: a re-pointed reference can encode
+    /// perfectly while silently detaching a plan from its fills, and the user
+    /// only finds out when the plan reads as unfilled.
+    ///
+    /// Progress is read with the same query the plan rows use, before and after,
+    /// so the two sides can only differ because the records differ. Completion is
+    /// deliberately not compared: the plan's own status is the user's mark and
+    /// this check never rewrites it, so a plan closed at the same fill count
+    /// stays closed.
+    ///
+    /// A plan that was already gone is not judged; a plan that vanished during
+    /// the move fails here rather than being quietly accepted.
+    private func planProgressIsPreserved(
+        in candidate: [BrokerageAccountID: BrokerageAccountPortfolio],
+        sourceAccount: BrokerageAccountID,
+        destination: BrokerageAccountID,
+        symbol: SymbolID,
+        movesWholeLedger: Bool
+    ) -> Bool {
+        // The ledger a plan should be found in after the move: a whole move
+        // takes the classified ledger's plans with it, and leaves every other
+        // plan exactly where it was.
+        func expectedOwner(of account: BrokerageAccountID) -> BrokerageAccountID {
+            movesWholeLedger && account == sourceAccount ? destination : account
+        }
+        // The pre-move read comes from the live store — `candidate` is built from
+        // it and only the accounts this move touches differ — and the post-move
+        // read from the candidate, so both sides are asked with the same query
+        // and can only differ because the records did.
+        let ledgerNow = { (account: BrokerageAccountID) in
+            self.brokeragePortfolio(for: account).items
+                + self.brokeragePortfolio(for: account).retainedHistoryItems
+        }
+        let ledgerAfter = { (account: BrokerageAccountID) in
+            (candidate[account]?.items ?? []) + (candidate[account]?.retainedHistoryItems ?? [])
+        }
+        var pairs: [(before: BrokerageOwnership.ProgressRead, after: BrokerageOwnership.ProgressRead)] = []
+        for account in BrokerageAccountID.allCases {
+            let plans = ledgerNow(account).filter { $0.symbol == symbol }.flatMap(\.plans)
+            for plan in plans {
+                // An active bound sale must keep its live card. Progress alone
+                // cannot detect a partial move that leaves its binding behind.
+                if plan.status == .active, plan.positionPortionID != nil,
+                   let previousItem = ledgerNow(account).first(where: { $0.symbol == symbol }),
+                   previousItem.salePlanSource(for: plan) != nil {
+                    guard let nextItem = ledgerAfter(expectedOwner(of: account)).first(where: { $0.symbol == symbol }),
+                          let nextPlan = nextItem.plans.first(where: { $0.id == plan.id }),
+                          nextItem.salePlanSource(for: nextPlan) != nil else { return false }
+                }
+                // Both readings are built from the same plan found in the same
+                // ledger, and the *pair* is what carries the ownership question:
+                // `after` is read from the ledger ownership says should hold the
+                // plan once the move is done. Keeping the two readings of one
+                // plan adjacent is what stops a namesake plan that reuses the
+                // same UUID in another ledger from being paired with this one's
+                // progress — the model-side comparison has only symbol and id to
+                // work with, so the caller has to hand it the pairs it means.
+                guard let before = Self.progressRead(account: account, symbol: symbol, plan: plan,
+                                                     ledgers: ledgerNow),
+                      let after = Self.progressRead(account: expectedOwner(of: account), symbol: symbol,
+                                                    plan: plan, ledgers: ledgerAfter)
+                else { return false }
+                pairs.append((before, after))
+            }
+        }
+        // Compared pair by pair, each side consumed once, so two namesakes in
+        // two ledgers stay two separate comparisons.
+        return BrokerageOwnership.planProgressIsPreserved(
+            pairs: pairs.map { (before: $0.before, after: $0.after) })
+    }
+
+    /// Reads one ledger's copy of a plan into the value the classification
+    /// validation compares, using the same plan-link query the plan rows use.
+    ///
+    /// `nil` means "this ledger has no such plan", never "no progress": the
+    /// lookup is by symbol and plan id, and a ledger that does not hold the plan
+    /// is a missing placement the caller has to explain.
+    private static func progressRead(
+        account: BrokerageAccountID,
+        symbol: SymbolID,
+        plan: TradePlan,
+        ledgers: (BrokerageAccountID) -> [WatchItem]
+    ) -> BrokerageOwnership.ProgressRead? {
+        guard let item = ledgers(account).first(where: { $0.symbol == symbol }),
+              item.plans.contains(where: { $0.id == plan.id }) else { return nil }
+        let progress = TradePlanExecutionProgress(
+            plan: plan,
+            transactions: Self.transactions(
+                in: BrokerageAccountID.allCases.map { (account: $0, items: ledgers($0)) },
+                symbol: symbol, planID: plan.id, owningPlan: plan, source: account)
+        )
+        guard progress.filledQuantity.isFinite else { return nil }
+        return BrokerageOwnership.ProgressRead(
+            account: account, symbol: symbol, planID: plan.id,
+            filledQuantity: progress.filledQuantity
+        )
     }
 
     private static func validAccountLedger(_ ledger: PositionLedger) -> Bool {
@@ -690,7 +1072,8 @@ public final class WatchlistStore {
             for symbol in group.symbols where seen.insert(symbol).inserted {
                 guard let item = bySymbol[symbol] else { continue }
                 entries.append(contentsOf: item.plans.map {
-                    TradePlanEntry(symbol: symbol, plan: $0, transactions: transactionsForPlan(symbol))
+                    TradePlanEntry(symbol: symbol, plan: $0,
+                        transactions: transactionsForPlan(symbol, planID: $0.id))
                 })
             }
         }
@@ -997,28 +1380,153 @@ public final class WatchlistStore {
     // MARK: - Transactions
 
     /// Plan progress follows the plan's source account while holdings follow the
-    /// account that actually bought them. A legacy execution inherits its ledger.
-    public func transactionsForPlan(_ symbol: SymbolID, account: BrokerageAccountID? = nil) -> [PositionTransaction] {
+    /// account that actually bought them. The resolution of "which ledger owns
+    /// this fill" lives in `BrokerageOwnership`, so planning, classification and
+    /// the plan-reference readers can never drift apart: a fill that names its
+    /// source is believed, and a legacy fill with no source is read against the
+    /// ledger it is stored in.
+    ///
+    /// Naming a `planID` narrows the answer to that one plan. It is not merely a
+    /// filter: the plan is what makes a legacy fill link readable, because its
+    /// own `filledTransactionID` is the only record naming a trade that no
+    /// `planExecution` points at — and that trade may sit in another ledger
+    /// entirely.
+    ///
+    /// Asked without a plan, this returns the fills a plan *could* count in the
+    /// source ledger: the references that name their own source, plus every
+    /// trade some plan in that ledger explicitly names. A bare trade nobody
+    /// points at is not one of them — including it would put a fill in front of
+    /// every plan and let `TradePlanExecutionProgress` decide, which is how a
+    /// legacy-only link gets silently dropped.
+    public func transactionsForPlan(_ symbol: SymbolID, account: BrokerageAccountID? = nil,
+                                    planID: UUID? = nil) -> [PositionTransaction] {
         let source = account ?? activeBrokerageAccountID
         let accounts = brokerageAccountsEnabled ? BrokerageAccountID.allCases : [activeBrokerageAccountID]
-        return accounts.flatMap { owner -> [PositionTransaction] in
-            let portfolio = brokeragePortfolio(for: owner)
-            let transactions = (portfolio.items + portfolio.retainedHistoryItems)
-                .first { $0.symbol == symbol }?.transactions ?? []
-            return transactions.filter { transaction in
-                if let origin = transaction.planExecution?.sourceAccountID { return origin == source }
-                return owner == source
+        let ledgers = accounts.map { account in
+            let portfolio = brokeragePortfolio(for: account)
+            return (account: account, items: portfolio.items + portfolio.retainedHistoryItems)
+        }
+        // The plan's own copy is the one that carries the legacy link. With a
+        // plan id it is looked for in the ledger being asked about — not
+        // anywhere — so a plan reusing the id in another ledger cannot supply
+        // this one's link.
+        if let planID {
+            let owningPlan = ledgers.first { $0.account == source }?.items
+                .first { $0.symbol == symbol }?.plans.first { $0.id == planID }
+            return Self.transactions(in: ledgers, symbol: symbol, planID: planID,
+                owningPlan: owningPlan, source: source)
+        }
+        let own = ledgers.first { $0.account == source }?.items.first { $0.symbol == symbol }
+        return Self.transactions(in: ledgers, symbol: symbol, source: source,
+            legacyPlans: own?.plans ?? [])
+    }
+
+    /// The one reader behind `transactionsForPlan`, shared by the live store and
+    /// by the classification validation.
+    ///
+    /// It is a pure function of ledgers plus the plan being asked about, which is
+    /// the point: a candidate classification is judged by exactly the query the
+    /// user's own plan rows are built from, so the two can never disagree about
+    /// what a plan's progress is.
+    ///
+    /// `planID` and `owningPlan` travel together. The plan id is the explicit
+    /// reference every fill is matched on, and the owning plan is only what makes
+    /// its own legacy `filledTransactionID` readable — a fill with a
+    /// `planExecution` is never reached through that field.
+    ///
+    /// `legacyPlans` is the plural form: the plans in the source ledger whose own
+    /// `filledTransactionID` names a fill, used when the caller is asking for the
+    /// whole ledger's fill pool rather than one plan's. Each id names one trade,
+    /// and duplicate ids across ledgers are data the wire format already refuses,
+    /// so an id matches at most one record.
+    static func transactions(
+        in ledgers: [(account: BrokerageAccountID, items: [WatchItem])],
+        symbol: SymbolID,
+        planID: UUID? = nil,
+        owningPlan: TradePlan? = nil,
+        source: BrokerageAccountID,
+        legacyPlans: [TradePlan] = []
+    ) -> [PositionTransaction] {
+        // Each ledger contributes its own item once; a symbol tagged into two
+        // groups is the same record, and the ledger, not the group, is the unit.
+        let stores = ledgers.map { ledger in
+            (account: ledger.account, item: ledger.items.first { $0.symbol == symbol })
+        }
+        let all = stores.flatMap { $0.item?.transactions ?? [] }
+        // A record that carries an explicit `planExecution` is linked by name,
+        // and only by name: its source is compared to the ledger being asked
+        // about, in the ledger where it is stored. This is the *only* way an
+        // explicit record can be counted, so a legacy `filledTransactionID`
+        // pointing at it can never claim it for a different plan.
+        let explicit = all.filter { transaction in
+            guard transaction.planExecution != nil else { return false }
+            return BrokerageOwnership.planSourceAccount(for: transaction,
+                enclosingAccount: store(of: transaction, in: stores)) == source
+        }
+        guard let planID else {
+            // The plans in this ledger that name a fill by id. Following those
+            // ids adds exactly the trades no `planExecution` already claims, so
+            // a modern fill and an old legacy-only fill are counted side by side
+            // rather than one displacing the other.
+            let named = legacyPlans.compactMap { plan in
+                all.first { BrokerageOwnership.legacyIDNames($0, owningPlan: plan) }
+            }
+            return explicit + named.filter { candidate in
+                !explicit.contains { $0.id == candidate.id }
             }
         }
+        // Symbol, plan id and the plan's own source are the whole match, so a
+        // different plan that reuses the id is never claimed here. Only fills
+        // that already name this plan *and* this source are counted, each in the
+        // ledger where it is stored.
+        var counted = all.filter { transaction in
+            BrokerageOwnership.referencesPlan(
+                transaction, planID: planID, owningPlan: nil,
+                source: source, enclosingAccount: store(of: transaction, in: stores))
+        }
+        // The plan's own legacy id is an *additional* link, not a fallback: a
+        // plan that has both a modern fill and an old `filledTransactionID` fill
+        // counts both, and a plan whose modern fill merely exists must not lose
+        // the old trade. It reaches only a fill with no explicit reference of its
+        // own, so it can never override one, and only across the ledgers being
+        // read, so it can never invent a trade.
+        if let owningPlan, owningPlan.id == planID, owningPlan.filledTransactionID != nil {
+            let legacy = all.filter { transaction in
+                BrokerageOwnership.legacyIDNames(transaction, owningPlan: owningPlan)
+            }
+            counted.append(contentsOf: legacy.filter { candidate in
+                !counted.contains { $0.id == candidate.id }
+            })
+        }
+        return counted
+    }
+
+    /// The ledger one record is stored in, needed to resolve its implicit
+    /// source. Records are unique across ledgers, so the first match is the only
+    /// match.
+    private static func store(
+        of transaction: PositionTransaction,
+        in stores: [(account: BrokerageAccountID, item: WatchItem?)]
+    ) -> BrokerageAccountID {
+        stores.first { $0.item?.transactions.contains { $0.id == transaction.id } == true }?.account
+            ?? .unassigned
     }
 
     /// An explicit new buy is committed into its chosen ledger in one save.
     /// Only reference identity is copied when that account does not track the symbol.
+    ///
+    /// The destination is resolved first and the account/funding pair is checked
+    /// against the *resolved* ledger, so `nil` cannot slip a new buy past the
+    /// named-account rule by meaning "whatever is selected" — which may itself be
+    /// the pending-history ledger. Both this route and the plan-fill route ask
+    /// the same `BrokerageOwnership` questions.
     @discardableResult
     public func recordBuyTransaction(_ symbol: SymbolID, _ draft: PositionTransaction,
                                      account: BrokerageAccountID) throws -> PositionTransaction {
-        guard brokerageAccountsEnabled, account != .unassigned else { throw TradePlanExecutionError.invalidBuyAccount }
-        guard account.permitsBuy(fundingSource: draft.fundingSource) else { throw TradePlanExecutionError.invalidBuyMethod }
+        let destination = try BrokerageOwnership.resolveBuyDestination(
+            requested: account, selected: activeBrokerageAccountID, accountsEnabled: brokerageAccountsEnabled)
+        try BrokerageOwnership.validateBuyFunding(
+            destination, fundingSource: draft.fundingSource, accountsEnabled: brokerageAccountsEnabled)
         guard draft.kind == .buy else { throw TradePlanExecutionError.invalidFill }
         try validateNewTransaction(draft)
         guard let source = item(for: symbol) ?? retainedHistoryItem(for: symbol)
@@ -1027,9 +1535,9 @@ public final class WatchlistStore {
                 return (portfolio.items + portfolio.retainedHistoryItems).first { $0.symbol == symbol }
             }).first else { throw TradePlanExecutionError.itemNotFound }
         var transaction = draft
-        transaction.brokerageAccountID = account
-        let target = try portfolioAppendingBuy(transaction, symbol: symbol, source: source, account: account)
-        try commitAccountPortfolios([account: target])
+        transaction.brokerageAccountID = destination
+        let target = try portfolioAppendingBuy(transaction, symbol: symbol, source: source, account: destination)
+        try commitAccountPortfolios([destination: target])
         return transaction
     }
 
@@ -1157,14 +1665,28 @@ public final class WatchlistStore {
             throw TradePlanExecutionError.planNotFound
         }
         let plan = previous.plans[planIndex]
-        let destination = brokerageAccountID ?? activeBrokerageAccountID
-        if let brokerageAccountID {
-            guard brokerageAccountsEnabled, brokerageAccountID != .unassigned else { throw TradePlanExecutionError.invalidBuyAccount }
-            guard plan.kind == .buy || brokerageAccountID == activeBrokerageAccountID else { throw TradePlanExecutionError.invalidBuyAccount }
-            if plan.kind == .buy, !destination.permitsBuy(fundingSource: fundingSource) { throw TradePlanExecutionError.invalidBuyMethod }
+        // The plan's own ledger is always known, and a fill always names it.
+        let source = activeBrokerageAccountID
+        // Where the fill is written. A buy names a destination, and that
+        // destination is resolved before it is judged, so `nil` — "the selected
+        // ledger" — cannot slip a new buy past the named-account rule. A sale
+        // names the *actual* ledger whose shares it consumes: by default the
+        // plan's own, but a plan not bound to one portion card may be executed
+        // against another named holding, and then the fill is recorded there.
+        let destination: BrokerageAccountID
+        let sellExecution: BrokerageOwnership.SellExecution?
+        if plan.kind == .buy {
+            destination = try BrokerageOwnership.resolveBuyDestination(
+                requested: brokerageAccountID, selected: source, accountsEnabled: brokerageAccountsEnabled)
+            try BrokerageOwnership.validateBuyFunding(
+                destination, fundingSource: fundingSource, accountsEnabled: brokerageAccountsEnabled)
+            sellExecution = nil
+        } else {
+            destination = try BrokerageOwnership.resolveSellDestination(
+                requested: brokerageAccountID, planSource: source,
+                accountsEnabled: brokerageAccountsEnabled)
+            sellExecution = destination == source ? nil : BrokerageOwnership.SellExecution(account: destination)
         }
-        if plan.kind == .buy, fundingSource == .margin,
-           brokerageAccountsEnabled && destination != .financing { throw TradePlanExecutionError.invalidBuyMethod }
         // The status gate, asked of the *stored* plan. Backfill widens it to a
         // stopped plan that is still short of its size in the aggregate of its
         // linked fills — including fills recorded into other accounts, so a
@@ -1177,13 +1699,18 @@ public final class WatchlistStore {
         // here with the same `stalePlan` the ordinary route gives a plan that
         // is not active.
         let backfillable = plan.status == .done
-            && TradePlanExecutionProgress(plan: plan, transactions: transactionsForPlan(symbol)).remainingQuantity > 0
+            && TradePlanExecutionProgress(plan: plan,
+                transactions: transactionsForPlan(symbol, planID: plan.id)).remainingQuantity > 0
         guard plan.hasValidPayload,
               historicalBackfill ? backfillable : plan.status == .active,
               expectedPlanUpdatedAt.map({ $0 == plan.updatedAt }) ?? true else {
             throw TradePlanExecutionError.stalePlan
         }
-        if let expectedAllocationRevision,
+        // The revision stamp checks the allocation the fill actually changes. For
+        // a sale that runs in another ledger that is the *executing* ledger's
+        // allocation, so the cross-account path applies this check itself against
+        // the right item; here it covers the ordinary same-ledger case.
+        if sellExecution == nil, let expectedAllocationRevision,
            previous.positionAllocation?.revision != expectedAllocationRevision {
             throw TradePlanExecutionError.staleAllocation
         }
@@ -1203,21 +1730,25 @@ public final class WatchlistStore {
             id: transactionID, kind: plan.kind == .buy ? .buy : .sell,
             price: price, quantity: quantity, date: date, fee: fee,
             note: Self.nonemptyText(note),
+            // The plan's ledger is written down even when the fill lands in the
+            // same one. A same-account fill that left this `nil` would only be
+            // linked by *where it happens to be stored*, so classifying either
+            // side later would silently orphan it.
             planExecution: TradePlanExecution(planID: planID, configuration: TradePlanConfiguration(plan: plan),
-                sourceAccountID: destination == activeBrokerageAccountID ? nil : activeBrokerageAccountID),
+                sourceAccountID: source),
             // The reported fill's funding; the snapshot above keeps the plan's
             // intent. Both are stored because they answer different questions.
             fundingSource: fundingSource,
             brokerageAccountID: brokerageAccountsEnabled && destination != .unassigned ? destination : nil
         )
-        if plan.kind == .buy, destination != activeBrokerageAccountID {
+        if plan.kind == .buy, destination != source {
             try validateNewTransaction(transaction)
             let target = try portfolioAppendingBuy(transaction, symbol: symbol, source: previous, account: destination)
-            var source = currentPortfolio()
+            var sourcePortfolio = currentPortfolio()
             var updatedPlan = plan
-            updatedPlan.filledTransactionID = plan.filledTransactionID ?? transactionID
-            let fills = transactionsForPlan(symbol) + [transaction]
-            if TradePlanExecutionProgress(plan: updatedPlan, transactions: fills).isComplete {
+            Self.adoptRecordedFillLink(&updatedPlan, transactionID: transactionID, plans: previous.plans)
+            let fills = transactionsForPlan(symbol, planID: plan.id)
+            if TradePlanExecutionProgress(plan: updatedPlan, transactions: fills + [transaction]).isComplete {
                 updatedPlan.status = .done
             } else if !historicalBackfill {
                 // Same rule as the same-account path below: only ordinary
@@ -1226,9 +1757,17 @@ public final class WatchlistStore {
                 updatedPlan.status = .active
             }
             updatedPlan.updatedAt = .now
-            source.items[index].plans[planIndex] = updatedPlan
-            try commitAccountPortfolios([activeBrokerageAccountID: source, destination: target])
+            sourcePortfolio.items[index].plans[planIndex] = updatedPlan
+            try commitAccountPortfolios([source: sourcePortfolio, destination: target])
             return transaction
+        }
+        if let sellExecution {
+            return try recordCrossAccountPlanSale(
+                symbol: symbol, plan: plan, planIndex: planIndex, source: source,
+                execution: sellExecution, transaction: transaction, quantity: quantity,
+                salePortionQuantities: salePortionQuantities,
+                expectedAllocationRevision: expectedAllocationRevision,
+                historicalBackfill: historicalBackfill)
         }
         _ = initializePositionAllocation(&previous)
         var transactions = previous.materializedTransactions()
@@ -1259,10 +1798,8 @@ public final class WatchlistStore {
         if plan.kind == .buy { recordAppendedBuy(transaction, previous: previous, at: index) }
         if let soldAllocation { allItems[index].positionAllocation = soldAllocation }
         var updatedPlan = plan
-        updatedPlan.filledTransactionID = plan.filledTransactionID.flatMap { legacyID in
-            transactionsForPlan(symbol).contains { $0.id == legacyID } ? legacyID : nil
-        } ?? transactionID
-        let fills = transactionsForPlan(symbol)
+        Self.adoptRecordedFillLink(&updatedPlan, transactionID: transactionID, plans: previous.plans)
+        let fills = transactionsForPlan(symbol, planID: plan.id)
         if TradePlanExecutionProgress(plan: updatedPlan, transactions: fills).isComplete {
             updatedPlan.status = .done
         } else if !historicalBackfill {
@@ -1279,6 +1816,154 @@ public final class WatchlistStore {
         allItems[index].plans[planIndex] = updatedPlan
         save()
         return transaction
+    }
+
+    /// Records a sale against a real ledger other than its plan's own.
+    ///
+    /// The plan stays where it is and keeps its context; what moves is the
+    /// *fill*, which is written into the ledger whose shares it actually
+    /// consumed. One plan can therefore be worked in more than one account —
+    /// a user who sells part of a position in each of two brokers records both
+    /// fills against the same plan — while the plan still reads as one record
+    /// with one aggregate progress.
+    ///
+    /// Three things make that safe rather than a second accounting rule:
+    ///
+    /// - The sale consumes the execution ledger's *real* shares, through the
+    ///   same `planSaleAllocation` the same-account path uses. Nothing here
+    ///   invents a share record or a portion card; if the execution ledger has
+    ///   no reconcilable position, the sale is refused.
+    /// - Both ledgers are committed together, in one candidate snapshot,
+    ///   validated once. There is no tentative write and no rollback: an
+    ///   invalid candidate throws before a single value is published.
+    /// - A plan bound to one portion card (`positionPortionID`) is refused here.
+    ///   Its binding says which card it sells, and a card belongs to one ledger,
+    ///   so executing it elsewhere would spend shares the user never tied this
+    ///   plan to.
+    ///
+    /// The fill records the *plan's* ledger as its source reference, because
+    /// that is where the plan is and where its progress is read from. The
+    /// execution ledger is recorded on the fill's own `brokerageAccountID`.
+    private func recordCrossAccountPlanSale(
+        symbol: SymbolID,
+        plan: TradePlan,
+        planIndex: Int,
+        source: BrokerageAccountID,
+        execution: BrokerageOwnership.SellExecution,
+        transaction: PositionTransaction,
+        quantity: Double,
+        salePortionQuantities: [UUID: Double]?,
+        expectedAllocationRevision: UUID?,
+        historicalBackfill: Bool
+    ) throws -> PositionTransaction {
+        // A bound plan sells exactly one card, and that card lives in one
+        // ledger. Executing it somewhere else is not a cross-account sale; it is
+        // a different sale the user did not ask for.
+        guard plan.positionPortionID == nil else { throw TradePlanExecutionError.invalidBuyAccount }
+        // The plan stays in the ledger it was found in, so its own item is where
+        // the progress update is written.
+        guard let planHolder = allItems.first(where: { $0.symbol == symbol }),
+              planHolder.plans.indices.contains(planIndex) else {
+            throw TradePlanExecutionError.planNotFound
+        }
+        let planHolderPlans = planHolder.plans
+        guard let targetPortfolio = accountPortfolios[execution.account] else {
+            throw TradePlanExecutionError.invalidBuyAccount
+        }
+        guard var targetItem = (targetPortfolio.items + targetPortfolio.retainedHistoryItems)
+            .first(where: { $0.symbol == symbol }) else {
+            throw TradePlanExecutionError.itemNotFound
+        }
+        guard targetItem.supportsPosition else { throw TradePlanExecutionError.unsupportedInstrument }
+        guard targetItem.positionQuantity > 0, !targetItem.positionAllocationNeedsReconciliation else {
+            throw TradePlanExecutionError.allocationNeedsReconciliation
+        }
+        // A cross-account sale spends shares that are really in the executing
+        // ledger, so it can never take more than that ledger holds. The plan's
+        // own remaining size is a different question and does not license
+        // overdrawing a real position here; inventing a share record to cover
+        // the difference would be worse than refusing.
+        guard quantity <= targetItem.positionQuantity
+                + PositionAllocation.quantityTolerance(quantity, targetItem.positionQuantity) else {
+            throw TradePlanExecutionError.allocationNeedsReconciliation
+        }
+        // The revision the caller checked against is the *executing* ledger's:
+        // that is the allocation this sale changes, and a stale view of it is
+        // exactly the race the stamp exists to catch.
+        if let expectedAllocationRevision,
+           targetItem.positionAllocation?.revision != expectedAllocationRevision {
+            throw TradePlanExecutionError.staleAllocation
+        }
+        _ = initializePositionAllocation(&targetItem)
+        var transactions = targetItem.materializedTransactions()
+        transactions.append(transaction)
+        let updatedTarget = Self.applyingTransactions(transactions, to: targetItem)
+        let ledger = PositionLedger(transactions: updatedTarget.transactions)
+        guard ledger.quantity.isFinite, ledger.averageCost.isFinite,
+              ledger.realizedPnL.isFinite, ledger.totalFees.isFinite,
+              ledger.costBasis.isFinite, ledger.dilutedCost.isFinite else {
+            throw TradePlanExecutionError.invalidFill
+        }
+        // The plan's own ledger is read for its pool when the caller named no
+        // cards, so a plan's intent still guides the sale; the *shares* come
+        // from the execution ledger, which is what the checks below enforce.
+        let soldAllocation = try planSaleAllocation(
+            previous: targetItem,
+            updated: updatedTarget,
+            plan: plan,
+            transactionID: transaction.id,
+            quantity: quantity,
+            salePortionQuantities: salePortionQuantities
+        )
+        var updatedPlan = plan
+        Self.adoptRecordedFillLink(&updatedPlan, transactionID: transaction.id, plans: planHolderPlans)
+        let fills = transactionsForPlan(symbol, planID: plan.id)
+        if TradePlanExecutionProgress(plan: updatedPlan, transactions: fills + [transaction]).isComplete {
+            updatedPlan.status = .done
+        } else if !historicalBackfill {
+            updatedPlan.status = .active
+        }
+        updatedPlan.updatedAt = .now
+
+        // Two ledgers, one commit. The plan is updated where it lives; the fill
+        // and its allocation are written where the shares were. Both candidates
+        // are built first and published by the single validated commit, so a
+        // refusal cannot leave an empty execution ledger or a half-applied plan.
+        var sourcePortfolio = currentPortfolio()
+        guard let sourceIndex = sourcePortfolio.items.firstIndex(where: { $0.symbol == symbol }) else {
+            throw TradePlanExecutionError.itemNotFound
+        }
+        sourcePortfolio.items[sourceIndex].plans[planIndex] = updatedPlan
+        var target = accountPortfolios[execution.account] ?? targetPortfolio
+        var finalTarget = updatedTarget
+        if let soldAllocation { finalTarget.positionAllocation = soldAllocation }
+        if let index = target.items.firstIndex(where: { $0.symbol == symbol }) { target.items[index] = finalTarget }
+        else {
+            target.retainedHistoryItems.removeAll { $0.symbol == symbol }
+            target.items.append(finalTarget)
+        }
+        try commitAccountPortfolios([source: sourcePortfolio, execution.account: target])
+        return transaction
+    }
+
+    /// Points a plan's legacy `filledTransactionID` at the fill just recorded.
+    ///
+    /// That field is the one place a plan names a fill with nothing else naming
+    /// it back, so it is what keeps a legacy-only link readable now that
+    /// classification no longer synthesises a fill-time snapshot for one (see
+    /// `freezingPlanSource`). Recording a new fill is the moment to say so, and
+    /// the write is emphatically *not* a rewrite of stored history: an existing
+    /// link is kept as it is, and a plan that already names a fill is not
+    /// repointed at a different one.
+    ///
+    /// A plan reusing its id in another ledger is left alone — those are
+    /// different plans, and only the one whose fills were just re-read owns this
+    /// fill.
+    private static func adoptRecordedFillLink(_ plan: inout TradePlan, transactionID: UUID,
+                                              plans: [TradePlan]) {
+        guard !plans.contains(where: { $0.id == plan.id && $0.filledTransactionID != plan.filledTransactionID })
+        else { return }
+        plan.filledTransactionID = plan.filledTransactionID ?? transactionID
     }
 
     /// Works out the post-sale allocation for a plan sell, or refuses.
@@ -1493,6 +2178,13 @@ public final class WatchlistStore {
     /// carry a zero price — that is how a share split is bridged (more shares,
     /// no money moved); a sell at zero would fabricate a realized loss, so it
     /// stays strictly positive.
+    ///
+    /// This is the *legacy* append route: it writes into the ledger the caller
+    /// is looking at and keeps doing so, because fixtures, migrations and the
+    /// backfill of old history all go through it and predate named accounts.
+    /// The named-account rules are enforced on the routes that create records on
+    /// the user's behalf — `recordBuyTransaction`, `recordTradePlanFill` and
+    /// `addNamedTransaction` — not by retroactively refusing this one.
     public func addTransaction(_ symbol: SymbolID, _ transaction: PositionTransaction) {
         if transaction.kind == .buy, let account = transaction.brokerageAccountID {
             _ = try? recordBuyTransaction(symbol, transaction, account: account)
@@ -1513,6 +2205,137 @@ public final class WatchlistStore {
         var transactions = allItems[index].materializedTransactions()
         transactions.append(transaction)
         commitTransactions(transactions, at: index, appendedBuy: transaction.kind == .buy ? transaction : nil)
+    }
+
+    /// Appends a trade to the real account it names, refusing anything that
+    /// would create a record in the pending-history ledger.
+    ///
+    /// This is the go-forward named route, and it is the one the account rules
+    /// apply to. A caller *states* the account; the store writes the record
+    /// there and stamps it with that account, so a new record is never left
+    /// claiming a ledger it is not accounted for in. Naming a ledger other than
+    /// the selected one writes to the named one — it is not a label-only write
+    /// into the selected ledger, which would leave the record's own statement
+    /// disagreeing with where its money is.
+    ///
+    /// Legacy `addTransaction` is untouched and keeps loading and seeding old
+    /// history, including records with no account at all.
+    /// Records a new trade in its explicitly named ledger. Legacy append remains
+    /// available for imports; production forms and agent commands use this path.
+    @discardableResult
+    public func addNamedTransaction(_ symbol: SymbolID, _ transaction: PositionTransaction,
+                                    account: BrokerageAccountID) throws -> PositionTransaction {
+        if transaction.kind == .buy {
+            return try recordBuyTransaction(symbol, transaction, account: account)
+        }
+        guard brokerageAccountsEnabled, account != .unassigned, transaction.kind == .sell else {
+            throw TradePlanExecutionError.invalidBuyAccount
+        }
+        try validateNewTransaction(transaction)
+        var portfolio = brokeragePortfolio(for: account)
+        guard let previous = (portfolio.items + portfolio.retainedHistoryItems).first(where: { $0.symbol == symbol }),
+              previous.supportsPosition else { throw TradePlanExecutionError.itemNotFound }
+        guard previous.positionQuantity > 0,
+              transaction.quantity <= previous.positionQuantity
+                + PositionAllocation.quantityTolerance(transaction.quantity, previous.positionQuantity) else {
+            throw TradePlanExecutionError.allocationNeedsReconciliation
+        }
+        var recorded = transaction
+        recorded.brokerageAccountID = account
+        let updated = Self.applyingTransactions(previous.materializedTransactions() + [recorded], to: previous)
+        guard Self.validAccountLedger(PositionLedger(transactions: updated.transactions)),
+              updated.ledger?.entries.allSatisfy({ $0.resultingQuantity >= 0 }) == true else {
+            throw TradePlanExecutionError.invalidFill
+        }
+        if let index = portfolio.items.firstIndex(where: { $0.symbol == symbol }) {
+            portfolio.items[index] = updated
+        } else if let index = portfolio.retainedHistoryItems.firstIndex(where: { $0.symbol == symbol }) {
+            portfolio.retainedHistoryItems[index] = updated
+        }
+        try commitAccountPortfolios([account: portfolio])
+        return recorded
+    }
+
+    /// Repairs old pending-history records that already state which real account
+    /// they belong to, and returns how many were actually repaired.
+    ///
+    /// A record written after accounts existed can carry its own
+    /// `brokerageAccountID` while still sitting in pending history — the fill
+    /// knows where it belongs, but nobody ever filed it there. This walks those
+    /// records and files them, one candidate commit per (symbol, account) group,
+    /// through the *same* selected-trades classification the user's own action
+    /// uses. That means every repair is checked by the same structural and
+    /// semantic gates, and a group that cannot pass is simply left alone.
+    ///
+    /// What it deliberately does **not** do:
+    ///
+    /// - It never guesses from a portion card's label. A label is not a trade
+    ///   and is not evidence about where a fill happened; only the fill's own
+    ///   recorded account is.
+    /// - It never repairs a record that is not safe. A group with no explicit
+    ///   account, an account that cannot hold the record, a destination whose
+    ///   existing data conflicts, or a move that would change plan progress is
+    ///   skipped and left in pending history, where the UI can explain that it
+    ///   needs a human check. Nothing is "best effort" here.
+    /// - It never changes stored labels. Portion cards keep whatever label they
+    ///   had, and no transaction value other than the two account references a
+    ///   move legitimately updates is touched.
+    ///
+    /// Repeated calls are idempotent: a repaired record has left pending history,
+    /// so a second scan finds nothing to do and returns 0. The current selection
+    /// is preserved.
+    @discardableResult
+    public func repairExplicitBrokerageOwnership() -> Int {
+        guard brokerageAccountsEnabled else { return 0 }
+        let pending = pendingNamedRecords()
+        var repaired = 0
+        var attempted: Set<RepairGroup> = []
+        for (symbol, transaction) in pending {
+            guard let target = BrokerageOwnership.namedLedger(of: transaction) else { continue }
+            let group = RepairGroup(symbol: symbol, account: target)
+            guard attempted.insert(group).inserted else { continue }
+            // Every pending record for this symbol that names this same target
+            // moves in one classification: a partial move would strand its
+            // siblings, and the group is what makes the validation meaningful.
+            let ids = pending
+                .filter { $0.0 == symbol && BrokerageOwnership.namedLedger(of: $0.1) == target }
+                .map(\.1.id)
+            guard !ids.isEmpty else { continue }
+            if classifyPendingHistory(for: symbol, ids: Set(ids), to: target) {
+                repaired += ids.count
+            }
+        }
+        return repaired
+    }
+
+    /// Every transaction in the pending-history ledger, paired with its symbol.
+    private func pendingNamedRecords() -> [(SymbolID, PositionTransaction)] {
+        let pending = brokeragePortfolio(for: .unassigned)
+        return (pending.items + pending.retainedHistoryItems)
+            .flatMap { item in item.materializedTransactions().map { (item.symbol, $0) } }
+    }
+
+    /// The identity a repair is grouped and de-duplicated by.
+    private struct RepairGroup: Hashable {
+        let symbol: SymbolID
+        let account: BrokerageAccountID
+    }
+
+    /// Runs the pending-history classification for one explicit group, with the
+    /// selection restored afterwards.
+    ///
+    /// The classification itself has always required the pending ledger to be
+    /// the *selected* one, because that is how a user reaches it. This borrows
+    /// that selection for the duration of one call and puts the caller's own
+    /// choice back, so an automated repair cannot change what the user is
+    /// looking at — including when it fails, which it does without committing
+    /// anything.
+    @discardableResult
+    private func classifyPendingHistory(for symbol: SymbolID, ids: Set<UUID>,
+                                        to destination: BrokerageAccountID) -> Bool {
+        withBrokerageAccount(.unassigned) {
+            assignBrokerageRecords(for: symbol, request: .selectedTrades(ids), to: destination)
+        }
     }
 
     public func deleteTransaction(_ symbol: SymbolID, id: UUID) {
@@ -1548,7 +2371,7 @@ public final class WatchlistStore {
         guard let existing = transactions.firstIndex(where: { $0.id == transaction.id }) else { return }
         var updated = transaction
         let original = transactions[existing]
-        let account = original.brokerageAccountID ?? activeBrokerageAccountID
+        let account = activeBrokerageAccountID
         guard updated.brokerageAccountID == nil || updated.brokerageAccountID == original.brokerageAccountID else { return }
         guard updated.kind != .buy || updated.fundingSource != .margin || !brokerageAccountsEnabled
             || account == .financing || updated.fundingSource == original.fundingSource else { return }
@@ -1708,7 +2531,7 @@ public final class WatchlistStore {
         let original = portions[index]
         guard original.fundingSource != source else { throw PositionAllocationError.sameFundingSource }
         if brokerageAccountsEnabled, source == .margin,
-           (original.brokerageAccountID ?? activeBrokerageAccountID) != .financing {
+           activeBrokerageAccountID != .financing {
             throw PositionAllocationError.incompatibleAccountFunding
         }
         let tolerance = PositionAllocation.quantityTolerance(quantity, original.quantity)
@@ -1807,27 +2630,24 @@ public final class WatchlistStore {
         return updated
     }
 
-    /// Labels which brokerage account a portion's shares are held in.
+    /// Retired as a *write*: ownership comes from recorded trades.
     ///
-    /// This is metadata-only, in the same family as `markPositionFundingSource`
-    /// and `setPositionConditions`: it moves no share, creates no transaction,
-    /// and touches no price, quantity, cost, pool, origin, funding, or
-    /// condition. What it changes is attribution, so it appends an `.account`
-    /// audit entry whose before/after snapshots carry the previous and resulting
-    /// portions — which is what lets a single-step undo restore the old label and
-    /// what makes an explicit label survive a merge.
+    /// The card label used to be how a user said which brokerage account a
+    /// portion's shares were held in, but a label is not a trade. Letting it
+    /// stand in for the real ledger is exactly the confusion this boundary
+    /// exists to remove: it changes attribution while leaving every transaction
+    /// where it was, so statistics, budgets and the fill history would all
+    /// disagree with the label the user just set.
     ///
-    /// `accountID` is a catalog `BrokerageAccountID`. `.unassigned` is stored as
-    /// itself rather than normalized away, because it is a chosen value while
-    /// `nil` is "inherit the enclosing ledger". There is deliberately no way to
-    /// write `nil` through this API: clearing a label is the `.unassigned` case,
-    /// and the two states stay distinguishable.
+    /// So this API no longer writes anything. Asking for the value a card
+    /// already carries is a no-op and returns the current allocation — that
+    /// keeps idempotent callers working — and any other request is refused with
+    /// `accountOwnershipRequiresClassification`, which is the honest answer:
+    /// the way to change which ledger a record belongs to is to classify the
+    /// recorded trades, not to relabel a card.
     ///
-    /// The guards match every other allocation setter: the item must carry a
-    /// valid, source-matching, fully-allocated position, and the caller's
-    /// revision must be current. Tagging a card with the label it already holds
-    /// returns the current allocation without saving, so a repeated tag never
-    /// bumps the revision or appends history.
+    /// Stored labels remain readable and are preserved: nothing here clears or
+    /// migrates one, and `nil` still means "inherit the enclosing ledger".
     @discardableResult
     public func setPositionBrokerageAccount(
         symbol: SymbolID,
@@ -1842,24 +2662,10 @@ public final class WatchlistStore {
         guard let index = current.portions.firstIndex(where: { $0.id == portionID }) else {
             throw PositionAllocationError.unknownPortion(portionID)
         }
-        guard current.portions[index].brokerageAccountID != accountID else {
-            return current
-        }
-        if brokerageAccountsEnabled, accountID == .mengmeng, current.portions[index].fundingSource == .margin {
-            throw PositionAllocationError.incompatibleAccountFunding
-        }
-        var portions = current.portions
-        portions[index].brokerageAccountID = accountID
-        let updated = changedAllocation(
-            current,
-            portions: portions,
-            item: item,
-            kind: .account,
-            reason: "券商账户标注"
-        )
-        setPositionAllocation(updated, for: symbol)
-        save()
-        return updated
+        // Only the actual enclosing account is a no-op; legacy labels cannot
+        // authorize an ownership change.
+        guard activeBrokerageAccountID != accountID else { return current }
+        throw PositionAllocationError.accountOwnershipRequiresClassification
     }
 
     /// Normalizes and validates one condition payload, refusing anything that
@@ -2252,7 +3058,8 @@ public final class WatchlistStore {
                 item.plans.compactMap { plan -> PlanReference? in
                     guard plan.status != .cancelled else { return nil }
                     return PlanReference(account: account, symbol: item.symbol, id: plan.id,
-                        previousProgress: TradePlanExecutionProgress(plan: plan, transactions: transactionsForPlan(item.symbol, account: account)))
+                        previousProgress: TradePlanExecutionProgress(plan: plan,
+                            transactions: transactionsForPlan(item.symbol, account: account, planID: plan.id)))
                 }
             }
         }
@@ -2265,7 +3072,7 @@ public final class WatchlistStore {
                   let planIndex = items[itemIndex].plans.firstIndex(where: { $0.id == reference.id }) else { return }
             let plan = items[itemIndex].plans[planIndex]
             let progress = TradePlanExecutionProgress(plan: plan,
-                transactions: transactionsForPlan(reference.symbol, account: reference.account))
+                transactions: transactionsForPlan(reference.symbol, account: reference.account, planID: plan.id))
             let reopened = plan.status == .done && reference.previousProgress.isComplete && !progress.isComplete
             let completed = plan.status == .active && progress.isComplete
                 && progress.filledQuantity != reference.previousProgress.filledQuantity
@@ -2723,6 +3530,35 @@ public final class WatchlistStore {
                 )
             )
         }
+        if brokerageAccountsEnabled {
+            for entry in archive.lists.flatMap(\.entries) {
+                guard case .resolved(let symbol) = entry.resolution else { continue }
+                let incoming = entry.transactions ?? []
+                if activeBrokerageAccountID != .unassigned {
+                    if let conflicting = incoming.first(where: {
+                        $0.brokerageAccountID.map { $0 != .unassigned && $0 != activeBrokerageAccountID } ?? false
+                    }), let account = conflicting.brokerageAccountID {
+                        return .init(lists: [], rejectionReason: .transactionAccountConflict(
+                            transactionID: conflicting.id, accountID: account))
+                    }
+                    guard BrokerageOwnership.permits(incoming, in: activeBrokerageAccountID),
+                          BrokerageOwnership.permits(entry.positionAllocation?.portions ?? [], in: activeBrokerageAccountID) else {
+                        return .init(lists: [], rejectionReason: .incompatibleAccountFunding(accountID: activeBrokerageAccountID))
+                    }
+                }
+                let ids = Set(incoming.map(\.id))
+                for account in BrokerageAccountID.allCases {
+                    let portfolio = brokeragePortfolio(for: account)
+                    for existing in portfolio.items + portfolio.retainedHistoryItems
+                        where account != activeBrokerageAccountID || existing.symbol != symbol {
+                        if let duplicate = existing.transactions.first(where: { ids.contains($0.id) }) {
+                            return .init(lists: [], rejectionReason: .transactionAccountConflict(
+                                transactionID: duplicate.id, accountID: account))
+                        }
+                    }
+                }
+            }
+        }
         var listPlans: [WatchlistArchive.ImportPlan.ListPlan] = []
         var itemID = 0
         var originalDrawingsBySymbol: [SymbolID: [ChartDrawing]] = [:]
@@ -2822,6 +3658,21 @@ public final class WatchlistStore {
         // persistence, and no sync callback.
         guard plan.rejectionReason == nil else { return plan }
 
+        // An unscoped single-ledger archive may explicitly name the legacy
+        // plan namespace. Importing it into a user-chosen account changes that
+        // namespace. Named or external references retain their original scope.
+        let archiveEntries = archive.lists.flatMap(\.entries)
+        let archiveTransactions: [PositionTransaction] = archiveEntries.flatMap { $0.transactions ?? [] }
+        let hasLegacyOwnership = archiveTransactions.allSatisfy { transaction in
+            let owner = transaction.brokerageAccountID
+            let source = transaction.planExecution?.sourceAccountID
+            let legacyOwner = owner == nil || owner == BrokerageAccountID.unassigned
+            let legacySource = source == nil || source == BrokerageAccountID.unassigned
+            return legacyOwner && legacySource
+        }
+        let legacyScope = archive.brokerageAccountID == nil && brokerageAccountsEnabled
+            && activeBrokerageAccountID != .unassigned && hasLegacyOwnership
+
         for (list, listPlan) in zip(archive.lists, plan.lists) {
             let name = normalizedName(list.name)
             guard !name.isEmpty else { continue }
@@ -2838,7 +3689,20 @@ public final class WatchlistStore {
             for planItem in listPlan.items {
                 guard let symbol = planItem.symbol else { continue }
                 let entry = planItem.entry
-                let archivedTransactions = entry.transactions ?? []
+                let importedPlanIDs = Set(archiveEntries.filter { other in
+                    if case .resolved(let id) = other.resolution { return id == symbol }
+                    return false
+                }.flatMap { $0.plans ?? [] }.map(\.id))
+                let archivedTransactions = (entry.transactions ?? []).map { transaction in
+                    guard legacyScope else { return transaction }
+                    var scoped = transaction
+                    scoped.brokerageAccountID = activeBrokerageAccountID
+                    if let execution = scoped.planExecution, importedPlanIDs.contains(execution.planID),
+                       execution.sourceAccountID == .unassigned {
+                        scoped.planExecution?.sourceAccountID = activeBrokerageAccountID
+                    }
+                    return scoped
+                }
                 restoreRetainedHistory(for: symbol)
 
                 if let itemIndex = allItems.firstIndex(where: { $0.symbol == symbol }) {
