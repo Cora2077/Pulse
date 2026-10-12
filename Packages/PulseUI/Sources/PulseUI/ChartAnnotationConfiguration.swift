@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import PulseCore
+import SwiftUI
 
 /// The chart interaction mode selected by the host toolbar.
 public enum ChartAnnotationTool: Sendable, Equatable {
@@ -157,6 +158,7 @@ public struct ChartAnnotationConfiguration {
     public var scope: ChartDrawingScope
     public var currencyCode: String?
     public var quantityUnit: String?
+    public var planColor: (@MainActor (TradePlan.Kind) -> Color)?
     public var onUpsert: @MainActor (ChartDrawing) -> Void
     public var onDelete: @MainActor (UUID) -> Void
     public var onEditDrawing: @MainActor (UUID) -> Void
@@ -170,6 +172,7 @@ public struct ChartAnnotationConfiguration {
         scope: ChartDrawingScope,
         currencyCode: String?,
         quantityUnit: String? = nil,
+        planColor: (@MainActor (TradePlan.Kind) -> Color)? = nil,
         onUpsert: @escaping @MainActor (ChartDrawing) -> Void,
         onDelete: @escaping @MainActor (UUID) -> Void,
         onEditDrawing: @escaping @MainActor (UUID) -> Void,
@@ -182,6 +185,7 @@ public struct ChartAnnotationConfiguration {
         self.scope = scope
         self.currencyCode = currencyCode
         self.quantityUnit = quantityUnit
+        self.planColor = planColor
         self.onUpsert = onUpsert
         self.onDelete = onDelete
         self.onEditDrawing = onEditDrawing

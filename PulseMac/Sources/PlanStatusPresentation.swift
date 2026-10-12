@@ -259,13 +259,26 @@ extension TradePlanEntry {
     }
 }
 
+/// The one status chip a plan row wears, on every surface.
+///
+/// It is a *state* chip, not a side chip: the buy/sell action colour is carried
+/// by the row's own accent beside it, so nothing here may borrow
+/// `PlanSideStyle`. The three tints are the app's existing status vocabulary —
+/// neutral while a plan is still waiting, the settled/positive green once it is
+/// filled, the margin/attention orange for an incomplete record — and each is
+/// deliberately a token rather than a literal hue so a badge on the instrument
+/// list, on the plans page, and on the board all read as the same chip.
+///
+/// The wash is one fixed 10% of the tint in both appearances: the capsule is
+/// read as a tint *behind* text at 10pt, so a heavier fill in dark mode would
+/// make the label the brightest thing in the row.
 struct PlanStatusBadge: View {
     let entry: TradePlanEntry
 
     private var tint: Color {
         switch entry.displayState {
         case .waiting: .secondary
-        case .filled: .teal
+        case .filled: .green
         case .abandoned: .secondary
         case .stopped: .orange
         }

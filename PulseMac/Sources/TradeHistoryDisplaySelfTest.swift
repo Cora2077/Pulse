@@ -18,6 +18,13 @@ enum TradeHistoryDisplaySelfTest {
                   $0.accountID == .financing && $0.transaction.price == 214
               }) else { return false }
         do {
+            var sourceSell = try require(store.item(for: symbol)?.plans.first { $0.kind == .sell })
+            sourceSell.price = 226
+            guard store.setTradePlan(sourceSell, for: symbol) else { return false }
+            let added = try store.withBrokerageAccount(.financing) {
+                store.setTradePlan(TradePlan(id: sourceSell.id, kind: .sell, price: 225, quantity: 3), for: symbol)
+            }
+            guard added else { return false }
             for owner in BrokerageAccountID.allCases {
                 _ = state.selectBrokerageAccount(owner)
                 let baseline = store.syncSnapshot()
@@ -26,6 +33,16 @@ enum TradeHistoryDisplaySelfTest {
                         .contains(where: { $0.displayState == .filled && $0.averageFillPrice == 214 }) else {
                     return false
                 }
+                let plans = BrokerageBoardReader.displayPlans(store: store, symbol: symbol)
+                let waiting = plans.filter { $0.displayState == .waiting }
+                guard waiting.count == 2, Set(waiting.map { $0.chartPlan.id }).count == 2,
+                      Set(waiting.map { $0.chartPlan.price }) == [225, 226],
+                      waiting.allSatisfy({ $0.chartPlan.quantity == $0.remainingQuantity }),
+                      plans.first(where: { $0.displayState == .filled })?.chartPlan.status == .done else {
+                    return false
+                }
+                try render(MainInstrumentView(symbol: symbol, initialShowsPlans: true, initialPeriod: .day)
+                    .environment(state), width: 1100, height: 760, name: "plans-\(owner.rawValue)")
                 try render(MainInstrumentView(symbol: symbol, initialShowsTransactions: true, initialPeriod: .day)
                     .environment(state), width: 1100, height: 760, name: "main-\(owner.rawValue)")
                 try render(DetailView(symbol: symbol, route: .constant(.detail(symbol)), initialPeriod: .day)
@@ -41,18 +58,25 @@ enum TradeHistoryDisplaySelfTest {
                 }
             }
             _ = state.selectBrokerageAccount(.unassigned)
+            try render(MainInstrumentView(symbol: symbol, initialShowsPlans: true, initialPeriod: .day)
+                .environment(state), width: 1100, height: 760, name: "plans-dark", scheme: .dark)
             try render(BrokerageAccountClassificationSheet(onAssigned: { _ in }, initialDestination: .financing).environment(state),
                        width: 520, height: 460, name: "classification-light")
             try render(BrokerageAccountClassificationSheet(onAssigned: { _ in }, initialDestination: .financing).environment(state),
                        width: 520, height: 460, name: "classification-dark", scheme: .dark)
             try render(TradeJournalView(onSelect: { _ in }).environment(state),
                        width: 1100, height: 760, name: "journal")
-            print("PULSE_TRADE_HISTORY_SELFTEST passed accounts=3 trades=2 renders=15")
+            print("PULSE_TRADE_HISTORY_SELFTEST passed accounts=3 trades=2 waiting-plans=2 source-identities=2 renders=19")
             return true
         } catch {
             print("PULSE_TRADE_HISTORY_SELFTEST failed: \(error)")
             return false
         }
+    }
+
+    private static func require<T>(_ value: T?) throws -> T {
+        guard let value else { throw CocoaError(.coderInvalidValue) }
+        return value
     }
 
     private static func render<V: View>(_ view: V, width: CGFloat, height: CGFloat, name: String, scheme: ColorScheme = .light) throws {

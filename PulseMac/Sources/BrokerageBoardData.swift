@@ -12,6 +12,16 @@ struct BrokerageBoardItem {
     let item: WatchItem
 }
 
+extension TradePlanEntry {
+    /// Chart identity includes the source account; persisted plan IDs stay intact.
+    var chartPlan: TradePlan {
+        var result = displayState == .waiting ? remainingPlan : plan
+        result.id = id
+        if displayState == .filled { result.status = .done }
+        return result
+    }
+}
+
 /// Collects the cross-account board without touching selection or storage.
 ///
 /// A read-only projection: it never switches `activeBrokerageAccountID`, never

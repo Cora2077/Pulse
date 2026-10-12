@@ -927,7 +927,7 @@ struct ChartAnnotationOverlay: View {
     }
 
     private func planColor(_ kind: TradePlan.Kind) -> Color {
-        coordinates.palette.color(isUp: kind == .buy)
+        configuration.planColor?(kind) ?? coordinates.palette.color(isUp: kind == .buy)
     }
 
     private func sameSessionDay(_ first: Date, _ second: Date, market: Market?) -> Bool {

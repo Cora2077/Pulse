@@ -76,16 +76,35 @@ func poolCopy(_ chinese: String, _ english: String) -> String {
 /// a planned buy read as a gain and a planned sell as a loss, and made one plan
 /// change colour when the user changed how they read quotes.
 ///
-/// Neither hue is in the pool palette (grey/blue/orange) or the status palette
-/// (orange margin, green/amber/red conditions), so a side badge, a pool column,
-/// and a funding tag can share one card and stay three separate statements.
+/// The hues themselves are the user's own long-standing convention: 买入红,
+/// 卖出绿 — buy red, sell green — so a plan reads the way the trade it
+/// describes will be written down. The token stays independent of
+/// `ChangePalette` all the same: these two values are *fixed*, and never swap
+/// with 红涨绿跌, which is why they are literal hex here rather than the shared
+/// palette.
+///
+/// The two hues are also kept out of the pool palette (grey/blue/orange), the
+/// status palette (orange margin, green/amber/red conditions), and the
+/// verification purple, by using shades the app does not otherwise use: a
+/// darker, browner red than the P&L red (0.94/0.26/0.27), and a much darker
+/// forest green than the P&L green (0.04/0.66/0.35). A side badge, a pool
+/// column, and a funding tag can therefore share one card and stay three
+/// separate statements.
+///
+/// Red and green are the one pair a red-green colour deficiency collapses, so
+/// neither mode relies on hue alone: the light green is taken dark enough to
+/// sit well below the light red in luminance, and on dark the red is
+/// desaturated towards pink while the green stays a brighter, cooler green.
+/// Simulated through a deuteranopia transform the two still land ~0.17 apart on
+/// light and ~0.21 apart on dark, so the pair survives the deficiency that
+/// flattens the hues.
 enum PlanSideStyle {
-    /// Teal: "deploy capital in". Separated from the P&L green (#0AA859) by hue
-    /// shift, and from strategic-pool blue (#007AFF) by saturation.
-    static let buy = adaptive(light: 0x0F766E, dark: 0x2DD4BF)
-    /// Magenta-pink: "take capital out". Separated from the P&L red (#F04444),
-    /// verification purple (#AF52DE), and the margin orange.
-    static let sell = adaptive(light: 0xDB2777, dark: 0xF472B6)
+    /// Red: "deploy capital in" — 买入. Readable as 9–10pt text on both
+    /// backgrounds (5.4:1 on white, 5.2–6.0:1 on the dark window).
+    static let buy = adaptive(light: 0xC0392B, dark: 0xFF6B6B)
+    /// Green: "take capital out" — 卖出. The same backgrounds measure 8.3:1
+    /// and 8.2–9.6:1, so the smaller green text is legible too.
+    static let sell = adaptive(light: 0x0D5A34, dark: 0x4ADE80)
 
     /// The side colour of a plan kind.
     static func color(for kind: TradePlan.Kind) -> Color {

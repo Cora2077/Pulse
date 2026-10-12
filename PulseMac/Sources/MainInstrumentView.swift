@@ -697,9 +697,12 @@ struct MainInstrumentView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 2) {
-                        ForEach(plans) { plan in
+                        ForEach(plans) { entry in
+                            let plan = entry.plan
                             Button {
-                                route = .plan(symbol, plan.id, .detail(symbol))
+                                withPlanSourceAccount(entry) {
+                                    route = .plan(symbol, plan.id, .detail(symbol))
+                                }
                             } label: {
                                 HStack(spacing: 8) {
                                     Circle()
@@ -731,23 +734,33 @@ struct MainInstrumentView: View {
         }
     }
 
-    private var noDataPlans: [TradePlan] {
-        (item?.plans ?? []).filter { $0.status == .active || annotationController.showsHistoricalPlans }
+    private var chartPlanEntries: [TradePlanEntry] {
+        BrokerageBoardReader.displayPlans(store: appState.watchlist, symbol: symbol)
+    }
+
+    private var noDataPlans: [TradePlanEntry] {
+        chartPlanEntries.filter { $0.displayState == .waiting || annotationController.showsHistoricalPlans }
     }
 
     private var chartAnnotations: ChartAnnotationConfiguration {
         ChartAnnotationConfiguration(
             controller: annotationController,
             drawings: (item?.drawings ?? []).filter { !$0.isDeleted },
-            plans: item?.plans ?? [],
+            plans: chartPlanEntries.map(\.chartPlan),
             currentPrice: annotationReferencePrice,
             scope: chartDrawingScope,
             currencyCode: currencyCode,
             quantityUnit: symbol.cryptoPair?.baseAsset ?? PulseLocalization.localizedString("trade.unit.shares"),
+            planColor: { PlanSideStyle.color(for: $0) },
             onUpsert: { drawing in _ = commitDrawing(drawing, for: symbol) },
             onDelete: { id in deleteDrawing(id, for: symbol) },
             onEditDrawing: { id in editDrawing(id, for: symbol) },
-            onEditPlan: { id in route = .plan(symbol, id, .detail(symbol)) }
+            onEditPlan: { id in
+                guard let entry = chartPlanEntries.first(where: { $0.id == id }) else { return }
+                withPlanSourceAccount(entry) {
+                    route = .plan(symbol, entry.plan.id, .detail(symbol))
+                }
+            }
         )
     }
 
@@ -1375,13 +1388,33 @@ struct MainInstrumentView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if symbolSupportsPosition && entry.accountID == appState.watchlist.activeBrokerageAccountID {
+            if symbolSupportsPosition {
+                // One status control for every plan this list shows, whatever
+                // ledger it came from. The board is cross-account, so gating the
+                // menu on the *selected* account made two rows in the same
+                // waiting section render two different controls — a menu on the
+                // active ledger's row and a dead badge on everyone else's — for
+                // the same status, with no way to tell why. The question the row
+                // can answer is whether the instrument supports a position at
+                // all, so that is the only gate left.
+                //
+                // Every branch below routes through `withPlanSourceAccount`,
+                // which points the store at the entry's own ledger before the
+                // action runs and does nothing at all when that cannot be done.
+                // The actions themselves are ledger-relative — `setTradePlan`,
+                // the deletion request, and both sheets all address the active
+                // ledger — so this is what keeps a foreign row's action from
+                // landing in the ledger the user happens to be standing in.
                 Menu {
                     if isWaiting {
-                        Button(PulseLocalization.localizedString("plans.action.recordFill")) { planExecutionEntry = entry }
+                        Button(PulseLocalization.localizedString("plans.action.recordFill")) {
+                            withPlanSourceAccount(entry) { planExecutionEntry = entry }
+                        }
                         Button(PulseLocalization.localizedString("plan.menu.drop")) {
-                            var updated = plan; updated.status = .cancelled
-                            appState.watchlist.setTradePlan(updated, for: symbol)
+                            withPlanSourceAccount(entry) {
+                                var updated = plan; updated.status = .cancelled
+                                appState.watchlist.setTradePlan(updated, for: symbol)
+                            }
                         }
                     } else {
                         // A stopped record with an incomplete real fill can be
@@ -1389,33 +1422,81 @@ struct MainInstrumentView: View {
                         // fill sheet detects the backfill mode itself and the
                         // core write is guarded.
                         if entry.canBackfillFill {
-                            Button(PulseLocalization.localizedString("plans.action.backfill")) { planExecutionEntry = entry }
+                            Button(PulseLocalization.localizedString("plans.action.backfill")) {
+                                withPlanSourceAccount(entry) { planExecutionEntry = entry }
+                            }
                         }
                         if entry.displayState != .filled {
                             Button(PulseLocalization.localizedString("plan.menu.revive")) {
-                                var updated = plan; updated.status = .active
-                                appState.watchlist.setTradePlan(updated, for: symbol)
+                                withPlanSourceAccount(entry) {
+                                    var updated = plan; updated.status = .active
+                                    appState.watchlist.setTradePlan(updated, for: symbol)
+                                }
                             }
                         }
                     }
-                    Button(PulseLocalization.localizedString("plans.action.logicHistory")) { planWorkflowEntry = entry }
+                    Button(PulseLocalization.localizedString("plans.action.logicHistory")) {
+                        withPlanSourceAccount(entry) { planWorkflowEntry = entry }
+                    }
                     Divider()
                     Button(PulseLocalization.localizedString("plan.delete"), role: .destructive) {
-                        planDeletionRequest = PlanDeletionRequest(
-                            entry: entry,
-                            account: appState.watchlist.activeBrokerageAccountID
-                        )
+                        withPlanSourceAccount(entry) {
+                            // Recorded against the entry's own ledger, which the
+                            // selection above has just made active, rather than
+                            // against whatever the toolbar said a moment ago.
+                            planDeletionRequest = PlanDeletionRequest(
+                                entry: entry,
+                                account: appState.watchlist.activeBrokerageAccountID
+                            )
+                        }
                     }
                 } label: {
                     PlanStatusBadge(entry: entry)
                 }
                 .menuStyle(.borderlessButton)
                 .help(PulseLocalization.localizedString("main.plans.changeStatus"))
+                // The badge's own text is the status, which alone does not say
+                // the control is actionable or which plan it acts on. Both are
+                // stated here so the menu is not announced as a bare chip.
+                .accessibilityLabel(
+                    "\(PulseLocalization.localizedString("main.plans.changeStatus"))："
+                    + "\(PlanValueText.price(plan.price, symbol: symbol, currencyCode: quote?.currencyCode))"
+                )
             } else {
                 PlanStatusBadge(entry: entry)
             }
         }
         .padding(.vertical, 5)
+    }
+
+    /// Runs one plan-row action against the ledger the row actually came from.
+    ///
+    /// The board lists plans from every account, but the store writes to
+    /// whichever ledger is selected, and both sheets freeze the account they are
+    /// handed. So a foreign row's action is only correct after the store has
+    /// been pointed at that row's own source, and this is the one place that
+    /// happens.
+    ///
+    /// Selection is allowed to fail. `selectBrokerageAccount` returns `false`
+    /// when it cannot adopt the ledger it was asked for, and the failure is
+    /// silent by design — there is no account to switch to, so the honest
+    /// response is to do nothing rather than run the action against the ledger
+    /// that happens to be active. A row with no `accountID` at all is the same
+    /// case: the entry came from a board that always tags its records, so a
+    /// `nil` here means the row is not addressable, not that "the active one
+    /// will do".
+    ///
+    /// An entry already on the active ledger skips the switch entirely.
+    /// `selectBrokerageAccount` is also a no-op that returns `false` when the id
+    /// is already selected, so asking unconditionally would refuse every action
+    /// on the very account the user is standing in. Comparing first is what
+    /// makes "already there" a success rather than a failure.
+    private func withPlanSourceAccount(_ entry: TradePlanEntry, _ action: () -> Void) {
+        guard let source = entry.accountID else { return }
+        if source != appState.watchlist.activeBrokerageAccountID {
+            guard appState.selectBrokerageAccount(source) else { return }
+        }
+        action()
     }
 
     /// The one account sentence this row can carry.
