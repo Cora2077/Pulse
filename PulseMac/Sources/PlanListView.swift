@@ -15,6 +15,7 @@ struct PlanListView: View {
     /// The pending delete, if any. The row menu only records the request; the
     /// confirmation sheet is the sole path to `deleteTradePlan`.
     @State private var deletionRequest: PlanDeletionRequest?
+    @State private var actionError: String?
 
     init(route: Binding<PopoverRoute>, initialScope: Scope = .waiting) {
         _route = route
@@ -94,7 +95,7 @@ struct PlanListView: View {
             PlanExecutionSheet(entry: entry, account: entry.accountID ?? appState.watchlist.activeBrokerageAccountID,
                 onClose: {
                     executionEntry = nil
-                    if entries.first(where: { $0.plan.id == entry.plan.id })?.displayState == .filled {
+                    if entries.first(where: { $0.id == entry.id })?.displayState == .filled {
                         scope = .history
                     }
                 })
@@ -102,6 +103,10 @@ struct PlanListView: View {
         // The list itself never deletes. The row menu records a request; the
         // sheet re-reads, refuses a plan that moved, and deletes on confirm.
         .modifier(PlanDeletionConfirmation(request: $deletionRequest))
+        .alert(PulseLocalization.localizedString("plans.delete.changed"), isPresented: Binding(
+            get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+            Button(PulseLocalization.localizedString("action.cancel")) { actionError = nil }
+        } message: { Text(actionError ?? "") }
     }
 
     private var header: some View {
@@ -173,7 +178,7 @@ struct PlanListView: View {
 
         return VStack(alignment: .leading, spacing: isCompact ? 4 : 6) {
             HStack(alignment: .top, spacing: isCompact ? 4 : 6) {
-                Button { workflowEntry = entry } label: {
+                Button { perform(.history, entry: entry) } label: {
                     details(entry, isWaiting: isWaiting, reached: reached, name: name,
                             type: type, currency: currency)
                 }
@@ -225,7 +230,7 @@ struct PlanListView: View {
             HStack(spacing: 5) {
                 Text(entry.symbol.displayCode)
                     .font(.system(size: 9.5).monospaced()).foregroundStyle(.tertiary)
-                TradeKindBadge(kind: entry.plan.kind == .buy ? .buy : .sell, palette: appState.palette)
+                TradeKindBadge(kind: entry.plan.kind == .buy ? .buy : .sell)
                 numberText(primaryNumber)
             }
             // Which ledger this plan means to be executed in, when it has
@@ -310,7 +315,7 @@ struct PlanListView: View {
             // compact leaves it in the trailing menu, which is the whole reason
             // a compact card is a card and not a form.
             if !isCompact {
-                Button(PulseLocalization.localizedString("plans.action.recordFill")) { executionEntry = entry }
+                Button(PulseLocalization.localizedString("plans.action.recordFill")) { perform(.recordFill, entry: entry) }
                     .font(.system(size: 10)).controlSize(.small)
                     .accessibilityIdentifier("plans.row.\(planID).record")
             }
@@ -328,7 +333,7 @@ struct PlanListView: View {
                                              type: InstrumentType?, planID: String) -> some View {
         HStack(spacing: 6) {
             Spacer(minLength: 0)
-            Button(PulseLocalization.localizedString("plans.action.backfill")) { executionEntry = entry }
+            Button(PulseLocalization.localizedString("plans.action.backfill")) { perform(.backfill, entry: entry) }
                 .font(.system(size: 10)).controlSize(.small)
                 .accessibilityIdentifier("plans.row.\(planID).backfill")
                 .help(PulseLocalization.localizedString("plans.backfill.help"))
@@ -376,50 +381,25 @@ struct PlanListView: View {
         .help(PulseLocalization.localizedString("main.plans.changeStatus"))
     }
 
-    @ViewBuilder private func menu(_ entry: TradePlanEntry) -> some View {
-        if entry.accountID != appState.watchlist.activeBrokerageAccountID {
-            Button(PulseLocalization.localizedString("plans.action.logicHistory")) { workflowEntry = entry }
-            Button(PulseLocalization.localizedString("plan.menu.edit")) {
-                if let owner = entry.accountID { _ = appState.selectBrokerageAccount(owner) }
-                route = .plan(entry.symbol, entry.plan.id, .planList)
-            }
-        } else {
-            if entry.displayState == .waiting {
-                Button(PulseLocalization.localizedString("plans.action.recordFill")) { executionEntry = entry }
-            } else if entry.canBackfillFill {
-                // A stopped record with size still open. The fill sheet detects the
-                // mode from the entry itself and performs the guarded backfill; the
-                // row is never revived first, which would resurrect an intention
-                // the user already settled.
-                Button(PulseLocalization.localizedString("plans.action.backfill")) { executionEntry = entry }
-            }
-            Button(PulseLocalization.localizedString("plans.action.logicHistory")) { workflowEntry = entry }
-            Button(PulseLocalization.localizedString("plan.menu.edit")) { route = .plan(entry.symbol, entry.plan.id, .planList) }
-            if entry.displayState == .waiting {
-                Button(PulseLocalization.localizedString("plan.menu.drop")) { restate(entry, as: .cancelled) }
-            } else if entry.displayState != .filled {
-                Button(PulseLocalization.localizedString("plan.menu.revive")) { restate(entry, as: .active) }
-            }
-            Divider()
-            Button(PulseLocalization.localizedString("plan.delete"), role: .destructive) {
-                // The row already resolved the name it is showing; the dialog names
-                // the same thing rather than re-asking the market and possibly
-                // printing a different label than the row the user clicked.
-                let name = appState.market.quote(for: entry.symbol)?.name
-                    ?? appState.displayName(for: entry.symbol)
-                deletionRequest = PlanDeletionRequest(
-                    entry: entry,
-                    account: appState.watchlist.activeBrokerageAccountID,
-                    displayName: name
-                )
-            }
-        }
+    private func menu(_ entry: TradePlanEntry) -> some View {
+        PlanActionMenu(entry: entry, onPresent: { present($0, entry: entry) }, onError: { actionError = $0 })
     }
 
-    private func restate(_ entry: TradePlanEntry, as status: TradePlan.Status) {
-        var plan = entry.plan
-        plan.status = status
-        appState.watchlist.setTradePlan(plan, for: entry.symbol)
+    private func perform(_ action: TradePlanAction, entry: TradePlanEntry) {
+        do { try PlanActionRouting.perform(action, entry: entry, in: appState) { present($0, entry: entry) } }
+        catch { actionError = error.localizedDescription }
+    }
+
+    private func present(_ action: TradePlanAction, entry: TradePlanEntry) {
+        switch action {
+        case .recordFill, .backfill: executionEntry = entry
+        case .history: workflowEntry = entry
+        case .edit: route = .plan(entry.symbol, entry.plan.id, .planList)
+        case .delete:
+            deletionRequest = PlanDeletionRequest(entry: entry, account: entry.accountID ?? appState.watchlist.activeBrokerageAccountID,
+                displayName: appState.displayName(for: entry.symbol))
+        default: break
+        }
     }
     private func emptyState(_ key: String) -> some View {
         Text(PulseLocalization.localizedString(key)).font(.system(size: 11)).foregroundStyle(.secondary)

@@ -48,6 +48,13 @@ enum SelfTest {
     @MainActor
     static func runIfRequested() {
         #if DEBUG
+        if CommandLine.arguments.contains("--review-boundary-selftest") {
+            guard CommandLine.arguments.contains("--main-window-demo") else {
+                print("PULSE_REVIEW_BOUNDARY_SELFTEST failed: isolated demo required")
+                exit(1)
+            }
+            exit(ReviewBoundarySelfTest.run() ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--trade-history-selftest") {
             let passed = TradeHistoryDisplaySelfTest.run()
             fflush(stdout)
@@ -106,6 +113,20 @@ enum SelfTest {
                 exit(passed ? 0 : 1)
             }
             return
+        }
+        if CommandLine.arguments.contains("--trade-mutation-selftest") {
+            // The harness drives the real entry form against the live store, so
+            // it must run under the same isolated offline defaults path as the
+            // demo window. Refusing without the flag keeps it from ever touching
+            // the developer's real data.
+            guard CommandLine.arguments.contains("--main-window-demo") else {
+                print("PULSE_TRADE_MUTATION_SELFTEST failed error=requires---main-window-demo")
+                fflush(stdout)
+                exit(1)
+            }
+            let passed = TradeMutationSelfTest.run()
+            fflush(stdout)
+            exit(passed ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--reorder-diagnostics-selftest") {

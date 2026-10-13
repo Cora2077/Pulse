@@ -43,7 +43,8 @@ public enum WatchlistSyncMerge {
         public var base: PositionAllocation?
         public var local: PositionAllocation?
         public var remote: PositionAllocation?
-        public var id: String { symbol.description }
+        public var accountID: BrokerageAccountID = .unassigned
+        public var id: String { "\(accountID.rawValue):\(symbol.description)" }
 
         public init(symbol: SymbolID, base: PositionAllocation?, local: PositionAllocation?, remote: PositionAllocation?) {
             self.symbol = symbol
@@ -60,7 +61,8 @@ public enum WatchlistSyncMerge {
         public var local: PositionTransaction?
         public var remote: PositionTransaction?
 
-        public var id: String { "\(symbol.description):\(transactionID.uuidString)" }
+        public var accountID: BrokerageAccountID = .unassigned
+        public var id: String { "\(accountID.rawValue):\(symbol.description):\(transactionID.uuidString)" }
 
         public init(
             symbol: SymbolID,
@@ -77,12 +79,29 @@ public enum WatchlistSyncMerge {
         }
     }
 
-    /// Account assignment can move history between portfolios. Conflicting
-    /// assignments require one complete side, so a trade cannot exist twice.
+    /// Only related account/symbol ledgers are selected together when ownership
+    /// or replay dependencies conflict. Settings conflicts select one field.
     public struct BrokerageConflict: Sendable, Equatable {
         public var accountIDs: [BrokerageAccountID]
         public var local: WatchlistSyncSnapshot
         public var remote: WatchlistSyncSnapshot
+        public var dependencyGroups: [[AccountSymbolScope]]
+        public var settingKeys: [AccountSettingKey]
+    }
+
+    public struct AccountSymbolScope: Sendable, Hashable {
+        public var accountID: BrokerageAccountID
+        public var symbol: SymbolID
+        public init(accountID: BrokerageAccountID, symbol: SymbolID) {
+            self.accountID = accountID; self.symbol = symbol
+        }
+    }
+
+    public struct AccountSettingKey: Sendable, Hashable {
+        public enum Field: String, Sendable { case cash, poolLimit, scenario, sector }
+        public var accountID: BrokerageAccountID
+        public var field: Field
+        public var key: String
     }
 
     public struct Result: Sendable, Equatable {
@@ -94,6 +113,8 @@ public enum WatchlistSyncMerge {
         public var positionAllocationConflicts: [PositionAllocationConflict]
         public var brokerageConflict: BrokerageConflict? = nil
         fileprivate var transactionOrderSources: [SymbolID: [[PositionTransaction]]]
+        var ledgerResults: [BrokerageAccountID: Result]?
+        var mergeBase: WatchlistSyncSnapshot?
 
         public var isConflictFree: Bool { conflicts.isEmpty && positionAllocationConflicts.isEmpty && brokerageConflict == nil }
 
@@ -132,9 +153,13 @@ public enum WatchlistSyncMerge {
         _ result: Result,
         choosing resolution: ConflictResolution
     ) -> WatchlistSyncSnapshot {
-        if let conflict = result.brokerageConflict {
-            return resolution == .local ? conflict.local : conflict.remote
+        if result.ledgerResults != nil {
+            return WatchlistAccountSyncMerge.resolve(result, choosing: resolution)
         }
+        return resolveFlat(result, choosing: resolution)
+    }
+
+    static func resolveFlat(_ result: Result, choosing resolution: ConflictResolution) -> WatchlistSyncSnapshot {
         var snapshot = result.snapshot
         for conflict in result.conflicts {
             var selected = resolution == .local ? conflict.local : conflict.remote
@@ -181,26 +206,21 @@ public enum WatchlistSyncMerge {
         return snapshot
     }
 
-    public static func merge(
-        base: WatchlistSyncSnapshot,
-        local: WatchlistSyncSnapshot,
-        remote: WatchlistSyncSnapshot
-    ) -> Result {
-        var local = local
-        var remote = remote
-        func inheritSettings(_ snapshot: inout WatchlistSyncSnapshot) {
-            if snapshot.accountSettings == nil { snapshot.accountSettings = base.accountSettings }
-            if snapshot.brokerageAccounts != nil {
-                for index in snapshot.brokerageAccounts!.indices {
-                    if snapshot.brokerageAccounts![index].settings == nil {
-                        let id = snapshot.brokerageAccounts![index].accountID
-                        snapshot.brokerageAccounts![index].settings = base.brokerageAccounts?.first { $0.accountID == id }?.settings
-                    }
-                }
-            }
-        }
-        inheritSettings(&local)
-        inheritSettings(&remote)
+    public static func merge(base: WatchlistSyncSnapshot, local: WatchlistSyncSnapshot,
+                             remote: WatchlistSyncSnapshot) -> Result {
+        WatchlistAccountSyncMerge.merge(base: base, local: local, remote: remote)
+    }
+
+    /// Production synchronization validates the resolved candidate before it is
+    /// applied or a peer baseline advances. The pure resolver stays inspectable.
+    public static func resolveValidated(_ result: Result, choosing resolution: ConflictResolution) throws -> WatchlistSyncSnapshot {
+        let snapshot = resolve(result, choosing: resolution)
+        try WatchlistAccountSyncMerge.validate(snapshot, against: result.mergeBase)
+        return snapshot
+    }
+
+    static func mergeFlat(base: WatchlistSyncSnapshot, local: WatchlistSyncSnapshot,
+                          remote: WatchlistSyncSnapshot) -> Result {
         var conflicts: [TransactionConflict] = []
         var allocationConflicts: [PositionAllocationConflict] = []
         let mergedGroups = mergeGroups(base: base.groups, local: local.groups, remote: remote.groups)
@@ -309,77 +329,12 @@ public enum WatchlistSyncMerge {
                 remoteItems[symbol]?.transactions ?? []
             ])
         })
-        var result = Result(snapshot: WatchlistSyncSnapshot(
+        let result = Result(snapshot: WatchlistSyncSnapshot(
             items: itemOrder.compactMap { active[$0] },
             groups: groupOrder.compactMap { groupsByID[$0] },
             retainedHistoryItems: retainedOrder.compactMap { retained[$0] }
         ), conflicts: conflicts, positionAllocationConflicts: allocationConflicts,
             transactionOrderSources: transactionOrderSources)
-        let settingsDisputed: Bool
-        if local.accountSettings == remote.accountSettings {
-            result.snapshot.accountSettings = local.accountSettings; settingsDisputed = false
-        } else if local.accountSettings == base.accountSettings {
-            result.snapshot.accountSettings = remote.accountSettings; settingsDisputed = false
-        } else if remote.accountSettings == base.accountSettings {
-            result.snapshot.accountSettings = local.accountSettings; settingsDisputed = false
-        } else {
-            result.snapshot.accountSettings = local.accountSettings; settingsDisputed = true
-        }
-        if base.brokerageAccounts != nil || local.brokerageAccounts != nil || remote.brokerageAccounts != nil || settingsDisputed {
-            let b = Dictionary(uniqueKeysWithValues: (base.brokerageAccounts ?? []).map { ($0.accountID, $0) })
-            let l = Dictionary(uniqueKeysWithValues: (local.brokerageAccounts ?? base.brokerageAccounts ?? []).map { ($0.accountID, $0) })
-            let r = Dictionary(uniqueKeysWithValues: (remote.brokerageAccounts ?? base.brokerageAccounts ?? []).map { ($0.accountID, $0) })
-            var merged: [BrokerageAccountPortfolio] = []
-            var disputed: [BrokerageAccountID] = settingsDisputed ? [.unassigned] : []
-            for id in BrokerageAccountID.allCases where id != .unassigned {
-                let chosen: BrokerageAccountPortfolio?
-                if l[id] == r[id] { chosen = l[id] }
-                else if l[id] == b[id] { chosen = r[id] }
-                else if r[id] == b[id] { chosen = l[id] }
-                else { chosen = l[id]; disputed.append(id) }
-                if var chosen {
-                    // Whole-portfolio conflict policy still preserves fields an
-                    // older peer never learned on surviving transactions.
-                    func preserveAnnotations(_ items: inout [WatchItem]) {
-                        for itemIndex in items.indices {
-                            let symbol = items[itemIndex].symbol
-                            let candidates = [l[id], r[id], b[id]].compactMap { $0 }
-                                .flatMap { $0.items + $0.retainedHistoryItems }
-                                .filter { $0.symbol == symbol }.flatMap(\.transactions)
-                            for transactionIndex in items[itemIndex].transactions.indices {
-                                var transaction = items[itemIndex].transactions[transactionIndex]
-                                for candidate in candidates where candidate.id == transaction.id {
-                                    if transaction.planExecution == nil { transaction.planExecution = candidate.planExecution }
-                                    else { transaction.planExecution = transaction.planExecution?.preservingSourceAccount(from: candidate.planExecution) }
-                                    if transaction.brokerageAccountID == nil { transaction.brokerageAccountID = candidate.brokerageAccountID }
-                                    if transaction.fundingSource == nil { transaction.fundingSource = candidate.fundingSource }
-                                }
-                                items[itemIndex].transactions[transactionIndex] = transaction
-                            }
-                        }
-                    }
-                    preserveAnnotations(&chosen.items)
-                    preserveAnnotations(&chosen.retainedHistoryItems)
-                    merged.append(chosen)
-                }
-            }
-            result.snapshot.brokerageAccounts = merged
-            // Two devices can assign the same legacy trade to different accounts.
-            // Never let an otherwise conflict-free merge duplicate that history.
-            var tradeIDs = Set<UUID>()
-            let duplicated = result.snapshot.allAccountItems.flatMap(\.transactions).contains {
-                !tradeIDs.insert($0.id).inserted
-            }
-            if !disputed.isEmpty || duplicated {
-                result.brokerageConflict = BrokerageConflict(
-                    accountIDs: duplicated ? BrokerageAccountID.allCases : disputed,
-                    local: local, remote: remote
-                )
-                result.snapshot = local
-                result.conflicts = []
-                result.positionAllocationConflicts = []
-            }
-        }
         return result
     }
 

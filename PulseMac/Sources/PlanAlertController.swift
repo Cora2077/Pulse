@@ -101,7 +101,7 @@ final class PlanAlertController: NSObject, UNUserNotificationCenterDelegate {
         defaults.set(value, forKey: Self.enabledKey)
         if !value {
             let ids = accountIDs.flatMap { account in
-                entries(in: account).flatMap { [Self.notificationID(account: account, planID: $0.id), $0.id.uuidString] }
+                entries(in: account).flatMap { [Self.notificationID(account: account, planID: $0.plan.id), $0.plan.id.uuidString] }
             }
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
@@ -136,11 +136,11 @@ final class PlanAlertController: NSObject, UNUserNotificationCenterDelegate {
         status = PulseLocalization.localizedString("alerts.status.on")
         for account in accountIDs {
             let entries = entries(in: account)
-            ledgers[account.rawValue, default: PlanAlertLedger()].prune(keeping: Set(entries.map(\.id)))
+            ledgers[account.rawValue, default: PlanAlertLedger()].prune(keeping: Set(entries.map { $0.plan.id }))
             for entry in entries where enabled {
-                let requestID = Self.notificationID(account: account, planID: entry.id)
+                let requestID = Self.notificationID(account: account, planID: entry.plan.id)
                 guard let quote = market.quote(for: entry.symbol),
-                      notificationIsDue(entry.plan, account: account, quote: quote),
+                      ledgers[account.rawValue, default: PlanAlertLedger()].shouldNotify(entry: entry, quote: quote),
                       pending.insert(requestID).inserted else { continue }
                 let content = UNMutableNotificationContent()
                 let item = items(in: account).first { $0.symbol == entry.symbol }
@@ -182,12 +182,13 @@ final class PlanAlertController: NSObject, UNUserNotificationCenterDelegate {
         let portfolio = store.brokeragePortfolio(for: account)
         let followed = Set(portfolio.groups.flatMap(\.symbols))
         return portfolio.items.filter { followed.contains($0.symbol) }.flatMap { item in
-            item.plans.map { TradePlanEntry(symbol: item.symbol, plan: $0, transactions: store.transactionsForPlan(item.symbol, account: account)) }
+            item.plans.map { TradePlanEntry(symbol: item.symbol, plan: $0, transactions: store.transactionsForPlan(item.symbol, account: account, planID: $0.id), accountID: account) }
         }
     }
 
     func notificationIsDue(_ plan: TradePlan, account: BrokerageAccountID, quote: Quote, now: Date = .now) -> Bool {
-        ledgers[account.rawValue, default: PlanAlertLedger()].shouldNotify(plan: plan, quote: quote, now: now)
+        guard let entry = entries(in: account).first(where: { $0.plan.id == plan.id && $0.symbol == quote.symbol }) else { return false }
+        return ledgers[account.rawValue, default: PlanAlertLedger()].shouldNotify(entry: entry, quote: quote, now: now)
     }
 
     static func notificationID(account: BrokerageAccountID, planID: UUID) -> String {
@@ -198,12 +199,12 @@ final class PlanAlertController: NSObject, UNUserNotificationCenterDelegate {
     func target(for identifier: String) -> BrokerageAlertTarget? {
         let parts = identifier.split(separator: ":").map(String.init)
         if parts.count == 3, parts[0] == "plan", let account = BrokerageAccountID(rawValue: parts[1]),
-           let id = UUID(uuidString: parts[2]), let entry = entries(in: account).first(where: { $0.id == id }) {
+           let id = UUID(uuidString: parts[2]), let entry = entries(in: account).first(where: { $0.plan.id == id }) {
             return .init(accountID: account, symbol: entry.symbol, planID: id)
         }
         guard let id = UUID(uuidString: identifier) else { return nil }
         let matches = accountIDs.flatMap { account in
-            entries(in: account).filter { $0.id == id }.map {
+            entries(in: account).filter { $0.plan.id == id }.map {
                 BrokerageAlertTarget(accountID: account, symbol: $0.symbol, planID: id)
             }
         }

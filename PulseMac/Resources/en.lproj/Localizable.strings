@@ -924,10 +924,10 @@
 "sync.lastRead" = "Last successful read: %@";
 "sync.lastWrite" = "Last successful write: %@";
 "sync.conflict.detail" = "%d data conflicts on Mac %@";
-"sync.conflict.warning" = "Your choice applies to all trade and position allocation conflicts with this device. Removing a trade changes the position calculation. Both snapshots are saved locally before applying your choice.";
-"sync.conflict.keepLocal" = "Keep This Mac’s Trades";
-"sync.conflict.useRemote" = "Use Other Mac’s Trades";
-"sync.conflict.changed" = "The other Mac changed during review. Check the updated conflict before choosing.";
+"sync.conflict.warning" = "Choose versions only for the listed conflicts, fields, and linked ledgers. Non-conflicting changes are kept; entire accounts are not replaced. Related trades, plans, and allocations are validated together. Both snapshots are backed up locally first.";
+"sync.conflict.keepLocal" = "Use This Mac for Conflicts";
+"sync.conflict.useRemote" = "Use Other Mac for Conflicts";
+"sync.conflict.changed" = "Data changed during review. Check the latest conflicts before choosing.";
 "sync.privacy" = "The selected folder contains readable watchlists, positions, and trade history. Provider credentials, Keychain items, MCP tokens, and Mac-specific settings stay local.";
 "sync.error.accessDenied" = "FFF can’t access this folder. Choose it again in Settings.";
 "sync.error.folderUnavailable" = "The selected location is not an available folder.";

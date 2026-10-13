@@ -354,8 +354,9 @@ public struct TencentProvider: QuoteProvider {
             }
             let f = payload.components(separatedBy: "~")
             guard f.count > 37,
-                  let price = Double(f[3]), price > 0,
-                  let prevClose = Double(f[4]) else { continue }
+                  let price = Double(f[3]), price.isFinite, price > 0,
+                  let prevClose = Double(f[4]), prevClose.isFinite,
+                  let timestamp = parseTimestamp(f[30], timeZone: symbol.market.timeZone) else { continue }
 
             let volumeRaw = Double(f[36]) ?? Double(f[6])
             let volumeMultiplier: Double = symbol.market.isChinaA ? 100 : 1  // A-share volume is reported in lots (100 shares)
@@ -371,7 +372,7 @@ public struct TencentProvider: QuoteProvider {
                 volume: volume,
                 turnover: parseTurnover(f[37], market: symbol.market, price: price, volume: volume),
                 currencyCode: symbol.market.currencyCode,
-                timestamp: parseTimestamp(f[30], timeZone: symbol.market.timeZone) ?? .now
+                timestamp: timestamp
             ))
         }
         return result
@@ -395,15 +396,17 @@ public struct TencentProvider: QuoteProvider {
 
     /// Timestamp format varies by market: A-shares "20260703112400", HK/US "2026/07/03 11:24:00", etc. — all parsed in the exchange's time zone
     static func parseTimestamp(_ raw: String, timeZone: TimeZone) -> Date? {
-        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let formats = ["yyyyMMddHHmmss", "yyyy/MM/dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss"]
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
         formatter.timeZone = timeZone
+        formatter.isLenient = false
         for format in formats {
             formatter.dateFormat = format
-            if let date = formatter.date(from: trimmed) { return date }
+            if let date = formatter.date(from: trimmed), formatter.string(from: date) == trimmed { return date }
         }
         return nil
     }

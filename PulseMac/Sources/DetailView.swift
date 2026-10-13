@@ -1147,8 +1147,7 @@ struct DetailView: View {
                     .fill(reached && isWaiting ? PlanSideStyle.color(for: plan.kind) : Color.clear)
                     .frame(width: 2, height: 12)
                 TradeKindBadge(
-                    kind: plan.kind == .buy ? .buy : .sell,
-                    palette: appState.palette
+                    kind: plan.kind == .buy ? .buy : .sell
                 )
                 Text(valueText)
                     .font(.system(size: 10.5, weight: .medium).monospacedDigit())

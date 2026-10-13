@@ -351,6 +351,12 @@ struct MainWindowView: View {
             refreshGeneration &+= 1
             return
         }
+        if overview == .plans, deferredAlert == nil {
+            // Plan menus select an explicit source for their modal drafts.
+            // Re-keying this page would discard the sheet during that selection.
+            refreshGeneration &+= 1
+            return
+        }
         accountGeneration &+= 1
         if overview == .positionPools, deferredAlert == nil {
             // The pool board owns all-account filters and source-scoped drafts.

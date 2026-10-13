@@ -91,6 +91,7 @@ public final class WatchlistStore {
 
     /// Synchronous scopes cannot suspend into another UI operation. Restore the
     /// latest previous portfolio: the operation may have classified data into it.
+    @discardableResult
     public func withBrokerageAccount<T>(_ id: BrokerageAccountID, _ operation: () throws -> T) rethrows -> T {
         precondition(brokerageAccountsEnabled || id == .unassigned)
         guard id != activeBrokerageAccountID else { return try operation() }
@@ -190,8 +191,10 @@ public final class WatchlistStore {
         // its own entry point, so a caller who reaches this one from a named
         // ledger is refused exactly as before.
         guard activeBrokerageAccountID == .unassigned else { return false }
-        return assignBrokerageRecords(for: symbol, request: request, to: destination,
-                                      from: activeBrokerageAccountID)
+        do {
+            try assignBrokerageRecordsChecked(for: symbol, request: request, from: activeBrokerageAccountID, to: destination)
+            return true
+        } catch { return false }
     }
 
     /// Corrects the *real* ledger of selected trades between two named accounts.
@@ -215,22 +218,24 @@ public final class WatchlistStore {
                                           to destination: BrokerageAccountID) -> Bool {
         guard BrokerageOwnership.permitsAccountCorrection(from: source, to: destination)
         else { return false }
-        return assignBrokerageRecords(for: symbol, request: request, to: destination, from: source)
+        do {
+            try assignBrokerageRecordsChecked(for: symbol, request: request, from: source, to: destination)
+            return true
+        } catch { return false }
     }
 
     /// The one classification implementation, parameterized by the ledger being
     /// classified so the pending-history route and the real-account correction
     /// route cannot drift apart.
-    @discardableResult
-    private func assignBrokerageRecords(for symbol: SymbolID,
-                                        request: BrokerageOwnership.ClassificationRequest,
-                                        to destination: BrokerageAccountID,
-                                        from requestedSource: BrokerageAccountID) -> Bool {
+    public func assignBrokerageRecordsChecked(for symbol: SymbolID,
+                                               request: BrokerageOwnership.ClassificationRequest,
+                                               from requestedSource: BrokerageAccountID,
+                                               to destination: BrokerageAccountID) throws {
         guard brokerageAccountsEnabled,
               destination != .unassigned,
               requestedSource != destination,
               accountPortfolios[requestedSource] != nil,
-              accountPortfolios[destination] != nil else { return false }
+              accountPortfolios[destination] != nil else { throw TradeMutationError.accountUnavailable }
         // The pre-move ledger, captured before anything moves: it is the value
         // every frozen or re-pointed source reference has to be matched against.
         // The source is read from the caller's own selection, so a correction is
@@ -243,6 +248,7 @@ public final class WatchlistStore {
         // in the account it is looking at.
         var candidate = accountPortfolios
         candidate[activeBrokerageAccountID] = currentPortfolio()
+        let before = candidate
         // The instrument has to be *in* the ledger being classified. A symbol
         // that only exists in the destination is not a source record, and
         // picking it up from anywhere would let a correction move a trade the
@@ -250,7 +256,7 @@ public final class WatchlistStore {
         guard let source = ((candidate[sourceAccount]?.items ?? [])
                 + (candidate[sourceAccount]?.retainedHistoryItems ?? []))
                 .first(where: { $0.symbol == symbol }),
-              var targetPortfolio = candidate[destination] else { return false }
+              var targetPortfolio = candidate[destination] else { throw TradeMutationError.itemNotFound }
         let existing = (targetPortfolio.items + targetPortfolio.retainedHistoryItems)
             .first { $0.symbol == symbol }
 
@@ -262,7 +268,7 @@ public final class WatchlistStore {
             if let existing,
                existing.hasPositionHistory || existing.thesis != nil || !existing.plans.isEmpty
                 || !existing.events.isEmpty || existing.tradingProfile != nil
-                || existing.positionAllocation != nil || !existing.drawings.isEmpty { return false }
+                || existing.positionAllocation != nil || !existing.drawings.isEmpty { throw TradeMutationError.destinationConflict }
             moved = source
             for index in moved.plans.indices {
                 var plan = moved.plans[index]
@@ -278,7 +284,7 @@ public final class WatchlistStore {
             movedTransactions = source.materializedTransactions()
             remainder = nil
         case .selectedTrades(let ids):
-            guard !ids.isEmpty else { return false }
+            guard !ids.isEmpty else { throw TradeMutationError.invalidSelection }
             // A selection moves *trades*, not the instrument's context. The
             // destination keeping its own plans, thesis, events or drawings is
             // therefore not a conflict: those records are not being replaced or
@@ -292,13 +298,13 @@ public final class WatchlistStore {
             // source allocation must be reconcilable so the move can be checked
             // against real quantities.
             let trades = source.materializedTransactions()
-            guard ids.isSubset(of: Set(trades.map(\.id))),
-                  !source.positionAllocationNeedsReconciliation else { return false }
+            guard ids.isSubset(of: Set(trades.map(\.id))) else { throw TradeMutationError.invalidSelection }
+            guard !source.positionAllocationNeedsReconciliation else { throw TradeMutationError.allocationNeedsReconciliation }
             let selected = trades.filter { ids.contains($0.id) }
             let staying = trades.filter { !ids.contains($0.id) }
             let prior = existing?.materializedTransactions() ?? []
-            guard Set(prior.map(\.id)).isDisjoint(with: ids) else { return false }
-            var sourceAfter = Self.applyingTransactions(staying, to: source)
+            guard Set(prior.map(\.id)).isDisjoint(with: ids) else { throw TradeMutationError.invalidSelection }
+            var sourceAfter = TradeLedgerMutation.applyingTransactions(staying, to: source)
             // An empty trade array must also clear the legacy lot cache.
             if staying.isEmpty { sourceAfter.lots = [] }
             let template = existing ?? WatchItem(symbol: symbol, displayName: source.displayName,
@@ -321,22 +327,21 @@ public final class WatchlistStore {
             // carried across unchanged. The source reference is repaired at the
             // same time, for the same reason: both describe where the record now
             // lives relative to the rest of the store.
-            let frozen = Self.repointingMovedFills(selected, to: destination,
+            let frozen = BrokerageClassificationValidation.repointingMovedFills(selected, to: destination,
                                                    leaving: sourceAccount)
             movedTransactions = frozen
-            moved = Self.applyingTransactions(prior + frozen, to: template)
+            moved = TradeLedgerMutation.applyingTransactions(prior + frozen, to: template)
             let sourceLedger = PositionLedger(transactions: trades)
             let targetLedger = PositionLedger(transactions: prior)
             let afterSource = PositionLedger(transactions: staying)
             let afterTarget = PositionLedger(transactions: prior + frozen)
-            guard Self.validAccountLedger(afterSource), Self.validAccountLedger(afterTarget),
-                  abs(afterSource.quantity + afterTarget.quantity - sourceLedger.quantity - targetLedger.quantity)
+            try TradeMutationValidation.validateReplay(previous: trades, proposed: staying, longOnly: true)
+            try TradeMutationValidation.validateReplay(previous: prior, proposed: prior + frozen, longOnly: true)
+            guard abs(afterSource.quantity + afterTarget.quantity - sourceLedger.quantity - targetLedger.quantity)
                     <= PositionAllocation.quantityTolerance(afterSource.quantity + afterTarget.quantity,
-                                                           sourceLedger.quantity + targetLedger.quantity),
-                  sourceLedger.entries.contains(where: { $0.resultingQuantity < 0 })
-                    || afterSource.entries.allSatisfy({ $0.resultingQuantity >= 0 }),
-                  targetLedger.entries.contains(where: { $0.resultingQuantity < 0 })
-                    || afterTarget.entries.allSatisfy({ $0.resultingQuantity >= 0 }) else { return false }
+                                                           sourceLedger.quantity + targetLedger.quantity) else {
+                throw TradeMutationError.invalidCandidate
+            }
             // When buy-origin cards exactly cover the split, move those actual
             // cards. Otherwise the existing reconciliation guards stay in force.
             if let allocation = source.positionAllocation {
@@ -366,8 +371,12 @@ public final class WatchlistStore {
         let incomingFunding = movedTransactions
         let incomingPortions = moved.positionAllocation?.portions ?? []
         guard BrokerageOwnership.permits(incomingFunding, in: destination),
-              BrokerageOwnership.permits(incomingPortions, in: destination) else { return false }
+              BrokerageOwnership.permits(incomingPortions, in: destination) else { throw TradeMutationError.fundingIncompatible }
 
+        if request.movesWholeLedger {
+            try TradeMutationValidation.validateReplay(previous: existing?.materializedTransactions() ?? [],
+                proposed: moved.materializedTransactions(), longOnly: true)
+        }
         targetPortfolio.retainedHistoryItems.removeAll { $0.symbol == symbol }
         targetPortfolio.items.removeAll { $0.symbol == symbol }
         // Make assigned holdings visible, including a previously dormant ledger.
@@ -441,203 +450,17 @@ public final class WatchlistStore {
         // whole snapshot. Then the meaning: no plan may lose (or gain) linked
         // fills because it changed ledgers. A structurally valid snapshot with a
         // broken plan link is exactly the failure this refuses.
-        guard Self.validatedClassificationSnapshot(candidate: candidate) != nil,
-              planProgressIsPreserved(in: candidate, sourceAccount: sourceAccount,
-                  destination: destination, symbol: symbol, movesWholeLedger: request.movesWholeLedger)
-        else { return false }
-        accountPortfolios = candidate
-        // The selection is put back, not moved: a classification from pending
-        // history has always landed the user back there, and a correction between
-        // two real ledgers must leave the user looking at the ledger they chose.
-        adoptAccount(activeBrokerageAccountID)
-        save()
-        return true
-    }
-
-    /// Freezes the leaving ledger into every plan reference a selected fill
-    /// carries, so classification cannot silently re-interpret old data.
-    ///
-    /// Exactly one shape is touched: a fill that already has a `planExecution`
-    /// and no recorded source gets the ledger it is leaving. A fill that has no
-    /// `planExecution` is returned unchanged — it has no fill-time snapshot to
-    /// preserve, and manufacturing one from the plan's current configuration
-    /// would attribute to the trade a plan it was never recorded against.
-    private static func freezingPlanSource(
-        _ transactions: [PositionTransaction],
-        to source: BrokerageAccountID
-    ) -> [PositionTransaction] {
-        transactions.map { transaction in
-            guard var execution = transaction.planExecution, execution.sourceAccountID == nil else {
-                return transaction
-            }
-            execution.sourceAccountID = source
-            var frozen = transaction
-            frozen.planExecution = execution
-            return frozen
+        guard BrokerageClassificationValidation.validatedClassificationSnapshot(candidate: candidate) != nil else {
+            throw TradeMutationError.invalidCandidate
         }
-    }
-
-    /// Prepares the fills a selection is moving: each one now lives in
-    /// `destination`, so its own `brokerageAccountID` follows it there, and its
-    /// plan source is frozen to the ledger it is leaving when it never named one.
-    ///
-    /// Only those two references change. The id, price, quantity, date, fee,
-    /// funding source and the captured plan configuration are the trade's
-    /// history and travel unchanged — a move re-files a record, it does not
-    /// re-price it. A fill that already names a source keeps it: the fill's
-    /// statement about which ledger owned the plan is a fact recorded at fill
-    /// time, and re-interpreting it here would be exactly the silent rewrite the
-    /// source field exists to prevent.
-    ///
-    /// A fill with no `planExecution` is returned otherwise untouched. It has no
-    /// fill-time snapshot to preserve, and manufacturing one from the plan's
-    /// current configuration would attribute to the trade a plan it was never
-    /// recorded against.
-    private static func repointingMovedFills(
-        _ transactions: [PositionTransaction],
-        to destination: BrokerageAccountID,
-        leaving source: BrokerageAccountID
-    ) -> [PositionTransaction] {
-        freezingPlanSource(transactions, to: source).map { transaction in
-            guard transaction.brokerageAccountID != destination else { return transaction }
-            var moved = transaction
-            moved.brokerageAccountID = destination
-            return moved
+        guard BrokerageClassificationValidation.planProgressIsPreserved(before: before, in: candidate, sourceAccount: sourceAccount,
+            destination: destination, symbol: symbol, movesWholeLedger: request.movesWholeLedger) else {
+            throw TradeMutationError.planDependencyConflict
         }
-    }
-
-    /// Builds the snapshot a candidate classification *would* produce and
-    /// validates it as a whole, named accounts included. Nothing is written; the
-    /// caller commits only after this returns. Every account in `candidate` is
-    /// carried over, so a re-pointed fill in an account the caller never named
-    /// is validated rather than dropped.
-    ///
-    /// This is the structural half of the commit check only. It says the bytes
-    /// encode; whether the plan links still mean what they meant is a separate
-    /// question, asked by `planProgressIsPreserved`.
-    private static func validatedClassificationSnapshot(
-        candidate: [BrokerageAccountID: BrokerageAccountPortfolio]
-    ) -> WatchlistSyncSnapshot? {
-        guard let unassigned = candidate[.unassigned] else { return nil }
-        let snapshot = WatchlistSyncSnapshot(
-            items: unassigned.items,
-            groups: unassigned.groups,
-            retainedHistoryItems: unassigned.retainedHistoryItems,
-            brokerageAccounts: BrokerageAccountID.allCases
-                .filter { $0 != .unassigned }
-                .compactMap { candidate[$0] },
-            accountSettings: unassigned.settings
-        )
-        guard (try? WatchlistSyncWireCodec.encode(deviceID: "classification-check", snapshot: snapshot)) != nil,
-              (try? LocalBackupStore.validateSnapshot(snapshot)) != nil else { return nil }
-        return snapshot
-    }
-
-    /// The semantic half of the commit check: every plan that existed before the
-    /// move still exists under the name it should have afterwards, and still
-    /// counts the same fills.
-    ///
-    /// The plan's identity here is symbol + plan id + the ledger that should hold
-    /// it — a whole move carries the classified ledger's plans to `destination`,
-    /// while every other plan keeps the ledger it already had. So this asks two
-    /// things at once: did the plans land where the ownership rules say they
-    /// should, and did the linked fills come with them. A structurally valid
-    /// snapshot is not enough on its own: a re-pointed reference can encode
-    /// perfectly while silently detaching a plan from its fills, and the user
-    /// only finds out when the plan reads as unfilled.
-    ///
-    /// Progress is read with the same query the plan rows use, before and after,
-    /// so the two sides can only differ because the records differ. Completion is
-    /// deliberately not compared: the plan's own status is the user's mark and
-    /// this check never rewrites it, so a plan closed at the same fill count
-    /// stays closed.
-    ///
-    /// A plan that was already gone is not judged; a plan that vanished during
-    /// the move fails here rather than being quietly accepted.
-    private func planProgressIsPreserved(
-        in candidate: [BrokerageAccountID: BrokerageAccountPortfolio],
-        sourceAccount: BrokerageAccountID,
-        destination: BrokerageAccountID,
-        symbol: SymbolID,
-        movesWholeLedger: Bool
-    ) -> Bool {
-        // The ledger a plan should be found in after the move: a whole move
-        // takes the classified ledger's plans with it, and leaves every other
-        // plan exactly where it was.
-        func expectedOwner(of account: BrokerageAccountID) -> BrokerageAccountID {
-            movesWholeLedger && account == sourceAccount ? destination : account
-        }
-        // The pre-move read comes from the live store — `candidate` is built from
-        // it and only the accounts this move touches differ — and the post-move
-        // read from the candidate, so both sides are asked with the same query
-        // and can only differ because the records did.
-        let ledgerNow = { (account: BrokerageAccountID) in
-            self.brokeragePortfolio(for: account).items
-                + self.brokeragePortfolio(for: account).retainedHistoryItems
-        }
-        let ledgerAfter = { (account: BrokerageAccountID) in
-            (candidate[account]?.items ?? []) + (candidate[account]?.retainedHistoryItems ?? [])
-        }
-        var pairs: [(before: BrokerageOwnership.ProgressRead, after: BrokerageOwnership.ProgressRead)] = []
-        for account in BrokerageAccountID.allCases {
-            let plans = ledgerNow(account).filter { $0.symbol == symbol }.flatMap(\.plans)
-            for plan in plans {
-                // An active bound sale must keep its live card. Progress alone
-                // cannot detect a partial move that leaves its binding behind.
-                if plan.status == .active, plan.positionPortionID != nil,
-                   let previousItem = ledgerNow(account).first(where: { $0.symbol == symbol }),
-                   previousItem.salePlanSource(for: plan) != nil {
-                    guard let nextItem = ledgerAfter(expectedOwner(of: account)).first(where: { $0.symbol == symbol }),
-                          let nextPlan = nextItem.plans.first(where: { $0.id == plan.id }),
-                          nextItem.salePlanSource(for: nextPlan) != nil else { return false }
-                }
-                // Both readings are built from the same plan found in the same
-                // ledger, and the *pair* is what carries the ownership question:
-                // `after` is read from the ledger ownership says should hold the
-                // plan once the move is done. Keeping the two readings of one
-                // plan adjacent is what stops a namesake plan that reuses the
-                // same UUID in another ledger from being paired with this one's
-                // progress — the model-side comparison has only symbol and id to
-                // work with, so the caller has to hand it the pairs it means.
-                guard let before = Self.progressRead(account: account, symbol: symbol, plan: plan,
-                                                     ledgers: ledgerNow),
-                      let after = Self.progressRead(account: expectedOwner(of: account), symbol: symbol,
-                                                    plan: plan, ledgers: ledgerAfter)
-                else { return false }
-                pairs.append((before, after))
-            }
-        }
-        // Compared pair by pair, each side consumed once, so two namesakes in
-        // two ledgers stay two separate comparisons.
-        return BrokerageOwnership.planProgressIsPreserved(
-            pairs: pairs.map { (before: $0.before, after: $0.after) })
-    }
-
-    /// Reads one ledger's copy of a plan into the value the classification
-    /// validation compares, using the same plan-link query the plan rows use.
-    ///
-    /// `nil` means "this ledger has no such plan", never "no progress": the
-    /// lookup is by symbol and plan id, and a ledger that does not hold the plan
-    /// is a missing placement the caller has to explain.
-    private static func progressRead(
-        account: BrokerageAccountID,
-        symbol: SymbolID,
-        plan: TradePlan,
-        ledgers: (BrokerageAccountID) -> [WatchItem]
-    ) -> BrokerageOwnership.ProgressRead? {
-        guard let item = ledgers(account).first(where: { $0.symbol == symbol }),
-              item.plans.contains(where: { $0.id == plan.id }) else { return nil }
-        let progress = TradePlanExecutionProgress(
-            plan: plan,
-            transactions: Self.transactions(
-                in: BrokerageAccountID.allCases.map { (account: $0, items: ledgers($0)) },
-                symbol: symbol, planID: plan.id, owningPlan: plan, source: account)
-        )
-        guard progress.filledQuantity.isFinite else { return nil }
-        return BrokerageOwnership.ProgressRead(
-            account: account, symbol: symbol, planID: plan.id,
-            filledQuantity: progress.filledQuantity
-        )
+        // The shared commit preserves selection and publishes all dependent
+        // account changes together; no record has been changed above this gate.
+        do { try commitAccountPortfolios(candidate) }
+        catch { throw TradeMutationError.invalidCandidate }
     }
 
     private static func validAccountLedger(_ ledger: PositionLedger) -> Bool {
@@ -1097,57 +920,32 @@ public final class WatchlistStore {
     @discardableResult
     public func setTradePlan(_ plan: TradePlan, for symbol: SymbolID) -> Bool {
         guard let index = allItems.firstIndex(where: { $0.symbol == symbol }),
-              allItems[index].supportsPosition else { return false }
-
-        var plans = allItems[index].plans
-        // The stored plan is migrated first, so a legacy record already on disk
-        // is repaired whatever the caller sends. `old` is the pre-migration
-        // value purely so its configuration can be preserved as a revision.
-        let existing = plans.firstIndex { $0.id == plan.id }
-        let stored = existing.map { plans[$0] }
-        let old = stored.map { Self.migratedPlan($0) }
-
-        var incoming = Self.migratedPlan(plan)
-        incoming.note = Self.normalizedPlanNote(plan.note)
-        if let conditions = incoming.conditions {
-            let normalized = conditions.compactMap { $0.normalized() }
-            guard normalized.count == conditions.count,
-                  Set(normalized.map(\.id)).count == normalized.count else { return false }
-            incoming.conditions = normalized
-        }
-        guard incoming.hasValidPayload else { return false }
-        guard Self.validIncomingPlanBinding(incoming, on: allItems[index], plans: plans, existing: existing) else {
-            return false
-        }
-
-        if let existing, let stored, let old {
-            incoming.createdAt = old.createdAt
-            incoming.filledTransactionID = incoming.filledTransactionID ?? old.filledTransactionID
-            incoming.conditions = incoming.conditions ?? old.conditions
-            incoming.history = old.history
-            let oldConfiguration = TradePlanConfiguration(plan: old)
-            let newConfiguration = TradePlanConfiguration(plan: incoming)
-            let configurationChanged = oldConfiguration != newConfiguration
-            let legacyLinkChanged = incoming.filledTransactionID != old.filledTransactionID
-            // A stored plan the migration just repaired is a real change even
-            // when the caller sent the same legacy value back unchanged, so a
-            // peer's observation plan cannot sit unmigrated because it happened
-            // to compare equal.
-            let storedMigrated = stored != old
-            guard configurationChanged || legacyLinkChanged || storedMigrated else { return true }
-            if configurationChanged {
-                incoming.history = (old.history ?? []) + [TradePlanRevision(configuration: oldConfiguration)]
-            }
-            incoming.updatedAt = .now
-            plans[existing] = incoming
-        } else {
-            incoming.history = plan.positionPool == .observation ? incoming.history.map { Array($0.suffix(1)) } : nil
-            incoming.updatedAt = .now
-            plans.append(incoming)
-        }
-        allItems[index].plans = TradePlan.ordered(plans)
+              let candidate = TradePlanMutation.setting(plan, on: allItems[index], migrate: { Self.migratedPlan($0) }) else { return false }
+        guard candidate != allItems[index] else { return true }
+        allItems[index] = candidate
         save()
         return true
+    }
+
+    /// Explicit source-account actions compare the complete displayed record;
+    /// status changes cannot overwrite a synchronized edit or a namesake plan.
+    @discardableResult
+    public func changeTradePlanStatus(_ entry: TradePlanEntry, to status: TradePlan.Status) throws -> TradePlan {
+        guard let account = entry.accountID else { throw TradeMutationError.accountUnavailable }
+        let item = try transactionItem(entry.symbol, account: account)
+        guard let live = item.plans.first(where: { $0.id == entry.plan.id }), live == entry.plan else {
+            throw TradePlanExecutionError.stalePlan
+        }
+        let action: TradePlanAction = status == .cancelled ? .abandon : .revive
+        guard TradePlanAction.available(for: TradePlanEntry(symbol: entry.symbol, plan: live,
+            transactions: transactionsForPlan(entry.symbol, account: account, planID: live.id))).contains(action),
+              status == .active || status == .cancelled else { throw TradePlanExecutionError.stalePlan }
+        var updated = live; updated.status = status
+        guard let candidate = TradePlanMutation.setting(updated, on: item, migrate: { Self.migratedPlan($0) }) else {
+            throw TradePlanExecutionError.staleAllocation
+        }
+        try commitTransactionItem(candidate, account: account, refreshLinkedPlans: false)
+        return candidate.plans.first { $0.id == live.id }!
     }
 
     @discardableResult
@@ -1160,52 +958,19 @@ public final class WatchlistStore {
         return true
     }
 
-    private static func normalizedPlanNote(_ note: String?) -> String? {
-        let trimmed = note?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (trimmed?.isEmpty ?? true) ? nil : trimmed
+    /// Checked deletion also supports retained history without restoring it to a
+    /// watchlist. The enclosing account, not a plan ID alone, authorizes a write.
+    public func deleteTradePlan(_ expected: TradePlan, for symbol: SymbolID, account: BrokerageAccountID) throws {
+        var item = try transactionItem(symbol, account: account)
+        guard let live = item.plans.first(where: { $0.id == expected.id }), live == expected else {
+            throw TradePlanExecutionError.stalePlan
+        }
+        item.plans.removeAll { $0.id == expected.id }
+        try commitTransactionItem(item, account: account, refreshLinkedPlans: false)
     }
 
-    /// Whether a bound sell plan may be admitted, checked against the live item.
-    ///
-    /// `hasValidPayload` has already refused a binding on a buy, or on a sell
-    /// with no active pool — those are malformed anywhere. What is left is only
-    /// answerable against this item's own shares: the bound card must exist in
-    /// the plan's pool, the allocation must be reconciled, and the plan's size
-    /// must fit what its siblings have not already claimed.
-    ///
-    /// The claim is measured on the *incoming* plan's remaining quantity, not
-    /// its total, so a half-filled plan can still afford to be edited or
-    /// re-saved, and the plan's own previous claim is excluded — without that,
-    /// every save of an unchanged bound plan would have to fit twice.
-    ///
-    /// Cancelled and done plans are deliberately not checked. Their binding is
-    /// retained as history: the plan records which shares it was written
-    /// against even after the shares move, and re-validating a settled plan
-    /// would refuse to cancel exactly the stale bindings the user most needs to
-    /// clear. An unbound plan takes the original path unchanged.
-    ///
-    /// Nothing is written here — a `false` leaves the store byte for byte as it
-    /// was — and `allItems[index]` is the account-scoped item, so a plan can
-    /// never validate a card that lives in another ledger.
-    private static func validIncomingPlanBinding(
-        _ incoming: TradePlan,
-        on item: WatchItem,
-        plans: [TradePlan],
-        existing: Int?
-    ) -> Bool {
-        guard incoming.status == .active else { return true }
-        guard let portionID = incoming.positionPortionID else { return true }
-        guard item.salePlanSource(for: incoming) != nil else { return false }
-        // The candidate item carries the incoming plan in place of the stored
-        // one, so the availability read sees exactly what the store would hold.
-        var candidate = item
-        candidate.plans = plans
-        if let existing { candidate.plans[existing] = incoming }
-        else { candidate.plans.append(incoming) }
-        let remaining = TradePlanExecutionProgress(plan: incoming, transactions: candidate.transactions).remainingQuantity
-        guard remaining.isFinite, remaining > 0 else { return true }
-        let available = candidate.availableSalePlanQuantity(for: portionID, excludingPlanID: incoming.id)
-        return remaining <= available + PositionAllocation.quantityTolerance(remaining, available)
+    private static func normalizedPlanNote(_ note: String?) -> String? {
+        TradePlanMutation.normalizedNote(note)
     }
 
     @discardableResult
@@ -1542,16 +1307,11 @@ public final class WatchlistStore {
     }
 
     private func validateNewTransaction(_ transaction: PositionTransaction) throws {
-        guard transaction.price.isFinite, transaction.price >= 0,
-              transaction.quantity.isFinite, transaction.quantity > 0,
-              (transaction.price * transaction.quantity).isFinite,
-              (transaction.price * transaction.quantity + (transaction.fee ?? 0)).isFinite,
-              transaction.hasValidFee, transaction.date.timeIntervalSince1970.isFinite,
-              transaction.createdAt.timeIntervalSince1970.isFinite,
-              transaction.note.map({ $0.count <= 4_000 }) ?? true else { throw TradePlanExecutionError.invalidFill }
-        guard !syncSnapshot().allAccountItems.contains(where: { item in
-            item.transactions.contains { $0.id == transaction.id }
-        }) else { throw TradePlanExecutionError.duplicateTransactionID }
+        guard transaction.kind != .adjustment else { throw TradePlanExecutionError.invalidFill }
+        do { try TradeMutationValidation.validatePayload(transaction) }
+        catch { throw TradePlanExecutionError.invalidFill }
+        do { try validateUniqueTransactionID(transaction.id) }
+        catch { throw TradePlanExecutionError.duplicateTransactionID }
     }
 
     private func portfolioAppendingBuy(_ transaction: PositionTransaction, symbol: SymbolID,
@@ -1565,10 +1325,9 @@ public final class WatchlistStore {
         var transactions = previous.materializedTransactions()
         transactions.append(transaction)
         let updated = applyingAppendedBuy(transaction, previous: previous,
-                                          to: Self.applyingTransactions(transactions, to: previous))
-        guard Self.validAccountLedger(PositionLedger(transactions: updated.transactions)) else {
-            throw TradePlanExecutionError.invalidFill
-        }
+                                          to: TradeLedgerMutation.applyingTransactions(transactions, to: previous))
+        try TradeMutationValidation.validateReplay(previous: previous.materializedTransactions(),
+            proposed: updated.transactions, longOnly: brokerageAccountsEnabled)
         target.retainedHistoryItems.removeAll { $0.symbol == symbol }
         if let index = target.items.firstIndex(where: { $0.symbol == symbol }) { target.items[index] = updated }
         else { target.items.append(updated) }
@@ -1581,21 +1340,48 @@ public final class WatchlistStore {
 
     /// Validate the entire proposed snapshot before publishing either side of a
     /// cross-account fill. Failed writes cannot leave an empty target or half a plan.
-    private func commitAccountPortfolios(_ updates: [BrokerageAccountID: BrokerageAccountPortfolio]) throws {
-        var snapshot = syncSnapshot()
-        for (account, portfolio) in updates {
-            if account == .unassigned {
-                snapshot.items = portfolio.items; snapshot.groups = portfolio.groups
-                snapshot.retainedHistoryItems = portfolio.retainedHistoryItems
-                snapshot.accountSettings = portfolio.settings
-            } else {
-                snapshot.brokerageAccounts?.removeAll { $0.accountID == account }
-                snapshot.brokerageAccounts?.append(portfolio)
+    private func commitAccountPortfolios(_ updates: [BrokerageAccountID: BrokerageAccountPortfolio],
+                                         refreshLinkedPlans: Bool = false) throws {
+        var candidate = accountPortfolios
+        candidate[activeBrokerageAccountID] = currentPortfolio()
+        for (account, portfolio) in updates { candidate[account] = portfolio }
+        if refreshLinkedPlans {
+            let ledgers = candidate.map { (account: $0.key, items: $0.value.items + $0.value.retainedHistoryItems) }
+            for reference in linkedPlanProgress() {
+                guard var portfolio = candidate[reference.account] else { continue }
+                func refresh(_ items: inout [WatchItem]) {
+                    guard let itemIndex = items.firstIndex(where: { $0.symbol == reference.symbol }),
+                          let planIndex = items[itemIndex].plans.firstIndex(where: { $0.id == reference.id }) else { return }
+                    let plan = items[itemIndex].plans[planIndex]
+                    let trades = Self.transactions(in: ledgers, symbol: reference.symbol,
+                        planID: plan.id, owningPlan: plan, source: reference.account)
+                    let progress = TradePlanExecutionProgress(plan: plan, transactions: trades)
+                    let reopen = plan.status == .done && reference.previousProgress.isComplete && !progress.isComplete
+                    let complete = plan.status == .active && progress.isComplete
+                        && progress.filledQuantity != reference.previousProgress.filledQuantity
+                    guard reopen || complete else { return }
+                    items[itemIndex].plans[planIndex].status = reopen ? .active : .done
+                    items[itemIndex].plans[planIndex].updatedAt = .now
+                }
+                refresh(&portfolio.items)
+                refresh(&portfolio.retainedHistoryItems)
+                candidate[reference.account] = portfolio
             }
         }
-        _ = try WatchlistSyncWireCodec.encode(deviceID: "buy-validation", snapshot: snapshot)
-        for (account, portfolio) in updates { accountPortfolios[account] = portfolio }
-        if updates[activeBrokerageAccountID] != nil { adoptAccount(activeBrokerageAccountID) }
+        var snapshot = syncSnapshot()
+        if let unassigned = candidate[.unassigned] {
+            snapshot.items = unassigned.items; snapshot.groups = unassigned.groups
+            snapshot.retainedHistoryItems = unassigned.retainedHistoryItems
+            snapshot.accountSettings = unassigned.settings
+        }
+        if brokerageAccountsEnabled {
+            snapshot.brokerageAccounts = BrokerageAccountID.allCases.filter { $0 != .unassigned }.compactMap { candidate[$0] }
+        }
+        _ = try WatchlistSyncWireCodec.encode(deviceID: "trade-validation", snapshot: snapshot)
+        // No live values, account selection, defaults or hooks are touched until
+        // every affected ledger and dependent plan has passed validation.
+        accountPortfolios = candidate
+        adoptAccount(activeBrokerageAccountID)
         save()
     }
 
@@ -1698,11 +1484,10 @@ public final class WatchlistStore {
         // cancelled, still active, or already complete under backfill fails
         // here with the same `stalePlan` the ordinary route gives a plan that
         // is not active.
-        let backfillable = plan.status == .done
-            && TradePlanExecutionProgress(plan: plan,
-                transactions: transactionsForPlan(symbol, planID: plan.id)).remainingQuantity > 0
+        let currentEntry = TradePlanEntry(symbol: symbol, plan: plan,
+            transactions: transactionsForPlan(symbol, planID: plan.id), accountID: source)
         guard plan.hasValidPayload,
-              historicalBackfill ? backfillable : plan.status == .active,
+              historicalBackfill ? currentEntry.canBackfillFill : currentEntry.displayState == .waiting,
               expectedPlanUpdatedAt.map({ $0 == plan.updatedAt }) ?? true else {
             throw TradePlanExecutionError.stalePlan
         }
@@ -1772,11 +1557,8 @@ public final class WatchlistStore {
         _ = initializePositionAllocation(&previous)
         var transactions = previous.materializedTransactions()
         transactions.append(transaction)
-        let updated = Self.applyingTransactions(transactions, to: previous)
-        let ledger = PositionLedger(transactions: updated.transactions)
-        guard ledger.quantity.isFinite, ledger.averageCost.isFinite,
-              ledger.realizedPnL.isFinite, ledger.totalFees.isFinite,
-              ledger.costBasis.isFinite, ledger.dilutedCost.isFinite else {
+        var updated = TradeLedgerMutation.applyingTransactions(transactions, to: previous)
+        guard Self.validAccountLedger(PositionLedger(transactions: updated.transactions)) else {
             throw TradePlanExecutionError.invalidFill
         }
 
@@ -1794,13 +1576,14 @@ public final class WatchlistStore {
             )
         }
 
-        allItems[index] = updated
-        if plan.kind == .buy { recordAppendedBuy(transaction, previous: previous, at: index) }
-        if let soldAllocation { allItems[index].positionAllocation = soldAllocation }
+        try TradeMutationValidation.validateReplay(previous: previous.materializedTransactions(),
+            proposed: updated.transactions, longOnly: true)
+        if plan.kind == .buy { updated = applyingAppendedBuy(transaction, previous: previous, to: updated) }
+        if let soldAllocation { updated.positionAllocation = soldAllocation }
         var updatedPlan = plan
         Self.adoptRecordedFillLink(&updatedPlan, transactionID: transactionID, plans: previous.plans)
         let fills = transactionsForPlan(symbol, planID: plan.id)
-        if TradePlanExecutionProgress(plan: updatedPlan, transactions: fills).isComplete {
+        if TradePlanExecutionProgress(plan: updatedPlan, transactions: fills + [transaction]).isComplete {
             updatedPlan.status = .done
         } else if !historicalBackfill {
             // Ordinary recording is the only route that may derive `.active`
@@ -1813,8 +1596,10 @@ public final class WatchlistStore {
             updatedPlan.status = .active
         }
         updatedPlan.updatedAt = .now
-        allItems[index].plans[planIndex] = updatedPlan
-        save()
+        updated.plans[planIndex] = updatedPlan
+        var portfolio = currentPortfolio()
+        portfolio.items[index] = updated
+        try commitAccountPortfolios([source: portfolio])
         return transaction
     }
 
@@ -1897,7 +1682,7 @@ public final class WatchlistStore {
         _ = initializePositionAllocation(&targetItem)
         var transactions = targetItem.materializedTransactions()
         transactions.append(transaction)
-        let updatedTarget = Self.applyingTransactions(transactions, to: targetItem)
+        let updatedTarget = TradeLedgerMutation.applyingTransactions(transactions, to: targetItem)
         let ledger = PositionLedger(transactions: updatedTarget.transactions)
         guard ledger.quantity.isFinite, ledger.averageCost.isFinite,
               ledger.realizedPnL.isFinite, ledger.totalFees.isFinite,
@@ -2242,11 +2027,9 @@ public final class WatchlistStore {
         }
         var recorded = transaction
         recorded.brokerageAccountID = account
-        let updated = Self.applyingTransactions(previous.materializedTransactions() + [recorded], to: previous)
-        guard Self.validAccountLedger(PositionLedger(transactions: updated.transactions)),
-              updated.ledger?.entries.allSatisfy({ $0.resultingQuantity >= 0 }) == true else {
-            throw TradePlanExecutionError.invalidFill
-        }
+        let updated = TradeLedgerMutation.applyingTransactions(previous.materializedTransactions() + [recorded], to: previous)
+        try TradeMutationValidation.validateReplay(previous: previous.materializedTransactions(),
+            proposed: updated.transactions, longOnly: true)
         if let index = portfolio.items.firstIndex(where: { $0.symbol == symbol }) {
             portfolio.items[index] = updated
         } else if let index = portfolio.retainedHistoryItems.firstIndex(where: { $0.symbol == symbol }) {
@@ -2338,49 +2121,147 @@ public final class WatchlistStore {
         }
     }
 
-    public func deleteTransaction(_ symbol: SymbolID, id: UUID) {
-        guard let index = allItems.firstIndex(where: { $0.symbol == symbol }) else { return }
-        var transactions = allItems[index].transactions
-        let count = transactions.count
-        transactions.removeAll { $0.id == id }
-        guard transactions.count != count else { return }
-        commitTransactions(transactions, at: index)
+    /// Compatibility entry points return explicit results and use the same gates.
+    /// Callers holding a draft must use the overload with `expected` instead.
+    @discardableResult
+    public func deleteTransaction(_ symbol: SymbolID, id: UUID) -> Result<PositionTransaction, TradeMutationError> {
+        mutationResult {
+            let item = try transactionItem(symbol, account: activeBrokerageAccountID)
+            guard let original = item.transactions.first(where: { $0.id == id }) else {
+                throw TradeMutationError.transactionNotFound
+            }
+            return try deleteTransaction(symbol, id: id, expected: original, account: activeBrokerageAccountID)
+        }
     }
 
-    /// Replaces the transaction carrying `transaction.id`, keeping its
-    /// `createdAt` so an edit never reshuffles same-day replay order. Buys may
-    /// bridge a share split at a zero price; sells keep a positive price and
-    /// an adjustment keeps the calibrator's looser contract (finite quantity,
-    /// non-negative cost).
-    public func updateTransaction(_ symbol: SymbolID, _ transaction: PositionTransaction) {
-        guard let index = allItems.firstIndex(where: { $0.symbol == symbol }),
-              allItems[index].supportsPosition else { return }
-        guard transaction.hasValidFee else { return }
-        switch transaction.kind {
-        case .buy:
-            guard transaction.price.isFinite, transaction.price >= 0,
-                  transaction.quantity.isFinite, transaction.quantity > 0 else { return }
-        case .sell:
-            guard transaction.price.isFinite, transaction.price > 0,
-                  transaction.quantity.isFinite, transaction.quantity > 0 else { return }
-        case .adjustment:
-            guard transaction.quantity.isFinite,
-                  transaction.price.isFinite, transaction.price >= 0 else { return }
+    @discardableResult
+    public func updateTransaction(_ symbol: SymbolID, _ transaction: PositionTransaction) -> Result<PositionTransaction, TradeMutationError> {
+        mutationResult {
+            let item = try transactionItem(symbol, account: activeBrokerageAccountID)
+            guard let original = item.transactions.first(where: { $0.id == transaction.id }) else {
+                throw TradeMutationError.transactionNotFound
+            }
+            return try updateTransaction(symbol, transaction, expected: original, account: activeBrokerageAccountID)
         }
-        var transactions = allItems[index].transactions
-        guard let existing = transactions.firstIndex(where: { $0.id == transaction.id }) else { return }
-        var updated = transaction
-        let original = transactions[existing]
-        let account = activeBrokerageAccountID
-        guard updated.brokerageAccountID == nil || updated.brokerageAccountID == original.brokerageAccountID else { return }
-        guard updated.kind != .buy || updated.fundingSource != .margin || !brokerageAccountsEnabled
-            || account == .financing || updated.fundingSource == original.fundingSource else { return }
-        updated.brokerageAccountID = original.brokerageAccountID
+    }
+
+    /// A content stamp avoids a storage-schema migration while still refusing
+    /// stale drafts after sync, review edits, or ownership corrections.
+    @discardableResult
+    public func updateTransaction(_ symbol: SymbolID, _ transaction: PositionTransaction,
+                                  expected: PositionTransaction, account: BrokerageAccountID) throws -> PositionTransaction {
+        let previous = try transactionItem(symbol, account: account)
+        guard let index = previous.transactions.firstIndex(where: { $0.id == transaction.id }),
+              expected.id == transaction.id else { throw TradeMutationError.transactionNotFound }
+        let original = previous.transactions[index]
+        guard original == expected else { throw TradeMutationError.staleRecord }
+        guard transaction.brokerageAccountID == nil || transaction.brokerageAccountID == original.brokerageAccountID else {
+            throw TradeMutationError.accountUnavailable
+        }
+        if original.planExecution != nil || transactionHasLegacyPlanLink(symbol, id: original.id, account: account) {
+            guard transaction.kind == original.kind else { throw TradeMutationError.immutablePlanContext }
+        }
+        guard transaction.kind != .buy || transaction.fundingSource != .margin || !brokerageAccountsEnabled
+            || account == .financing || transaction.fundingSource == original.fundingSource else {
+            throw TradeMutationError.fundingIncompatible
+        }
+        var updated = TradeLedgerMutation.preservingTransactionMetadata(transaction, from: original)
         updated.createdAt = original.createdAt
-        updated.planExecution = transactions[existing].planExecution ?? updated.planExecution
-        updated = Self.preservingTransactionMetadata(updated, from: transactions[existing])
-        transactions[existing] = updated
-        commitTransactions(transactions, at: index)
+        updated.brokerageAccountID = original.brokerageAccountID
+        updated.planExecution = original.planExecution
+        try TradeMutationValidation.validatePayload(updated)
+        var transactions = previous.transactions
+        transactions[index] = updated
+        try TradeMutationValidation.validateReplay(previous: previous.transactions, proposed: transactions,
+                                                   longOnly: brokerageAccountsEnabled)
+        let candidate = TradeLedgerMutation.applyingTransactions(transactions, to: previous)
+        try commitTransactionItem(candidate, account: account, refreshLinkedPlans: true)
+        return updated
+    }
+
+    @discardableResult
+    public func deleteTransaction(_ symbol: SymbolID, id: UUID,
+                                  expected: PositionTransaction, account: BrokerageAccountID) throws -> PositionTransaction {
+        let previous = try transactionItem(symbol, account: account)
+        guard let original = previous.transactions.first(where: { $0.id == id }), expected.id == id else {
+            throw TradeMutationError.transactionNotFound
+        }
+        guard original == expected else { throw TradeMutationError.staleRecord }
+        let transactions = previous.transactions.filter { $0.id != id }
+        try TradeMutationValidation.validateReplay(previous: previous.transactions, proposed: transactions,
+                                                   longOnly: brokerageAccountsEnabled)
+        let candidate = TradeLedgerMutation.applyingTransactions(transactions, to: previous)
+        try commitTransactionItem(candidate, account: account, refreshLinkedPlans: true)
+        return original
+    }
+
+    /// Go-forward manual writes, including the no-account form, never use the
+    /// permissive import append. Import/calibration short histories stay readable.
+    @discardableResult
+    public func recordTransaction(_ symbol: SymbolID, _ transaction: PositionTransaction,
+                                  account: BrokerageAccountID) throws -> PositionTransaction {
+        if brokerageAccountsEnabled {
+            return try addNamedTransaction(symbol, transaction, account: account)
+        }
+        guard account == .unassigned,
+              transaction.brokerageAccountID == nil || transaction.brokerageAccountID == .unassigned else {
+            throw TradeMutationError.accountUnavailable
+        }
+        guard transaction.kind != .adjustment else { throw TradeMutationError.invalidValues }
+        try TradeMutationValidation.validatePayload(transaction)
+        try validateUniqueTransactionID(transaction.id)
+        var previous = try transactionItem(symbol, account: account)
+        _ = initializePositionAllocation(&previous)
+        let transactions = previous.materializedTransactions() + [transaction]
+        try TradeMutationValidation.validateReplay(previous: previous.materializedTransactions(), proposed: transactions, longOnly: true)
+        var candidate = TradeLedgerMutation.applyingTransactions(transactions, to: previous)
+        if transaction.kind == .buy { candidate = applyingAppendedBuy(transaction, previous: previous, to: candidate) }
+        try commitTransactionItem(candidate, account: account, refreshLinkedPlans: true)
+        return transaction
+    }
+
+    private func mutationResult(_ operation: () throws -> PositionTransaction) -> Result<PositionTransaction, TradeMutationError> {
+        do { return .success(try operation()) }
+        catch let error as TradeMutationError { return .failure(error) }
+        catch { return .failure(.invalidCandidate) }
+    }
+
+    private func transactionItem(_ symbol: SymbolID, account: BrokerageAccountID) throws -> WatchItem {
+        guard (brokerageAccountsEnabled && accountPortfolios[account] != nil)
+            || (!brokerageAccountsEnabled && account == .unassigned) else { throw TradeMutationError.accountUnavailable }
+        let portfolio = brokeragePortfolio(for: account)
+        guard let item = portfolio.items.first(where: { $0.symbol == symbol })
+            ?? portfolio.retainedHistoryItems.first(where: { $0.symbol == symbol }) else { throw TradeMutationError.itemNotFound }
+        guard item.supportsPosition else { throw TradeMutationError.invalidValues }
+        return item
+    }
+
+    private func transactionHasLegacyPlanLink(_ symbol: SymbolID, id: UUID, account: BrokerageAccountID) -> Bool {
+        let accounts = brokerageAccountsEnabled ? BrokerageAccountID.allCases : [account]
+        return accounts.contains { owner in
+            let portfolio = brokeragePortfolio(for: owner)
+            return (portfolio.items + portfolio.retainedHistoryItems).contains { item in
+                item.symbol == symbol && item.plans.contains { $0.filledTransactionID == id }
+            }
+        }
+    }
+
+    private func validateUniqueTransactionID(_ id: UUID) throws {
+        guard !syncSnapshot().allAccountItems.contains(where: { item in
+            item.materializedTransactions().contains { $0.id == id }
+        }) else { throw TradeMutationError.duplicateTransactionID }
+    }
+
+    private func commitTransactionItem(_ item: WatchItem, account: BrokerageAccountID,
+                                       refreshLinkedPlans: Bool) throws {
+        var portfolio = brokeragePortfolio(for: account)
+        if let index = portfolio.items.firstIndex(where: { $0.symbol == item.symbol }) {
+            portfolio.items[index] = item
+        } else if let index = portfolio.retainedHistoryItems.firstIndex(where: { $0.symbol == item.symbol }) {
+            portfolio.retainedHistoryItems[index] = item
+        } else { throw TradeMutationError.itemNotFound }
+        do { try commitAccountPortfolios([account: portfolio], refreshLinkedPlans: refreshLinkedPlans) }
+        catch { throw TradeMutationError.invalidCandidate }
     }
 
     /// Updates only the user's execution reason and post-trade review. Keeping
@@ -3034,7 +2915,7 @@ public final class WatchlistStore {
     ) {
         let previous = allItems[index]
         let trackedPlans = linkedPlanProgress()
-        let proposed = Self.applyingTransactions(transactions, to: previous)
+        let proposed = TradeLedgerMutation.applyingTransactions(transactions, to: previous)
         guard Self.validAccountLedger(PositionLedger(transactions: proposed.transactions)) else { return }
         applyTransactions(transactions, at: index)
         // Cross-account fills reopen their source plan after an edit/deletion too.
@@ -3328,26 +3209,7 @@ public final class WatchlistStore {
     /// Split out from `commitTransactions` so a bulk import can apply many items
     /// before persisting once.
     private func applyTransactions(_ transactions: [PositionTransaction], at index: Int) {
-        allItems[index] = Self.applyingTransactions(transactions, to: allItems[index])
-    }
-
-    private static func applyingTransactions(_ transactions: [PositionTransaction], to item: WatchItem) -> WatchItem {
-        var updated = item
-        updated.transactions = PositionLedger.replayOrdered(transactions)
-        let ledger = PositionLedger(transactions: updated.transactions)
-        // The cache lot's identity is derived from the symbol rather than
-        // random, so it matches the lot a merged peer snapshot derives for the
-        // same position. A random id here would differ from the merge result and
-        // make every local trade force one extra sync round trip.
-        updated.lots = ledger.hasOpenPosition
-            ? [CostLot(
-                id: WatchlistSyncMerge.derivedLedgerLotID(for: item.symbol),
-                price: ledger.averageCost,
-                quantity: ledger.quantity,
-                date: nil
-            )]
-            : []
-        return updated
+        allItems[index] = TradeLedgerMutation.applyingTransactions(transactions, to: allItems[index])
     }
 
     /// Replaces a persisted name only when its provider outranks the saved source.
@@ -3720,7 +3582,7 @@ public final class WatchlistStore {
                         for archived in archivedTransactions {
                             guard let transactionIndex = allItems[itemIndex].transactions
                                 .firstIndex(where: { $0.id == archived.id }) else { continue }
-                            allItems[itemIndex].transactions[transactionIndex] = Self.preservingTransactionMetadata(
+                            allItems[itemIndex].transactions[transactionIndex] = TradeLedgerMutation.preservingTransactionMetadata(
                                 allItems[itemIndex].transactions[transactionIndex],
                                 from: archived
                             )
@@ -3807,26 +3669,12 @@ public final class WatchlistStore {
         return plan
     }
 
-    private struct Snapshot: Codable {
-        var items: [WatchItem]
-        var groups: [WatchlistGroup]
-        var selectedGroupID: UUID?
-        /// Optional so snapshots written before removed-history retention still decode.
-        var retainedHistoryItems: [WatchItem]?
-    }
-
-    private struct AccountStored: Codable {
-        var version: Int = 1
-        var snapshot: WatchlistSyncSnapshot
-        var activeAccountID: BrokerageAccountID
-        var selectedGroupIDs: [String: UUID]
-    }
+    private typealias Snapshot = WatchlistPersistenceCodec.Snapshot
+    private typealias AccountStored = WatchlistPersistenceCodec.AccountStored
 
     private func load() {
         if let data = defaults.data(forKey: accountStorageKey) {
-            if let stored = try? JSONDecoder().decode(AccountStored.self, from: data), (1...2).contains(stored.version),
-               stored.snapshot.brokerageAccounts != nil,
-               (try? WatchlistSyncWireCodec.encode(deviceID: "load-check", snapshot: stored.snapshot)) != nil {
+            if let stored = try? WatchlistPersistenceCodec.decodeAccounts(data) {
                 accountGroupSelections = stored.selectedGroupIDs
                 installAccountSnapshot(stored.snapshot, selecting: stored.activeAccountID)
                 return
@@ -3923,124 +3771,7 @@ public final class WatchlistStore {
     }
 
     private func normalizedItems(_ storedItems: [WatchItem]) -> [WatchItem] {
-        var normalizedItems: [WatchItem] = []
-        var itemIndexBySymbol: [SymbolID: Int] = [:]
-        for var item in storedItems {
-            item.instrumentType = WatchItem.normalizedInstrumentType(
-                item.instrumentType,
-                for: item.symbol
-            )
-            // Storage, rendering, and the merge all read one order
-            // (`TradePlan.ordered`); normalizing on every load keeps a peer's
-            // snapshot from looking different purely because of sequence.
-            item.plans = TradePlan.ordered(item.plans)
-            item.drawings = ChartDrawingMerge.collapsed(item.drawings)
-            if let profile = item.tradingProfile, !profile.isValid {
-                item.tradingProfile = nil
-            } else if var profile = item.tradingProfile {
-                profile.sector = Self.nonemptyText(profile.sector)
-                item.tradingProfile = profile.sector == nil && profile.stopPrice == nil && profile.targetPrice == nil
-                    ? nil
-                    : profile
-            }
-            item.events = InstrumentEventMerge.collapsed(item.events)
-            if let existingIndex = itemIndexBySymbol[item.symbol] {
-                var existingLotIDs = Set(normalizedItems[existingIndex].lots.map(\.id))
-                normalizedItems[existingIndex].lots.append(
-                    contentsOf: item.lots.filter { existingLotIDs.insert($0.id).inserted }
-                )
-                var transactions: [PositionTransaction] = []
-                var transactionIndexByID: [UUID: Int] = [:]
-                for transaction in normalizedItems[existingIndex].transactions + item.transactions {
-                    if let index = transactionIndexByID[transaction.id] {
-                        transactions[index] = Self.preservingTransactionMetadata(
-                            transactions[index],
-                            from: transaction
-                        )
-                    } else {
-                        transactionIndexByID[transaction.id] = transactions.count
-                        transactions.append(transaction)
-                    }
-                }
-                normalizedItems[existingIndex].transactions = PositionLedger.replayOrdered(transactions)
-                normalizedItems[existingIndex].addedAt = min(
-                    normalizedItems[existingIndex].addedAt,
-                    item.addedAt
-                )
-                if let source = item.displayNameSource,
-                   shouldAcceptDisplayName(
-                       source,
-                       over: normalizedItems[existingIndex].displayNameSource
-                   ) {
-                    normalizedItems[existingIndex].displayName = item.displayName
-                    normalizedItems[existingIndex].displayNameSource = source
-                }
-                if shouldAcceptInstrumentType(
-                    item.instrumentType,
-                    over: normalizedItems[existingIndex].instrumentType
-                ) {
-                    normalizedItems[existingIndex].instrumentType = item.instrumentType
-                }
-                // A thesis only exists because someone typed it, so a merged
-                // duplicate keeps the longer one instead of discarding work.
-                if let incoming = item.thesis,
-                   incoming.count > (normalizedItems[existingIndex].thesis?.count ?? 0) {
-                    normalizedItems[existingIndex].thesis = incoming
-                }
-                if let incoming = item.tradingProfile {
-                    let existing = normalizedItems[existingIndex].tradingProfile
-                    normalizedItems[existingIndex].tradingProfile = TradingProfile(
-                        sector: existing?.sector ?? incoming.sector,
-                        stopPrice: existing?.stopPrice ?? incoming.stopPrice,
-                        targetPrice: existing?.targetPrice ?? incoming.targetPrice
-                    )
-                }
-                normalizedItems[existingIndex].events = InstrumentEventMerge.merge(
-                    base: [],
-                    local: normalizedItems[existingIndex].events,
-                    remote: item.events
-                )
-                if normalizedItems[existingIndex].positionAllocation == nil {
-                    normalizedItems[existingIndex].positionAllocation = item.positionAllocation
-                } else if let incoming = item.positionAllocation,
-                          normalizedItems[existingIndex].positionAllocation != incoming,
-                          var selected = normalizedItems[existingIndex].positionAllocation {
-                    // Duplicate canonical symbols have no safe field-wise pool
-                    // merge. This holds even when both copies carry brokerage
-                    // account labels: two cards for one symbol in two accounts
-                    // are exactly the case a concatenation would fabricate, so
-                    // the deliberate fingerprint break forces reconciliation
-                    // rather than inventing an attribution.
-                    let fingerprint = PositionAllocation.basisFingerprint(for: normalizedItems[existingIndex])
-                    selected.basisFingerprint = fingerprint == String(repeating: "0", count: 64)
-                        ? String(repeating: "1", count: 64)
-                        : String(repeating: "0", count: 64)
-                    normalizedItems[existingIndex].positionAllocation = selected
-                }
-                // Plans carry stable ids, so duplicates from two spellings of
-                // the same symbol union by id rather than picking a winner.
-                var existingPlanIDs = Set(normalizedItems[existingIndex].plans.map(\.id))
-                normalizedItems[existingIndex].plans = TradePlan.ordered(
-                    normalizedItems[existingIndex].plans + item.plans.filter {
-                        existingPlanIDs.insert($0.id).inserted
-                    }
-                )
-                normalizedItems[existingIndex].drawings = ChartDrawingMerge.merge(
-                    base: [],
-                    local: normalizedItems[existingIndex].drawings,
-                    remote: item.drawings
-                )
-            } else {
-                itemIndexBySymbol[item.symbol] = normalizedItems.count
-                normalizedItems.append(item)
-            }
-        }
-        // The retired observation purpose is migrated only now, after duplicate
-        // canonical symbols have been collapsed into one entry. Migrating inside
-        // the loop would run it twice for a duplicate pair — appending a second
-        // audit change and, worse, a second revision to the same plan — and the
-        // surviving copy would depend on which spelling happened to be last.
-        return normalizedItems.map(Self.migratingRetiredObservationState)
+        WatchlistPersistenceCodec.normalizedItems(storedItems, migrate: Self.migratingRetiredObservationState)
     }
 
     /// Rewrites the retired observation purpose on one normalized item.
@@ -4072,9 +3803,8 @@ public final class WatchlistStore {
         if brokerageAccountsEnabled {
             checkpointAccount()
             let snapshot = syncSnapshot()
-            guard (try? WatchlistSyncWireCodec.encode(deviceID: "save-check", snapshot: snapshot)) != nil,
-                  let data = try? JSONEncoder().encode(AccountStored(version: snapshot.hasAccountSettings ? 2 : 1, snapshot: snapshot,
-                    activeAccountID: activeBrokerageAccountID, selectedGroupIDs: accountGroupSelections)) else { return }
+            guard let data = try? WatchlistPersistenceCodec.encodeAccounts(snapshot,
+                activeAccountID: activeBrokerageAccountID, selectedGroupIDs: accountGroupSelections) else { return }
             guard defaults.data(forKey: accountStorageKey) != data else { return }
             defaults.set(data, forKey: accountStorageKey)
             if syncRelevant { onLocalSyncChange?(snapshot) }
@@ -4092,44 +3822,6 @@ public final class WatchlistStore {
         if syncRelevant {
             onLocalSyncChange?(syncSnapshot())
         }
-    }
-
-    /// Duplicate canonical symbols can carry the same transaction ID from
-    /// separate legacy records. Keep the first trade values while filling any
-    /// execution reason or review fields that record still lacks.
-    ///
-    /// `fundingSource` is filled the same way and for the same reason: a copy
-    /// that never learned the field must not erase what another copy recorded.
-    /// An explicit `.unmarked` is a value, so it is only ever filled, never
-    /// overwritten by a fallback that happens to have something else.
-    ///
-    /// The review's forward-looking checkpoint follows the same rule field by
-    /// field, so a duplicate record that never learned `nextReviewDate` cannot
-    /// erase one the other copy holds, while the two are still separate fields
-    /// (`nextReviewDate`, `nextReviewNote`) that fill independently.
-    private static func preservingTransactionMetadata(
-        _ preferred: PositionTransaction,
-        from fallback: PositionTransaction
-    ) -> PositionTransaction {
-        var result = preferred
-        if result.note == nil { result.note = fallback.note }
-        if result.planExecution == nil { result.planExecution = fallback.planExecution }
-        else { result.planExecution = result.planExecution?.preservingSourceAccount(from: fallback.planExecution) }
-        if result.fundingSource == nil { result.fundingSource = fallback.fundingSource }
-        if result.brokerageAccountID == nil { result.brokerageAccountID = fallback.brokerageAccountID }
-        if result.review == nil {
-            result.review = fallback.review
-        } else if let fallbackReview = fallback.review {
-            if var review = result.review {
-                if review.followedPlan == nil { review.followedPlan = fallbackReview.followedPlan }
-                if review.retrospective == nil { review.retrospective = fallbackReview.retrospective }
-                if review.strategy == nil { review.strategy = fallbackReview.strategy }
-                if review.nextReviewDate == nil { review.nextReviewDate = fallbackReview.nextReviewDate }
-                if review.nextReviewNote == nil { review.nextReviewNote = fallbackReview.nextReviewNote }
-                result.review = review
-            }
-        }
-        return result
     }
 
     /// Keeps removed ledger and drawing data outside the active watchlist so it neither renders nor refreshes.

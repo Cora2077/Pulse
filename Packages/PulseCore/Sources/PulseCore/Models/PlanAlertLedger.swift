@@ -12,8 +12,15 @@ public struct PlanAlertLedger: Codable, Sendable {
 
     public init() {}
 
-    public func shouldNotify(plan: TradePlan, quote: Quote, now: Date = .now) -> Bool {
-        guard plan.status == .active, plan.price.isFinite, plan.price > 0,
+    public func shouldNotify(plan: TradePlan, quote: Quote, transactions: [PositionTransaction] = [], now: Date = .now) -> Bool {
+        shouldNotify(entry: TradePlanEntry(symbol: quote.symbol, plan: plan, transactions: transactions), quote: quote, now: now)
+    }
+
+    public func shouldNotify(entry: TradePlanEntry, quote: Quote, now: Date = .now) -> Bool {
+        let plan = entry.plan
+        guard entry.symbol == quote.symbol, entry.displayState == .waiting, entry.remainingQuantity > 0,
+              now.timeIntervalSince1970.isFinite, quote.timestamp.timeIntervalSince1970.isFinite,
+              plan.status == .active, plan.price.isFinite, plan.price > 0,
               plan.quantity.isFinite, plan.quantity > 0,
               quote.price.isFinite, quote.price > 0,
               quote.marketState != .closed,

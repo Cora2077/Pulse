@@ -1,0 +1,61 @@
+name: FFF Checks
+
+"on":
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fff-checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep the compiler aligned with the existing release workflow.
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  packages:
+    name: ${{ matrix.package }} tests
+    runs-on: macos-26
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [PulseCore, PulseUI]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify the selected toolchain
+        run: |
+          test -x "$DEVELOPER_DIR/usr/bin/xcodebuild"
+          xcodebuild -version
+          swift --version
+      - name: Run offline package regressions
+        run: swift test --disable-sandbox --package-path Packages/${{ matrix.package }}
+
+  macos-compile:
+    name: macOS compile
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify the selected toolchain
+        run: |
+          test -x "$DEVELOPER_DIR/usr/bin/xcodebuild"
+          xcodebuild -version
+      - name: Prepare build dependencies
+        run: |
+          brew install xcodegen
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Compile only in the disposable runner
+        # Explicit ad-hoc permission is restricted to isolated compilation here.
+        # Never install, launch against real data, publish, or use signing secrets.
+        env:
+          PULSE_ALLOW_AD_HOC: "1"
+        run: scripts/dev-mac.sh --build

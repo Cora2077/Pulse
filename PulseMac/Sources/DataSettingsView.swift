@@ -324,37 +324,9 @@ struct DataSettingsView: View {
             }
 
             ForEach(sync.conflictSummaries) { conflict in
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(PulseLocalization.localizedString(
-                        "sync.conflict.detail", conflict.count, String(conflict.id.prefix(8))
-                    ))
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    ForEach(conflict.examples, id: \.self) { example in
-                        Text(example)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(PulseLocalization.localizedString("sync.conflict.warning"))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        Button(PulseLocalization.localizedString("sync.conflict.keepLocal")) {
-                            sync.resolveConflicts(peerID: conflict.id, choosingRemote: false)
-                        }
-                        .disabled(sync.isSyncing)
-                        Button(PulseLocalization.localizedString("sync.conflict.useRemote")) {
-                            sync.resolveConflicts(peerID: conflict.id, choosingRemote: true)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(sync.isSyncing)
-                    }
-                    .controlSize(.small)
+                SyncConflictCard(summary: conflict, isWorking: sync.isSyncing) { choosingRemote in
+                    sync.resolveConflicts(peerID: conflict.id, choosingRemote: choosingRemote)
                 }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             }
 
             HStack {

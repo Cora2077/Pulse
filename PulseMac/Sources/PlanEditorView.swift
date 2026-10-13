@@ -164,7 +164,7 @@ struct PlanEditorView: View {
     }
 
     private var sideColor: Color {
-        appState.palette.color(isUp: kind == .buy)
+        TradeSideStyle.color(for: kind)
     }
 
     /// The caption under the editor's title.
@@ -383,7 +383,7 @@ struct PlanEditorView: View {
 
     private func kindButton(_ value: TradePlan.Kind, titleKey: String) -> some View {
         let selected = kind == value
-        let color = appState.palette.color(isUp: value == .buy)
+        let color = TradeSideStyle.color(for: value)
         return Button {
             kind = value
             clearError()

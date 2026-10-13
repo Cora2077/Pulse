@@ -35,6 +35,7 @@ struct PlanDeletionRequest: Identifiable, Equatable {
     /// The stored plan's stamp at request time. Re-checked immediately before
     /// the write, so a plan that changed while the sheet was open is refused.
     let expectedUpdatedAt: Date
+    let expectedPlan: TradePlan
     let side: TradePlan.Kind
     /// The size the plan asked for, and what is still open against it. Both were
     /// true of the row the user chose; they are shown, never re-derived.
@@ -73,6 +74,7 @@ struct PlanDeletionRequest: Identifiable, Equatable {
             ? entry.symbol.displayCode : trimmed
         self.account = account
         self.expectedUpdatedAt = entry.plan.updatedAt
+        self.expectedPlan = entry.plan
         self.side = entry.plan.kind
         self.quantity = entry.plan.quantity
         self.remainingQuantity = entry.remainingQuantity
@@ -161,7 +163,7 @@ struct PlanDeletionSheet: View {
     private var isRequestCurrent: Bool {
         guard appState.watchlist.activeBrokerageAccountID == request.account else { return false }
         guard let live = request.livePlan(in: appState.watchlist) else { return false }
-        return live.updatedAt == request.expectedUpdatedAt
+        return live == request.expectedPlan
     }
 
     private var accountTitle: String { AccountIdentity.title(request.account) }
@@ -351,8 +353,10 @@ struct PlanDeletionSheet: View {
             errorMessage = PulseLocalization.localizedString("plans.delete.changed")
             return
         }
-        guard appState.watchlist.deleteTradePlan(request.planID, for: request.symbol) else {
-            errorMessage = PulseLocalization.localizedString("plans.delete.changed")
+        do {
+            try appState.watchlist.deleteTradePlan(request.expectedPlan, for: request.symbol, account: request.account)
+        } catch {
+            errorMessage = error.localizedDescription
             return
         }
         didDelete = true

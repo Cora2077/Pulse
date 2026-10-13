@@ -22,6 +22,7 @@ struct MainInstrumentView: View {
     /// the menu was opened on and the account it was frozen against.
     @State private var planDeletionRequest: PlanDeletionRequest?
     @State private var planWorkflowEntry: TradePlanEntry?
+    @State private var planActionError: String?
     @State private var pendingTabReturn: MainInstrumentTab?
     @State private var chartMode: MainChartMode = .intraday
     @State private var candles: [Candle] = []
@@ -208,6 +209,10 @@ struct MainInstrumentView: View {
                 .frame(width: 650, height: 600)
         }
         .modifier(PlanDeletionConfirmation(request: $planDeletionRequest))
+        .alert(PulseLocalization.localizedString("plans.delete.changed"), isPresented: Binding(
+            get: { planActionError != nil }, set: { if !$0 { planActionError = nil } })) {
+            Button(PulseLocalization.localizedString("action.cancel")) { planActionError = nil }
+        } message: { Text(planActionError ?? "") }
         .onChange(of: symbol) { _, newSymbol in
             route = .detail(newSymbol)
             selectedTab = .position
@@ -1389,67 +1394,18 @@ struct MainInstrumentView: View {
             }
             .buttonStyle(.plain)
             if symbolSupportsPosition {
-                // One status control for every plan this list shows, whatever
-                // ledger it came from. The board is cross-account, so gating the
-                // menu on the *selected* account made two rows in the same
-                // waiting section render two different controls — a menu on the
-                // active ledger's row and a dead badge on everyone else's — for
-                // the same status, with no way to tell why. The question the row
-                // can answer is whether the instrument supports a position at
-                // all, so that is the only gate left.
-                //
-                // Every branch below routes through `withPlanSourceAccount`,
-                // which points the store at the entry's own ledger before the
-                // action runs and does nothing at all when that cannot be done.
-                // The actions themselves are ledger-relative — `setTradePlan`,
-                // the deletion request, and both sheets all address the active
-                // ledger — so this is what keeps a foreign row's action from
-                // landing in the ledger the user happens to be standing in.
                 Menu {
-                    if isWaiting {
-                        Button(PulseLocalization.localizedString("plans.action.recordFill")) {
-                            withPlanSourceAccount(entry) { planExecutionEntry = entry }
+                    PlanActionMenu(entry: entry, onPresent: { action in
+                        switch action {
+                        case .recordFill, .backfill: planExecutionEntry = entry
+                        case .history: planWorkflowEntry = entry
+                        case .edit: route = .plan(symbol, entry.plan.id, .detail(symbol))
+                        case .delete:
+                            planDeletionRequest = PlanDeletionRequest(entry: entry,
+                                account: entry.accountID ?? appState.watchlist.activeBrokerageAccountID)
+                        default: break
                         }
-                        Button(PulseLocalization.localizedString("plan.menu.drop")) {
-                            withPlanSourceAccount(entry) {
-                                var updated = plan; updated.status = .cancelled
-                                appState.watchlist.setTradePlan(updated, for: symbol)
-                            }
-                        }
-                    } else {
-                        // A stopped record with an incomplete real fill can be
-                        // completed from here. The row is not revived first: the
-                        // fill sheet detects the backfill mode itself and the
-                        // core write is guarded.
-                        if entry.canBackfillFill {
-                            Button(PulseLocalization.localizedString("plans.action.backfill")) {
-                                withPlanSourceAccount(entry) { planExecutionEntry = entry }
-                            }
-                        }
-                        if entry.displayState != .filled {
-                            Button(PulseLocalization.localizedString("plan.menu.revive")) {
-                                withPlanSourceAccount(entry) {
-                                    var updated = plan; updated.status = .active
-                                    appState.watchlist.setTradePlan(updated, for: symbol)
-                                }
-                            }
-                        }
-                    }
-                    Button(PulseLocalization.localizedString("plans.action.logicHistory")) {
-                        withPlanSourceAccount(entry) { planWorkflowEntry = entry }
-                    }
-                    Divider()
-                    Button(PulseLocalization.localizedString("plan.delete"), role: .destructive) {
-                        withPlanSourceAccount(entry) {
-                            // Recorded against the entry's own ledger, which the
-                            // selection above has just made active, rather than
-                            // against whatever the toolbar said a moment ago.
-                            planDeletionRequest = PlanDeletionRequest(
-                                entry: entry,
-                                account: appState.watchlist.activeBrokerageAccountID
-                            )
-                        }
-                    }
+                    }, onError: { planActionError = $0 })
                 } label: {
                     PlanStatusBadge(entry: entry)
                 }
@@ -1469,34 +1425,9 @@ struct MainInstrumentView: View {
         .padding(.vertical, 5)
     }
 
-    /// Runs one plan-row action against the ledger the row actually came from.
-    ///
-    /// The board lists plans from every account, but the store writes to
-    /// whichever ledger is selected, and both sheets freeze the account they are
-    /// handed. So a foreign row's action is only correct after the store has
-    /// been pointed at that row's own source, and this is the one place that
-    /// happens.
-    ///
-    /// Selection is allowed to fail. `selectBrokerageAccount` returns `false`
-    /// when it cannot adopt the ledger it was asked for, and the failure is
-    /// silent by design — there is no account to switch to, so the honest
-    /// response is to do nothing rather than run the action against the ledger
-    /// that happens to be active. A row with no `accountID` at all is the same
-    /// case: the entry came from a board that always tags its records, so a
-    /// `nil` here means the row is not addressable, not that "the active one
-    /// will do".
-    ///
-    /// An entry already on the active ledger skips the switch entirely.
-    /// `selectBrokerageAccount` is also a no-op that returns `false` when the id
-    /// is already selected, so asking unconditionally would refuse every action
-    /// on the very account the user is standing in. Comparing first is what
-    /// makes "already there" a success rather than a failure.
     private func withPlanSourceAccount(_ entry: TradePlanEntry, _ action: () -> Void) {
-        guard let source = entry.accountID else { return }
-        if source != appState.watchlist.activeBrokerageAccountID {
-            guard appState.selectBrokerageAccount(source) else { return }
-        }
-        action()
+        do { try PlanActionRouting.selectSource(entry, in: appState); action() }
+        catch { planActionError = error.localizedDescription }
     }
 
     /// The one account sentence this row can carry.
@@ -1624,6 +1555,7 @@ struct MainInstrumentView: View {
                     route: $route,
                     account: draftRouteAccount ?? appState.watchlist.activeBrokerageAccountID
                 )
+                .id(route)
             } else {
                 dashboard
                     .onAppear { route = .detail(symbol) }

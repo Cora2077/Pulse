@@ -431,10 +431,10 @@
 "sync.lastRead" = "마지막 읽기 성공: %@";
 "sync.lastWrite" = "마지막 쓰기 성공: %@";
 "sync.conflict.detail" = "데이터 %d건이 Mac %@와 충돌했습니다";
-"sync.conflict.warning" = "선택은 이 기기의 모든 거래 및 포지션 배분 충돌에 적용됩니다. 거래를 삭제하면 포지션 계산도 달라집니다. 적용 전에 두 스냅샷을 이 Mac에 저장합니다.";
-"sync.conflict.keepLocal" = "이 Mac의 거래 유지";
-"sync.conflict.useRemote" = "다른 Mac의 거래 사용";
-"sync.conflict.changed" = "검토 중 다른 Mac에서 변경되었습니다. 업데이트된 충돌을 확인한 뒤 선택하세요.";
+"sync.conflict.warning" = "선택은 위에 표시된 충돌 기록, 필드 및 연결된 장부에만 적용됩니다. 충돌하지 않는 변경은 유지되며 전체 계좌를 교체하지 않습니다. 관련 거래, 계획 및 배분을 함께 검증하고 적용 전에 두 스냅샷을 저장합니다.";
+"sync.conflict.keepLocal" = "충돌에 이 Mac 버전 사용";
+"sync.conflict.useRemote" = "충돌에 다른 Mac 버전 사용";
+"sync.conflict.changed" = "검토 중 데이터가 변경되었습니다. 최신 충돌을 확인한 뒤 선택하세요.";
 "sync.privacy" = "선택한 폴더에는 읽을 수 있는 관심목록, 포지션, 거래 내역 파일이 저장됩니다. 데이터 공급자 자격 증명, 키체인 항목, MCP 토큰, Mac별 설정은 이 Mac에 남습니다.";
 "sync.error.accessDenied" = "FFF가 이 폴더에 접근할 수 없습니다. 설정에서 다시 선택하세요.";
 "sync.error.folderUnavailable" = "선택한 위치를 사용할 수 있는 폴더로 찾을 수 없습니다.";

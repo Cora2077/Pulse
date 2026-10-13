@@ -1,148 +1,123 @@
-# Pulse
+# FFF · Fight For Free
 
-**Glanceable market data for the macOS menu bar.**
+FFF 是基于开源 [Pulse](https://github.com/fatwang2/Pulse) 改造的 macOS 行情、账户记账与交易计划工作台。应用显示为 **FFF**；内部工程、Swift 模块和历史存储标识仍沿用 Pulse，以保持兼容。
 
-**Website:** [www.pulseticker.app](https://www.pulseticker.app/)
+这是本仓库的开发版说明，不是上游 Pulse 商业版本的购买、安装或支持页面。
 
-> **Pulse is now a paid app.** Starting with 0.15.9, Pulse includes a 30-day full-feature trial followed by a one-time purchase. Download it and see pricing at [pulseticker.app](https://www.pulseticker.app/buy), or get it from the [Mac App Store](https://apps.apple.com/app/id6812160110).
->
-> This repository keeps the source of the free versions up to **0.15.8** under the MIT license. Development of newer versions continues privately; this repository still hosts the installers and the update feed.
+> **记录事实，不执行交易。** 成交录入记录用户已经发生的交易，不向券商下单。现金、预算和资金来源是本地记账信息，不等同于券商实时余额。行情和计划分析仅供参考，不构成投资建议。
 
-Pulse is a lightweight market-watching app, not a trading terminal. It solves exactly one problem: seeing how the symbols you care about are doing — and whether your positions are up or down — in the shortest possible time, without leaving what you're working on.
+## 主要功能与账户边界
 
-| Watchlist | Quote Detail | Record Trade |
-|:---:|:---:|:---:|
-| ![](assets/readme/pulse-screenshot-en-01.png) | ![](assets/readme/pulse-screenshot-en-02.png) | ![](assets/readme/pulse-screenshot-en-03.png) |
+- 行情、自选和图表：菜单栏及主窗口，支持证券、指数、基金、加密货币和贵金属；按市场和数据源选择行情与历史数据。
+- 三个独立账本：**待确认记录**保存尚未归类的旧数据；**融资账户**支持自有资金和融资买入；**萌萌账户**支持普通买入。账户身份与资金来源是不同字段。
+- 成交历史：在自己的账本内回放持仓、成本、费用和已实现盈亏；移出自选后历史仍保留。跨账户展示不会把不同账户合并成一个虚构的成本账本。
+- 成交写入：用户入口使用候选校验及提交；编辑和删除核对打开表单时的原记录，避免覆盖同步更新。修改相关买卖及日期不能使健康的账户账本产生负持仓。旧导入与校准的空头兼容路径仍与新成交入口区分。
+- 交易计划：买卖意向、条件、执行记录、复盘和仓位份额关联。真实成交进度优先于过时的原始状态；已经成交完毕的计划不会继续触发到价提醒。
+- 仓位分账：按用途和资金来源组织份额；账本变化后需要核对的份额不会被自动伪造或重分配。
+- 买卖方向固定为买红、卖绿，独立于“红涨绿跌/绿涨红跌”的行情与盈亏配色。
+- 本地备份、文件夹同步和可选的本地 MCP 接口。
 
-## Features
+归类和纠正账户归属是**重新整理记录**，不是券商资金或证券转账；操作前需要核对关联成交、计划及份额。
 
-- **Menu bar ticker**: icon-only by default (discreet); optionally show quotes as a pinned single symbol (`NVDA 188.3 +2.1%`) or a carousel rotating through your watchlist
-- **Watchlists** supporting US stocks, Hong Kong stocks, China A-shares, Japanese and Korean stocks, cryptocurrencies, precious metals, indices, and ETFs — organize symbols into named lists, pin favorites per list, and reorder them with native drag and drop
-- **Position tracking**: quantity, cost basis, market value, daily P&L, and total P&L
-- **Quote detail view**: price, change, OHLC, volume, amplitude, realtime / delayed status, quote source, and market-specific timestamp in a dense menu-bar layout
-- **Charts**: intraday lines and daily / weekly / monthly candlesticks with OHLC and volume, sourced from the best available provider per market
-- **Sharing**: copy a branded, mobile-friendly image, or export an English structured market snapshot with source, timestamp, session, and chart data for analysis in an LLM
-- **MCP for agents**: opt-in local [Model Context Protocol](https://modelcontextprotocol.io) server (Streamable HTTP on loopback) so Claude, ChatGPT, and any MCP-compatible client can read and edit watchlists, positions, and trades while Pulse is running — Settings → Agents → MCP
-- **Multi-provider data layer**: providers are routed per market, cached to reduce duplicate requests, and fail over automatically when one is rate-limited or down
-- **Real-time crypto via Binance**: cryptocurrency search, quotes, and charts use Binance Spot public market-data endpoints, with a locally cached 24-hour symbol catalog and 1-second WebSocket ticker updates while the popover is open; Pulse stores crypto as a structured base/quote pair and displays it as `BTC/USDT`
-- **Precious metals**: nine instruments across both sides of the market — London spot gold and silver, the COMEX / NYMEX contracts (gold, silver, platinum, palladium), the Shanghai Gold Exchange's Au99.99 spot contract, and the SHFE gold and silver futures. The Shanghai instruments price in CNY per gram on a Chinese session with its own night leg; the rest quote in USD per ounce. Spot leads everywhere, because that is what "黄金" and "gold" mean to someone asking the price. Quotes come from Tencent's international channel and Sina, history from Yahoo (COMEX), Sina (London spot, SHFE), the exchange's own daily file (Au99.99) and Eastmoney (Au99.99 intraday) — Yahoo has never carried a working spot symbol and covers no Chinese exchange. Pulse owns the metal catalog, so "黄金" offers all three golds, while "现货黄金" / "黄金期货" / "沪金" name one each; searching "gold", "XAU", "GC" or "贵金属" works too, even though no provider's search index covers the channel
-- **Real-time via Longbridge**: optionally connect your own [Longbridge](https://open.longbridge.com) account (browser authorization or API keys) to upgrade HK / US / A-share quotes to official real-time data, streamed live over a push connection — including the US overnight session
-- **Japan and Korea**: Tokyo (Prime, Standard and Growth) plus both Korea Exchange boards, KOSPI and KOSDAQ, with the Nikkei 225 and the KOSPI Composite alongside them. Tokyo's 11:30–12:30 lunch break folds out of the intraday axis the way Hong Kong's and Shanghai's do; Seoul trades straight through. Korea is real time through Naver, which also answers Korean-language search and is authoritative about which board a code belongs to — that matters, because the board is part of the address and cannot be derived from the code (035720 is KOSPI, not KOSDAQ, and Yahoo's `.KQ` symbol for it prices something else entirely). Japan is delayed about twenty minutes via Yahoo: its exchange licenses even the fifteen-minute feed, so no free real-time source exists. Japanese stocks are found by their four-character exchange code: Yahoo indexes no Japanese names (`任天堂` returns nothing) and an English name competes with every ADR and foreign listing of the same company, so `nintendo` reaches no Tokyo listing at all. Korean stocks are reachable either way — Naver answers `삼성전자`, Yahoo answers `samsung`
-- **Session-aware, per-source refresh**: each provider polls at its own configurable cadence, and only while its markets are open — saving power and avoiding rate limits; push-capable sources stream instead of polling
-- **Language control**: follows the system language when possible, with manual switching between English, Simplified Chinese, and Japanese
+计划列表、主窗口总览和个股页使用同一套菜单。修改状态及暂缓提醒按显式来源账户执行，不改变当前选择；打开编辑、成交、历史或删除表单时会统一进入来源账户，随后草稿保持绑定，切换到账户的同名计划不会重定向写入。同步后已变化的计划操作会被拒绝，需重新打开。
 
-## Sync between Macs
+## 同步、冲突与备份
 
-Pulse can keep watchlists, positions, and trade history in sync through a folder you choose. Open **Settings → Data & Sync → Choose Folder** on each Mac and select the same folder. The folder can be in iCloud Drive or another service that syncs files between your Macs. Run the same current Pulse version on both Macs; newer sync files are not readable by older releases. A paid Apple Developer membership is not required.
+先把各台 Mac 更新到同一个当前 FFF 开发版本，再在数据与同步设置中选择同一个同步文件夹，例如 iCloud Drive 内的文件夹；旧版本的冲突选择规则不会因另一端更新而自动改变。每台 Mac 只写自己的 `Pulse-sync-<device-id>.json`，不会直接覆盖另一台设备的文件。云盘上传、下载和文件协调可能延迟，不能把“本机已写入”理解为另一端已经收到。
 
-Pulse reads peer files when it launches, after local changes, when you choose **Sync Now**, and about once a minute while it is running. File-provider uploads and downloads can take time, so changes are not instant; the settings page shows the latest successful read and write. Each Mac writes its own readable `Pulse-sync-<device-id>.json` file, which avoids two Macs writing the same file. The files contain watchlists, positions, and transaction history. Provider credentials, Keychain items, MCP tokens, and Mac-specific settings remain local.
+冲突选择的范围是：
 
-When both Macs edit the same trade in different ways, Pulse pauses that peer and asks whether to keep this Mac's trades or use the other Mac's trades. The choice applies to all listed trade conflicts and can affect the resulting position if a trade is removed. Before applying a choice, Pulse keeps both input snapshots in a local conflict backup.
+1. 同一成交的不兼容修改：只选择该冲突记录，其他独立成交继续合并。
+2. 现金、仓位预算、预算情景、板块上限：按冲突字段选择，不替换整份账户数据。
+3. 跨账户归类、计划关联或合并后超卖：按依赖连接的**账户＋标的账本**整体选择。组内的成交、计划、份额和自选归属相互依赖，不能随意拼接；组外的独立变更继续保留。
 
-## Agent access (MCP)
+界面会列出选择范围。当前同一来源 Mac 的按钮为已列冲突提供一次本机/远端选择，不是逐笔独立选择。选择不再意味着保留某台设备的全部账户数据。应用前保存双方快照，再校验完整候选；查看期间数据变化时，需要重新核对，不能强行覆盖。
 
-Pulse can expose an opt-in **MCP** endpoint on your Mac so Claude, ChatGPT, and any MCP-compatible client can work with the same watchlists and trades you see in the menu bar. Nothing is uploaded: the server binds `127.0.0.1` only, and access requires a Bearer token stored in the Keychain.
+同步文件包含可读的账户、成交、计划和账户资金设置。数据源凭据、钥匙串内容、MCP 令牌和设备本地偏好不随这些文件同步。请把同步目录和备份视为私密财务记录，不公开上传真实数据用于报错或测试。
 
-1. Open **Settings → Agents → MCP** and enable the server.
-2. In your MCP client, add a **Streamable HTTP** server using the endpoint and token shown in Pulse.
+## 本地开发
 
-Tools cover listing groups and positions, searching symbols, creating/renaming/deleting groups, adding/removing symbols, recording and deleting trades, calibrating positions, and reordering groups or custom symbol order. The token grants the same write surface as those tools — regenerate it anytime from the MCP settings page.
-
-## Installation
-
-Download Pulse from [pulseticker.app](https://www.pulseticker.app/), open the disk image, and drag `Pulse.app` to Applications. Pulse updates itself from inside the app. Installers for every release, including the last free version 0.15.8, remain on [GitHub Releases](https://github.com/fatwang2/Pulse/releases).
-
-## Support & Feedback
-
-- **Bug reports and feature requests**: [GitHub Issues](https://github.com/fatwang2/Pulse/issues/new/choose). The templates ask for the details we need to reproduce a problem.
-- **Email**: [hello@pulseticker.app](mailto:hello@pulseticker.app) for questions or anything you would rather keep private. Security reports go to [sys@pulseticker.app](mailto:sys@pulseticker.app), not a public issue.
-- **From the app**: **More (…) → Feedback** drafts an email with your Pulse and macOS versions filled in, and **Copy Diagnostics Report** copies the versions, data-source status, and recent log lines from the current session for pasting into the email or an issue. The report never includes your symbols, positions, or credentials. **Settings → Support** shows the address itself, so it can be copied when no mail client is set up.
-
-## Privacy & Analytics
-
-Pulse uses [TelemetryDeck](https://telemetrydeck.com) to understand basic product usage. Anonymous
-analytics are enabled by default and can be disabled at any time in **Settings → General → Share
-Anonymous Usage Data**. Once disabled, Pulse stops queuing new analytics events.
-
-Pulse currently sends only these product-interaction events:
-
-- `Pulse.app.launched`
-- `Pulse.popover.opened`
-- `Pulse.settings.opened`
-- `Pulse.refresh.manualRequested`
-- `Pulse.settings.analyticsEnabled` — sent only when analytics are turned back on
-
-TelemetryDeck's Swift SDK automatically adds basic technical context such as the Pulse version and
-build, macOS version, device model and architecture, language, locale, region, time zone, display
-properties, and whether the build is a debug or App Store build. On macOS, the SDK also generates a
-random pseudonymous device identifier and a session identifier. Pulse does not provide TelemetryDeck
-with a name, email address, account identifier, or other custom user identifier.
-
-Pulse never adds watched symbols, watchlists, positions, quantities, cost bases, search text,
-market-data responses, Longbridge credentials, MCP tokens, or other user-provided content to analytics events.
-TelemetryDeck's bundled privacy manifest declares product-interaction data and a device identifier
-for analytics; the data is not linked to the user's identity and is not used for tracking. Pulse has
-no advertising or cross-app tracking. The complete event boundary is intentionally kept in
-[`PulseTelemetry.swift`](PulseMac/Sources/PulseTelemetry.swift) so the implementation can be audited.
-
-## Building
-
-The source in this repository builds the free **0.15.8** release; newer versions are not published here.
-
-Requires **Xcode 26+** and [XcodeGen](https://github.com/yonaskolb/XcodeGen). `Pulse.xcodeproj` is generated from `project.yml` and is not checked in.
+开发约束以 [AGENTS.md](AGENTS.md) 为准。需要 macOS、完整 Xcode 26+、XcodeGen，以及用于编译内嵌 Longbridge SDK 的 Rust/Cargo。SDK 版本、提交和桥接补丁由 [构建脚本](scripts/build-longbridge-plugin.sh) 固定。
 
 ```bash
-# Generate the Xcode project and build
-xcodegen generate
-xcodebuild -project Pulse.xcodeproj -scheme PulseMac -configuration Debug build
+# 编译，不关闭或替换正在运行的日常应用
+scripts/dev-mac.sh --build
 
-# Or build, launch, and verify the menu-bar process
-./scripts/dev-mac.sh --verify
+# 编译并启动构建产物（不是安装步骤）
+scripts/dev-mac.sh --verify
 ```
 
-The development script uses the first valid Apple Development identity in the builder's
-local Keychain so macOS recognizes repeated Debug builds as the same app. If no development
-certificate is available, it falls back to ad-hoc signing. Development certificates and
-private keys never enter the repository; every contributor signs with their own local identity,
-and release signing and notarization remain a separate workflow.
+[project.yml](project.yml) 是 Xcode 工程的来源；脚本会用 XcodeGen 生成工程。应用构建产物默认在 `build/DerivedData/Build/Products/Debug/FFF.app`。日常安装位置遵循工作区约定，不要把隔离演示应用当作日常版本。
 
-For local telemetry testing, supply the TelemetryDeck app identifier as a build setting. An empty
-or missing value disables analytics for that build:
+### 保持本地签名稳定
+
+本地脚本优先复用钥匙串中的 `Fight For Free Local Development`，其次使用可用的 Apple 签名身份。它不会默默回退到 ad-hoc。没有稳定身份时，先配置身份或进行明确的隔离编译检查，不要用临时签名替换日常应用，否则钥匙串授权可能反复出现。
+
+`PULSE_ALLOW_AD_HOC=1 scripts/dev-mac.sh --build` 仅用于隔离编译（例如一次性 CI runner），不能用其产物更新日常安装。证书标识、私钥、凭据和真实账户数据不得提交到仓库。
+
+## 测试与 PR 检查
 
 ```bash
-TELEMETRYDECK_APP_ID="your-app-id" ./scripts/dev-mac.sh --telemetry
+# 默认均为离线 fixture/隔离存储测试，不启用实时行情测试
+swift test --disable-sandbox --package-path Packages/PulseCore
+swift test --disable-sandbox --package-path Packages/PulseUI
+
+# 聚焦成交、同步和 review 边界
+swift test --disable-sandbox --package-path Packages/PulseCore \
+  --filter 'TradeMutationTests|ScopedAccountSyncMergeTests|ReviewBoundaryTests'
 ```
 
-The app identifier is embedded in configured builds and is not a secret or an API credential.
+`--disable-sandbox` 用于 SwiftPM 编译插件/宏的兼容检查，不意味着读取真实账户数据。Core 同时包含 XCTest 和 Swift Testing；汇总数量时需计入两种框架，参数化测试另有 case 数。
 
-Tests live in the `PulseCore` package:
+原生回归必须直接调用构建产物并带 `--main-window-demo`。这会使用一次性的离线数据域、虚构标的，并跳过真实数据源凭据；不要省略该参数：
 
 ```bash
-# Unit tests (includes Binance/Tencent/Yahoo parsing via recorded fixtures)
-cd Packages/PulseCore && swift test
+build/DerivedData/Build/Products/Debug/FFF.app/Contents/MacOS/FFF \
+  --main-window-demo --trade-mutation-selftest --export-render-base64 \
+  > build/native-trade-review.log 2>&1
 
-# Unit tests plus provider contracts against the live endpoints
-PULSE_LIVE_TESTS=1 swift test
+build/DerivedData/Build/Products/Debug/FFF.app/Contents/MacOS/FFF \
+  --main-window-demo --review-boundary-selftest --export-render-base64 \
+  > build/native-boundary-review.log 2>&1
 ```
 
-## Releasing
+这些检查驱动真实 SwiftUI/AppKit 视图并导出原生渲染。Core 通过不等于 UI 交互通过；源码审查也不能代替实际截图检查。真实双机云盘同步、在线行情与通知权限应在单独的人工作业中验证，不由上述离线测试宣称覆盖。
 
-Releases are built privately and published to this repository's [Releases](https://github.com/fatwang2/Pulse/releases), together with the update feed. The workflows in `.github/workflows` are kept for reference and are disabled.
+[FFF Checks](.github/workflows/checks.yml) 在 push、PR 和手动运行时执行两个包的离线测试及 macOS 编译，不安装、不发布，不使用签名凭据。工具链与现有发布工作流一致，runner 缺少所选 Xcode 时会明确失败。
 
-## Architecture
+要让这些检查成为**强制合并门禁**，仓库维护者还需在分支保护/Rulesets 中要求 `PulseCore tests`、`PulseUI tests` 和 `macOS compile`。仅新增 workflow 文件不会自动修改远端分支保护。
 
-- **`Packages/PulseCore`** — pure Swift, no UI: models, data providers, trading calendars, persistence, the refresh scheduler, and the agent-facing watchlist command facade. Shared across Mac / iOS / widget targets.
-- **`Packages/PulseUI`** — shared SwiftUI components: candlestick chart, intraday chart, sparkline, gain/loss colors.
-- **`PulseMac`** — the macOS menu bar app (`MenuBarExtra`, `LSUIElement=true`), including the optional loopback MCP HTTP host.
+## 工程职责
 
-All market data flows through the `QuoteProvider` protocol abstraction. A `CompositeProvider` routes requests per market and candle period, caches recent responses, breaks the circuit on unhealthy providers, and composes data from multiple sources (e.g. realtime crypto from Binance, realtime A-share quotes and intraday lines from Tencent, broad securities coverage from Yahoo (including Tokyo and, as failover, both Korean boards), real-time Korean quotes, Korean-language search and charts from Naver, London spot and SHFE metal data from Sina, official Shanghai Gold Exchange history, and real-time securities streaming from a connected Longbridge account). Index and precious-metal identities are Pulse's own: one semantic identity per instrument, mapped to each source's wire symbol (COMEX gold is `hf_GC` at Tencent and `GC=F` at Yahoo), which keeps quotes on the real-time source while history comes from whichever source has it. Crypto identity is stored provider-independently as separate base and quote assets; Binance renders `BTCUSDT` on the wire while Pulse displays `BTC/USDT`. Binance is the sole source for cryptocurrency search, quotes, and candles: Pulse never silently substitutes Yahoo's different `BTC-USD` instrument for `BTC/USDT`. Binance's current Spot symbol directory is cached on disk for 24 hours and refreshed in the background when stale. Exact crypto base or pair matches remain prominent in cross-market search, while unrelated crypto results follow securities. Binance and Longbridge can stream different markets concurrently. The Longbridge integration is built on the pinned official OpenAPI C SDK, embedded at build time as a bundled plugin, and stores credentials only in the local Keychain.
+| 部分 | 职责 |
+| --- | --- |
+| [PulseCore](Packages/PulseCore/Package.swift) | 模型、数据源、账本回放、持久化、同步、计划进度与 agent 命令 |
+| [PulseUI](Packages/PulseUI/Package.swift) | 共享图表、行情与盈亏展示组件 |
+| macOS 应用 | 主窗口、菜单栏、账户操作、计划工作流、通知和本地 MCP |
+| [成交校验](Packages/PulseCore/Sources/PulseCore/Store/TradeMutationValidation.swift) | 纯 payload/回放校验及可操作的错误原因 |
+| [账户同步合并](Packages/PulseCore/Sources/PulseCore/Store/WatchlistAccountSyncMerge.swift) | 账户与字段冲突、依赖分组及完整候选校验 |
+| [成交候选](Packages/PulseCore/Sources/PulseCore/Store/TradeLedgerMutation.swift) | 回放缓存和旧记录元数据保留，不直接写入存储 |
+| [计划候选](Packages/PulseCore/Sources/PulseCore/Store/TradePlanMutation.swift) | 配置规范化、修订记录及份额绑定校验 |
+| [归属校验](Packages/PulseCore/Sources/PulseCore/Store/BrokerageClassificationValidation.swift) | 来源账户引用、关联成交进度和全量候选结构校验 |
+| [本地持久化](Packages/PulseCore/Sources/PulseCore/Store/WatchlistPersistenceCodec.swift) | 兼容存储格式、读写校验和重复数据规范化 |
+| [计划菜单](PulseMac/Sources/PlanActionMenu.swift) | 共用可用操作和显式来源账户路由 |
+| [买卖展示](PulseMac/Sources/TradeSidePresentation.swift) | 与涨跌设置无关的方向颜色和徽标 |
+| [仓位卡片](PulseMac/Sources/PortionCardFace.swift)／[操作表单](PulseMac/Sources/PoolAllocationSheets.swift) | 从仓位主页面拆出的卡片渲染、转移、来源标记和核对表单 |
 
-Quotes carry their active source and source-specific delay metadata through the app. The watchlist footer shows the live feed status, while each symbol detail view shows that symbol's realtime / delayed status, active source, and market timestamp with the relevant time basis.
+核心大文件仍在逐步拆分；迁移应保留行为回归，避免同时修改存储格式和多个职责。账户写入、计划操作及持久化的边界规则由核心实现，不应在各页面各写一套校验。
 
-## Data Sources & Disclaimer
+## MCP、数据源与隐私
 
-Out of the box, Pulse uses Binance's public Spot market-data API for cryptocurrency prices, the Shanghai Gold Exchange's own published history, plus **free, unofficial** quote endpoints from Yahoo Finance, Tencent, Sina, Naver, and Eastmoney for broader coverage. No Binance account or API key is required. These public feeds have no SLA and may be rate-limited, unavailable in some regions, or change over time. Optionally, you can connect your own **Longbridge OpenAPI** account for official real-time securities quotes delivered by push; quote entitlements follow your account, and credentials never leave the local Keychain. Quote delay varies by provider and market; each source's per-market freshness is spelled out on its detail page. All data is for reference only and is **not investment advice**.
+MCP 是可选的本机 loopback 接口，需显式开启并使用钥匙串中的 Bearer 令牌。它可读写自选、记账成交和计划，不代表获得券商下单权限。该令牌具有本地写入能力，不要写进源码或测试报告。
 
-## License
+行情由市场路由的数据源提供，可能包括 Tencent、Yahoo、Binance、Sina、Naver、交易所公开数据和可选的 Longbridge。免费接口没有可用性承诺，可能延迟、限流或变更；无法解析来源时间的腾讯报价会被拒绝，而不是伪造为当前时间。连接 Longbridge 的权限和行情权益取决于用户自己的账户。
 
-The source in this repository (versions up to 0.15.8) is available under the [MIT License](LICENSE). Later versions of Pulse are commercial software.
+TelemetryDeck 是否启用取决于构建配置和应用设置；应用的采集边界见 [PulseTelemetry.swift](PulseMac/Sources/PulseTelemetry.swift)。构建时没有应用标识则不启用该构建的分析上报。不要把账户、标的、数量、价格、凭据或令牌加入诊断/遥测内容。
+
+## 发布与上游
+
+现有 [发布入口](.github/workflows/release.yml) 和 [签名发布流程](.github/workflows/release-macos.yml) 是单独的人工流程。测试/重构不会自动触发签名发布或上传；发布身份、凭据、版本和环境审核需要维护者明确确认。
+
+感谢上游 Pulse 的市场数据、图表和 macOS 基础实现。上游产品、下载与支持渠道属于上游项目，本仓库的 FFF 改动不应被当作其商业版本承诺。
+
+许可证见 [MIT License](LICENSE)，保留原有版权与授权声明。

@@ -483,9 +483,7 @@ struct TradeJournalView: View {
                 Spacer(minLength: 4)
                 Text(kindName(entry.transaction.kind))
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(entry.transaction.kind == .buy
-                        ? appState.palette.color(isUp: true)
-                        : appState.palette.color(isUp: false))
+                    .foregroundStyle(TradeSideStyle.color(for: entry.transaction.kind))
             }
             HStack(spacing: 6) {
                 Text(PositionDateFormat.monthDay(entry.transaction.date))

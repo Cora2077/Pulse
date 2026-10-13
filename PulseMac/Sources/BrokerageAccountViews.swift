@@ -819,7 +819,9 @@ struct BrokerageAccountClassificationSheet: View {
         }
 
         var assigned: [SymbolID] = []
-        var refused: [SymbolID] = []
+        // One refusal reason, kept in the order the rows were submitted, so the
+        // sentence the user reads names *why* rather than restating the guess.
+        var refusal: String?
         // Selection is one instrument at a time; each classification is atomic.
         appState.watchlist.withBrokerageAccount(sourceAccountID) {
             for symbol in targets {
@@ -832,11 +834,19 @@ struct BrokerageAccountClassificationSheet: View {
                 let request: BrokerageOwnership.ClassificationRequest = state.wholeLedger
                     ? .wholeLedger
                     : .selectedTrades(state.transactionIDs)
-                let ok = sourceAccountID == .unassigned
-                    ? appState.watchlist.assignBrokerageRecords(for: symbol, request: request, to: destination)
-                    : appState.watchlist.correctBrokerageOwnership(for: symbol, request: request,
-                        from: sourceAccountID, to: destination)
-                if ok { assigned.append(symbol) } else { refused.append(symbol) }
+                do {
+                    // The explicit source and destination are the ones the sheet
+                    // shows; the mode was never inferred from a count.
+                    try appState.watchlist.assignBrokerageRecordsChecked(
+                        for: symbol,
+                        request: request,
+                        from: sourceAccountID,
+                        to: destination
+                    )
+                    assigned.append(symbol)
+                } catch {
+                    refusal = refusal ?? Self.describe(error)
+                }
             }
         }
 
@@ -846,17 +856,30 @@ struct BrokerageAccountClassificationSheet: View {
             appState.engine.poke()
         }
 
-        guard !refused.isEmpty else {
-            errorMessage = nil
-            if sourceItems.isEmpty { dismiss() }
+        guard !assigned.isEmpty else {
+            // Nothing moved. The selection is kept exactly as it was and the
+            // store's own reason is shown, so the user can correct the cause
+            // instead of guessing which of several rules refused.
+            errorMessage = refusal ?? accountCopy(
+                "未能归类：请核对是否遗漏了相关买卖成交、份额是否需要核对，以及资金方式是否符合目标账户。选择已保留，数据未改变。",
+                "Could not classify. Check related buys and sells, allocation reconciliation, and the destination's permitted funding. Your selection was kept and the data was unchanged."
+            )
             return
         }
+        errorMessage = nil
+        if sourceItems.isEmpty { dismiss() }
+    }
 
-        let names = refused.map(\.displayCode).joined(separator: "、")
-        errorMessage = accountCopy(
-            "\(names) 未能归类：请核对是否遗漏了相关买卖成交、份额是否需要核对，以及资金方式是否符合目标账户。整体迁移还要求目标记录没有冲突。选择已保留，数据未改变。",
-            "\(names) could not be classified. Check related buys and sells, allocation reconciliation, and the destination's permitted funding. A whole move also requires no conflicting destination record. Your selection was kept and the data was unchanged."
-        )
+    /// The store's own sentence about the refusal. A generic restatement of the
+    /// possible rules tells the user nothing they can act on; the thrown reason
+    /// names the one gate that actually closed.
+    private static func describe(_ error: Error) -> String {
+        if let mutationError = error as? TradeMutationError,
+           let description = mutationError.errorDescription {
+            return description
+        }
+        let localized = error.localizedDescription
+        return localized.isEmpty ? String(describing: error) : localized
     }
 
     // MARK: Row helpers

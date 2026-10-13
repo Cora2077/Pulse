@@ -254,9 +254,10 @@ final class FolderSyncController {
     struct PositionAllocationConflictSummary: Identifiable {
         let peerID: String
         let symbol: SymbolID
+        let accountID: BrokerageAccountID
         let local: PositionAllocation?
         let remote: PositionAllocation?
-        var id: String { "\(peerID):\(symbol.description)" }
+        var id: String { "\(peerID):\(accountID.rawValue):\(symbol.description)" }
     }
 
     private struct PendingConflict {
@@ -330,6 +331,10 @@ final class FolderSyncController {
     }
 
     var isConfigured: Bool { defaults.data(forKey: Self.folderBookmarkKey) != nil }
+
+    func hasPositionConflict(symbol: SymbolID, account: BrokerageAccountID) -> Bool {
+        positionAllocationConflicts.contains { $0.symbol == symbol && $0.accountID == account }
+    }
 
     func start() {
         guard pollTask == nil else { return }
@@ -504,7 +509,7 @@ final class FolderSyncController {
                 conflictFreePeers.insert(peer.deviceID)
                 pendingConflicts.removeValue(forKey: peer.deviceID)
                 applyingRemote = true
-                _ = store.applySyncSnapshot(result.snapshot)
+                _ = store.applySyncSnapshot(try WatchlistSyncMerge.resolveValidated(result, choosing: .local))
                 applyingRemote = false
                 if result.snapshot != local { localWritePending = true }
                 // Only a conflict-free result that has been applied advances this peer's base.
@@ -586,7 +591,7 @@ final class FolderSyncController {
             let latest = WatchlistSyncMerge.merge(base: baseline, local: local, remote: freshPeerFile.snapshot)
             if latest.isConflictFree {
                 applyingRemote = true
-                _ = store.applySyncSnapshot(latest.snapshot)
+                _ = store.applySyncSnapshot(try WatchlistSyncMerge.resolveValidated(latest, choosing: .local))
                 applyingRemote = false
                 localChangeGeneration += 1
                 localWritePending = true
@@ -613,7 +618,7 @@ final class FolderSyncController {
                 throw FolderSyncError.conflictBackupFailed
             }
             let resolution: WatchlistSyncMerge.ConflictResolution = choosingRemote ? .remote : .local
-            let resolved = WatchlistSyncMerge.resolve(latest, choosing: resolution)
+            let resolved = try WatchlistSyncMerge.resolveValidated(latest, choosing: resolution)
             applyingRemote = true
             _ = store.applySyncSnapshot(resolved)
             applyingRemote = false
@@ -641,21 +646,33 @@ final class FolderSyncController {
     }
 
     private func refreshConflictSummaries() {
-        positionAllocationConflicts = pendingConflicts.keys.sorted().flatMap { peerID in
-            (pendingConflicts[peerID]?.positionAllocationConflicts ?? []).map {
-                PositionAllocationConflictSummary(peerID: peerID, symbol: $0.symbol, local: $0.local, remote: $0.remote)
+        positionAllocationConflicts = pendingConflicts.keys.sorted().flatMap { peerID -> [PositionAllocationConflictSummary] in
+            guard let pending = pendingConflicts[peerID] else { return [] }
+            var summaries = pending.positionAllocationConflicts.map {
+                PositionAllocationConflictSummary(peerID: peerID, symbol: $0.symbol, accountID: $0.accountID,
+                    local: $0.local, remote: $0.remote)
             }
+            // Ownership/replay dependency groups also protect their linked
+            // allocations while the choice is pending.
+            for scope in pending.brokerageConflict?.dependencyGroups.flatMap({ $0 }) ?? [] {
+                func allocation(_ snapshot: WatchlistSyncSnapshot) -> PositionAllocation? {
+                    let items = scope.accountID == .unassigned ? snapshot.items + snapshot.retainedHistoryItems
+                        : snapshot.brokerageAccounts?.first { $0.accountID == scope.accountID }
+                            .map { $0.items + $0.retainedHistoryItems } ?? []
+                    return items.first { $0.symbol == scope.symbol }?.positionAllocation
+                }
+                guard let conflict = pending.brokerageConflict else { continue }
+                let local = allocation(conflict.local), remote = allocation(conflict.remote)
+                if local != nil || remote != nil {
+                    summaries.append(.init(peerID: peerID, symbol: scope.symbol, accountID: scope.accountID, local: local, remote: remote))
+                }
+            }
+            return summaries
         }
         conflictSummaries = pendingConflicts.keys.sorted().compactMap { peerID in
             guard let conflict = pendingConflicts[peerID] else { return nil }
-            let accountExamples = conflict.brokerageConflict == nil ? [] : ["证券账号账本或资金设置冲突 · 选择将保留所选设备的全部账号数据（含现金、预算、板块上限）"]
-            let examples = accountExamples + conflict.conflicts.prefix(3).map {
-                "\($0.symbol.displayCode) · \($0.transactionID.uuidString.prefix(8))"
-            } + conflict.positionAllocationConflicts.prefix(3).map { "\($0.symbol.displayCode) · 仓位分账" }
-            return ConflictSummary(
-                id: peerID, count: conflict.conflicts.count + conflict.positionAllocationConflicts.count + (conflict.brokerageConflict == nil ? 0 : 1),
-                examples: Array(examples.prefix(3))
-            )
+            return Self.conflictSummary(peerID: peerID, trades: conflict.conflicts,
+                allocations: conflict.positionAllocationConflicts, brokerage: conflict.brokerageConflict)
         }
     }
 

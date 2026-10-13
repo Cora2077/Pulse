@@ -57,6 +57,7 @@ struct MainPlanListView: View {
     /// record the user was looking at.
     @State private var deletionRequest: PlanDeletionRequest?
     @State private var workflowEntry: TradePlanEntry?
+    @State private var actionError: String?
     /// The editor is presented as a local sheet rather than through the window
     /// route. Routing it would replace this page and throw away the search,
     /// filter, sort and scroll position the user set up to find the plan.
@@ -73,7 +74,8 @@ struct MainPlanListView: View {
     struct PlanEditorPresentation: Identifiable {
         let symbol: SymbolID
         let planID: UUID?
-        var id: String { "\(symbol.description)-\(planID?.uuidString ?? "new")" }
+        let account: BrokerageAccountID
+        var id: String { "\(account.rawValue):\(symbol.description)-\(planID?.uuidString ?? "new")" }
     }
 
     init(route: Binding<PopoverRoute>, onInspect: ((SymbolID) -> Void)? = nil, initialFilter: StatusFilter = .waiting) {
@@ -186,10 +188,10 @@ struct MainPlanListView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(item: $executionEntry) { entry in
-            PlanExecutionSheet(entry: entry, account: appState.watchlist.activeBrokerageAccountID,
+            PlanExecutionSheet(entry: entry, account: entry.accountID ?? appState.watchlist.activeBrokerageAccountID,
                                onClose: {
                                    executionEntry = nil
-                                   if entries.first(where: { $0.plan.id == entry.plan.id })?.displayState == .filled {
+                                   if entries.first(where: { $0.id == entry.id })?.displayState == .filled {
                                        statusFilter = .done
                                        reachedOnly = false
                                    }
@@ -208,6 +210,10 @@ struct MainPlanListView: View {
                               onClose: { createAccount = nil })
         }
         .modifier(PlanDeletionConfirmation(request: $deletionRequest))
+        .alert(PulseLocalization.localizedString("plans.delete.changed"), isPresented: Binding(
+            get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+            Button(PulseLocalization.localizedString("action.cancel")) { actionError = nil }
+        } message: { Text(actionError ?? "") }
     }
 
     /// A saved plan has to be visible from wherever the user was standing: a
@@ -635,12 +641,7 @@ struct MainPlanListView: View {
     private func rowActions(_ entry: TradePlanEntry) -> some View {
         HStack(spacing: 2) {
             Button {
-                if entry.accountID != appState.watchlist.activeBrokerageAccountID, let owner = entry.accountID {
-                    _ = appState.selectBrokerageAccount(owner)
-                    route = .plan(entry.symbol, entry.plan.id, .planList)
-                } else {
-                    editorPresentation = PlanEditorPresentation(symbol: entry.symbol, planID: entry.plan.id)
-                }
+                perform(.edit, entry: entry)
             } label: {
                 Image(systemName: "pencil")
                     .font(.system(size: 9))
@@ -652,37 +653,7 @@ struct MainPlanListView: View {
             .accessibilityLabel(PulseLocalization.localizedString("main.planList.action.edit"))
 
             Menu {
-                if entry.accountID != appState.watchlist.activeBrokerageAccountID {
-                    Button(PulseLocalization.localizedString("plans.action.logicHistory")) { workflowEntry = entry }
-                } else {
-                    if isPending(entry) {
-                        Button(PulseLocalization.localizedString("plans.action.recordFill")) { executionEntry = entry }
-                    } else if entry.canBackfillFill {
-                        // A stopped record with an incomplete real fill: the fill
-                        // sheet detects the mode itself and performs the guarded
-                        // backfill. The row is never revived first — that would
-                        // resurrect an intention the user already settled.
-                        Button(PulseLocalization.localizedString("plans.action.backfill")) { executionEntry = entry }
-                    }
-                    Button(PulseLocalization.localizedString("plans.action.logicHistory")) { workflowEntry = entry }
-                    Divider()
-                    if isPending(entry) {
-                        Button(PulseLocalization.localizedString("plans.action.snooze")) { appState.planAlerts.snooze(entry.plan) }
-                        Divider()
-                    }
-                    if isPending(entry) {
-                        Button(PulseLocalization.localizedString("main.planList.action.markDropped")) { restate(entry, as: .cancelled) }
-                    } else if entry.displayState != .filled {
-                        Button(PulseLocalization.localizedString("plan.menu.revive")) { restate(entry, as: .active) }
-                    }
-                    Divider()
-                    Button(PulseLocalization.localizedString("main.planList.action.delete"), role: .destructive) {
-                        deletionRequest = PlanDeletionRequest(
-                            entry: entry,
-                            account: appState.watchlist.activeBrokerageAccountID
-                        )
-                    }
-                }
+                PlanActionMenu(entry: entry, onPresent: { present($0, entry: entry) }, onError: { actionError = $0 })
             } label: {
                 Image(systemName: "ellipsis")
                     .frame(width: 24, height: 18)
@@ -695,10 +666,20 @@ struct MainPlanListView: View {
         .frame(width: 48, alignment: .leading)
     }
 
-    private func restate(_ entry: TradePlanEntry, as status: TradePlan.Status) {
-        var updated = entry.plan
-        updated.status = status
-        appState.watchlist.setTradePlan(updated, for: entry.symbol)
+    private func perform(_ action: TradePlanAction, entry: TradePlanEntry) {
+        do { try PlanActionRouting.perform(action, entry: entry, in: appState) { present($0, entry: entry) } }
+        catch { actionError = error.localizedDescription }
+    }
+
+    private func present(_ action: TradePlanAction, entry: TradePlanEntry) {
+        let account = entry.accountID ?? appState.watchlist.activeBrokerageAccountID
+        switch action {
+        case .recordFill, .backfill: executionEntry = entry
+        case .history: workflowEntry = entry
+        case .edit: editorPresentation = PlanEditorPresentation(symbol: entry.symbol, planID: entry.plan.id, account: account)
+        case .delete: deletionRequest = PlanDeletionRequest(entry: entry, account: account)
+        default: break
+        }
     }
 
     private func emptyState(_ key: String) -> some View {
@@ -741,7 +722,7 @@ private struct PlanEditorSheet: View {
             planID: presentation.planID,
             returnRoute: .planList,
             route: $route,
-            account: appState.watchlist.activeBrokerageAccountID
+            account: presentation.account
         )
         .frame(width: 520, height: 460)
         .onChange(of: route) { _, value in

@@ -27,6 +27,19 @@ struct TradeEntryView: View {
     @State private var feeText: String
     @State private var date: Date
     @State private var showsCalendar = false
+    /// The record this form was opened against, frozen the first time the draft
+    /// is built.
+    ///
+    /// The parent rebuilds `TradeEntryView` from the *live* transaction on every
+    /// store change, but SwiftUI keeps this form's field `@State` as it was. A
+    /// plain `let` would re-seed the expected value from the new record while
+    /// fields still held the old input, letting a stale form pass the check and
+    /// overwrite the update. State keeps the original frozen until this draft
+    /// closes, so a changed record is correctly refused.
+    @State private var original: PositionTransaction?
+    /// The account the edited record lives in, frozen with `original` for the
+    /// same reason: an account switch must not redirect the write.
+    @State private var originalAccount: BrokerageAccountID
     /// Fresh buys default to ordinary funding; an edit preserves its stored
     /// annotation, including nil on older records. A new buy is never nil: the
     /// shared `BuyAccountMethodFields` offers no empty choice, because a record
@@ -41,10 +54,8 @@ struct TradeEntryView: View {
     /// Return can reach `save()` twice in one keypress (field submit + default
     /// action); the first write wins so a trade is never recorded twice.
     @State private var didSave = false
-    /// A refused write. Only the new-buy path can produce one — the store's
-    /// `recordBuyTransaction` is the only call here that reports why it
-    /// declined, and the sentence belongs next to the fields rather than in an
-    /// alert that dismisses the form the user was filling in.
+    /// Every write can refuse. Keep its reason beside the fields without
+    /// dismissing the form or discarding the user's input.
     @State private var errorMessage: String?
     /// The account this draft belongs to, frozen when the form is built: a
     /// trade is recorded against the ledger the user was filling in, and the
@@ -70,6 +81,8 @@ struct TradeEntryView: View {
         _fundingSource = State(initialValue: side == .buy ? .own : nil)
         _selectedBrokerageAccount = State(initialValue: account == .unassigned ? nil : account)
         _draftAccount = State(initialValue: account)
+        _original = State(initialValue: nil)
+        _originalAccount = State(initialValue: account)
     }
 
     init(
@@ -91,6 +104,18 @@ struct TradeEntryView: View {
         _fundingSource = State(initialValue: transaction.fundingSource)
         _selectedBrokerageAccount = State(initialValue: transaction.brokerageAccountID)
         _draftAccount = State(initialValue: account)
+        // `@State(initialValue:)` is applied only on the form's first install, so
+        // a parent re-render from a later store value cannot overwrite the
+        // original this draft was built against. That is exactly the freeze the
+        // checked write needs.
+        _original = State(initialValue: transaction)
+        _originalAccount = State(initialValue: account)
+    }
+
+    /// The record this draft was built against, or the value it was constructed
+    /// with when the form has not been installed yet.
+    private var frozenOriginal: PositionTransaction? {
+        original ?? editing
     }
 
     /// Whether the store is still pointed at the ledger this draft was built
@@ -166,16 +191,10 @@ struct TradeEntryView: View {
     /// The effective entry kind: the form's side in record mode, the stored
     /// kind (including adjustments) in edit mode.
     private var kind: PositionTransaction.Kind {
-        editing?.kind ?? (recordSide == .buy ? .buy : .sell)
+        frozenOriginal?.kind ?? (recordSide == .buy ? .buy : .sell)
     }
 
-    private var sideColor: Color {
-        switch kind {
-        case .buy: appState.palette.color(isUp: true)
-        case .sell: appState.palette.color(isUp: false)
-        case .adjustment: .secondary
-        }
-    }
+    private var sideColor: Color { TradeSideStyle.color(for: kind) }
 
     private var title: String {
         PulseLocalization.localizedString(
@@ -364,7 +383,7 @@ struct TradeEntryView: View {
                     options: editFundingOptions,
                     account: effectiveAccount
                 )
-                if let editing, editing.fundingSource != fundingSource {
+                if let original = frozenOriginal, original.fundingSource != fundingSource {
                     Text(poolCopy("修改买入资金来源后，请在仓位池核对现有份额标记。",
                                   "After correcting buy funding, review the existing portion labels in Position pools."))
                         .font(.caption2).foregroundStyle(.orange)
@@ -411,8 +430,8 @@ struct TradeEntryView: View {
     /// selectable lets the user fix a price or a date without being forced to
     /// rewrite the funding on the way through.
     private var editFundingOptions: [PositionFundingSource] {
-        guard let editing else { return fundingSourcePickerOptions }
-        guard effectiveAccount != .financing, editing.fundingSource != .margin else {
+        guard let original = frozenOriginal else { return fundingSourcePickerOptions }
+        guard effectiveAccount != .financing, original.fundingSource != .margin else {
             return fundingSourcePickerOptions
         }
         return fundingSourcePickerOptions.filter { $0 != .margin }
@@ -711,7 +730,10 @@ struct TradeEntryView: View {
     private var simulatedOutcome: SimulatedOutcome? {
         guard let previewItem, let price = parsedPrice, let quantity = parsedQuantity else { return nil }
         var transactions = previewItem.materializedTransactions()
-        if let editing {
+        // The preview replaces the *frozen* record, the same one the write will
+        // hand back as `expected`. Substituting the live value here would preview
+        // an edit against a ledger this form is not allowed to write.
+        if let editing = frozenOriginal {
             guard let existing = transactions.firstIndex(where: { $0.id == editing.id }) else {
                 return nil
             }
@@ -731,7 +753,7 @@ struct TradeEntryView: View {
             ))
         }
         let ledger = PositionLedger(transactions: transactions)
-        let realized = editing.flatMap { target in
+        let realized = frozenOriginal.flatMap { target in
             ledger.entries.first { $0.transaction.id == target.id }?.realizedPnL
         } ?? ledger.entries.last?.realizedPnL
         return SimulatedOutcome(
@@ -767,12 +789,15 @@ struct TradeEntryView: View {
               let quantity = parsedQuantity, isValid else {
             return
         }
-        if var updated = editing {
-            // An edit writes through the draft's own ledger, unchanged. The id
-            // it rewrites was read from that ledger, so it needs no item guard
-            // beyond the account one the caller already passed.
-            guard let item else { return }
-            didSave = true
+        if let expected = frozenOriginal {
+            // An edit rewrites the record the draft was *opened against*, and
+            // proves it by handing that frozen original back to the store. The id
+            // alone is not enough: a sync, a review edit, or an ownership
+            // correction can move the record while this form stays mounted, and
+            // silently overwriting whatever is there now is the failure this
+            // guards against. Building the draft from the same frozen content is
+            // what keeps the write's compared value and its fields in step.
+            var updated = expected
             updated.price = price
             updated.quantity = quantity
             updated.fee = parsedFee
@@ -781,13 +806,30 @@ struct TradeEntryView: View {
             // here, since its shares' funding belongs to the portions the
             // allocation already describes.
             if kind == .buy { updated.fundingSource = fundingSource }
-            appState.watchlist.updateTransaction(item.symbol, updated)
+            do {
+                _ = try appState.watchlist.updateTransaction(
+                    symbol,
+                    updated,
+                    expected: expected,
+                    account: originalAccount
+                )
+            } catch {
+                // Nothing was written. The form stays on its own route with the
+                // fields the user typed, and the store's sentence says what to
+                // do about it — including returning and reopening on stale data.
+                didSave = false
+                errorMessage = Self.describe(error)
+                return
+            }
+            didSave = true
             route = dismissRoute
             return
         }
         guard isNewBuy else {
-            // A new sell: the existing non-throwing path, untouched. A sale
-            // consumes portions and never chooses its own funding here.
+            // A new sell takes the checked route too, in both modes: a sale that
+            // the store refuses must say why rather than land through the
+            // permissive legacy append. A sale consumes portions and never
+            // chooses its own funding here.
             guard let item else { return }
             let transaction = PositionTransaction(
                 kind: .sell,
@@ -797,12 +839,13 @@ struct TradeEntryView: View {
                 fee: parsedFee
             )
             do {
-                if appState.watchlist.brokerageAccountsEnabled {
-                    _ = try appState.watchlist.addNamedTransaction(item.symbol, transaction, account: draftAccount)
-                } else {
-                    appState.watchlist.addTransaction(item.symbol, transaction)
-                }
+                _ = try appState.watchlist.recordTransaction(
+                    item.symbol,
+                    transaction,
+                    account: appState.watchlist.brokerageAccountsEnabled ? draftAccount : .unassigned
+                )
             } catch {
+                didSave = false
                 errorMessage = Self.describe(error)
                 return
             }
@@ -815,7 +858,6 @@ struct TradeEntryView: View {
         // it goes through the throwing entry point: the store can refuse a
         // combination (a margin buy in mengmeng) and say why, and the form
         // stays open on the fields that caused it.
-        didSave = true
         do {
             _ = try appState.watchlist.recordBuyTransaction(
                 symbol,
@@ -830,6 +872,7 @@ struct TradeEntryView: View {
                 ),
                 account: account
             )
+            didSave = true
             // The trade landed in its destination ledger, so the app follows it
             // there: the hub this form dismisses to must describe the position
             // the user just created, not the one they were looking at before.
@@ -851,19 +894,44 @@ struct TradeEntryView: View {
            let description = executionError.errorDescription {
             return description
         }
-        return error.localizedDescription
+        if let mutationError = error as? TradeMutationError,
+           let description = mutationError.errorDescription {
+            return description
+        }
+        let localized = error.localizedDescription
+        return localized.isEmpty ? String(describing: error) : localized
     }
 
     /// Removes the entry being edited and returns to the log it came from —
-    /// or straight to the hub when this was the last entry, since an empty
-    /// log has nothing to show.
+    /// or straight to the hub when nothing is left to show, since an empty log
+    /// has nothing to show.
+    ///
+    /// A refusal keeps the form open with its own sentence, exactly like the
+    /// save path: the delete button is a write, and a write that did not happen
+    /// must never read as one that did.
     private func deleteEditedTransaction() {
-        guard !didSave, accountMatchesDraft, let editing else {
+        guard !didSave, accountMatchesDraft, let expected = frozenOriginal else {
+            return
+        }
+        do {
+            _ = try appState.watchlist.deleteTransaction(
+                symbol,
+                id: expected.id,
+                expected: expected,
+                account: originalAccount
+            )
+        } catch {
+            didSave = false
+            errorMessage = Self.describe(error)
             return
         }
         didSave = true
-        appState.watchlist.deleteTransaction(symbol, id: editing.id)
-        let remaining = appState.watchlist.item(for: symbol)?.transactions ?? []
+        // The draft's own ledger holds the remainder, and it may be a *retained*
+        // record: a record can outlive its symbol's membership. Reading the
+        // retained ledger is what keeps a delete of the last group member from
+        // looking empty and bouncing the user to a hub that shows nothing.
+        let remaining = appState.watchlist.draftItem(for: symbol, account: originalAccount)?
+            .transactions ?? []
         route = remaining.isEmpty ? .position(symbol, returnRoute) : dismissRoute
     }
 

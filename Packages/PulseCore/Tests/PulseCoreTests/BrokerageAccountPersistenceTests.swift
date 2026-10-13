@@ -85,8 +85,19 @@ final class BrokerageAccountPersistenceTests: XCTestCase {
         let result = WatchlistSyncMerge.merge(base: base, local: local, remote: remote)
         XCTAssertFalse(result.isConflictFree)
         XCTAssertNotNil(result.brokerageConflict)
-        XCTAssertEqual(WatchlistSyncMerge.resolve(result, choosing: .local), local)
-        XCTAssertEqual(WatchlistSyncMerge.resolve(result, choosing: .remote), remote)
+        // The connected history is selected, not unrelated group identities or
+        // the whole device. A single-owner trade and selected membership matter.
+        for (choice, expected) in [(WatchlistSyncMerge.ConflictResolution.local, local), (.remote, remote)] {
+            let resolved = WatchlistSyncMerge.resolve(result, choosing: choice)
+            XCTAssertEqual(resolved.items, expected.items)
+            XCTAssertEqual(resolved.allAccountItems.flatMap(\.transactions), [buy])
+            for id in [BrokerageAccountID.financing, .mengmeng] {
+                let selected = expected.brokerageAccounts?.first { $0.accountID == id }
+                let actual = resolved.brokerageAccounts?.first { $0.accountID == id }
+                XCTAssertEqual(actual?.items, selected?.items)
+                XCTAssertEqual(actual?.groups.flatMap(\.symbols), selected?.groups.flatMap(\.symbols))
+            }
+        }
     }
 
     func testBackupCountsAndPreviewIncludeInactiveAccounts() throws {

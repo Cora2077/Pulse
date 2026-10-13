@@ -65,7 +65,11 @@ struct BrokerageAccountSettingsTests {
         remote.brokerageAccounts![0].settings!.cashBalances["CNY"] = .init(amount: 200, updatedAt: .distantPast)
         let conflict = WatchlistSyncMerge.merge(base: base, local: local, remote: remote)
         #expect(conflict.brokerageConflict?.accountIDs == [.financing])
-        #expect(WatchlistSyncMerge.resolve(conflict, choosing: .local) == local)
+        var accepted = local
+        // Only the disputed financing cash is chosen. Independent sector limits
+        // in Mengmeng must survive that choice.
+        accepted.brokerageAccounts![1].settings = remote.brokerageAccounts![1].settings
+        #expect(WatchlistSyncMerge.resolve(conflict, choosing: .local) == accepted)
         local = base; remote = base
         local.accountSettings!.sectorLimits["CNY:Tech"] = 20
         remote.accountSettings!.sectorLimits["CNY:Tech"] = 60

@@ -431,10 +431,10 @@
 "sync.lastRead" = "最終読み込み成功: %@";
 "sync.lastWrite" = "最終書き込み成功: %@";
 "sync.conflict.detail" = "%d 件のデータが競合しています（Mac %@）";
-"sync.conflict.warning" = "選択はこのデバイスのすべての取引とポジション配分の競合に適用されます。取引を削除するとポジション計算も変わります。適用前に両方のスナップショットをこの Mac に保存します。";
-"sync.conflict.keepLocal" = "この Mac の取引を残す";
-"sync.conflict.useRemote" = "もう一台の Mac の取引を使う";
-"sync.conflict.changed" = "確認中にもう一台の Mac で変更がありました。更新された競合を確認してから選択してください。";
+"sync.conflict.warning" = "選択は上記の競合レコード、項目、関連台帳のみに適用されます。競合しない変更は保持され、口座全体は置き換えません。関連する取引、計画、配分を一緒に検証し、適用前に両方のスナップショットを保存します。";
+"sync.conflict.keepLocal" = "競合はこの Mac の版を使う";
+"sync.conflict.useRemote" = "競合はもう一台の Mac の版を使う";
+"sync.conflict.changed" = "確認中にデータが変更されました。最新の競合を確認してから選択してください。";
 "sync.privacy" = "選択したフォルダには、読み取り可能なウォッチリスト、ポジション、取引履歴が保存されます。データソースの認証情報、キーチェーン項目、MCP トークン、Mac 固有の設定はこの Mac に残ります。";
 "sync.error.accessDenied" = "FFF はこのフォルダにアクセスできません。設定でもう一度選択してください。";
 "sync.error.folderUnavailable" = "選択した場所は利用可能なフォルダではありません。";

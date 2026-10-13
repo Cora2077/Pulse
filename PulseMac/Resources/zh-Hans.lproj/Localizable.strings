@@ -431,10 +431,10 @@
 "sync.lastRead" = "最近成功读取：%@";
 "sync.lastWrite" = "最近成功写入：%@";
 "sync.conflict.detail" = "有 %d 项数据冲突，来自 Mac %@";
-"sync.conflict.warning" = "选择将应用于此设备的全部交易及仓位分账冲突。删除交易会改变持仓计算。应用前会在本机保留双方快照。";
-"sync.conflict.keepLocal" = "保留本机交易";
-"sync.conflict.useRemote" = "使用另一台 Mac 的交易";
-"sync.conflict.changed" = "查看期间另一台 Mac 有更新。请检查更新后的冲突再选择。";
+"sync.conflict.warning" = "仅对上方冲突记录、字段及关联账本选择版本；无冲突变更会保留，不替换全部账户。关联成交、计划与份额一并校验。应用前会在本机保留双方快照。";
+"sync.conflict.keepLocal" = "冲突项保留本机版本";
+"sync.conflict.useRemote" = "冲突项使用另一台 Mac 版本";
+"sync.conflict.changed" = "查看期间数据已变化。请检查最新冲突后再选择。";
 "sync.privacy" = "所选文件夹内是可读的自选、持仓和交易记录。数据源凭据、钥匙串项目、MCP 令牌和本机设置仅保留在本机。";
 "sync.error.accessDenied" = "FFF 无法访问此文件夹。请在设置中重新选择。";
 "sync.error.folderUnavailable" = "所选位置不是可用的文件夹。";

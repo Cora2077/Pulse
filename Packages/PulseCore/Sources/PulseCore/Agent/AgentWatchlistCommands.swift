@@ -342,17 +342,22 @@ public struct AgentWatchlistCommands {
                 fundingSource: funding,
                 brokerageAccountID: store.brokerageAccountsEnabled ? store.activeBrokerageAccountID : nil
             )
+            // One checked route for both modes: the store decides what a
+            // no-account record means now, and a refusal arrives with its own
+            // reason. Taking the permissive legacy append here is what let a
+            // refused trade report success, so it is not used at all.
             do {
-                if store.brokerageAccountsEnabled {
-                    _ = try store.addNamedTransaction(symbol, transaction, account: store.activeBrokerageAccountID)
-                } else {
-                    store.addTransaction(symbol, transaction)
-                }
+                _ = try store.recordTransaction(
+                    symbol,
+                    transaction,
+                    account: store.brokerageAccountsEnabled ? store.activeBrokerageAccountID : .unassigned
+                )
             } catch {
-                return .failure(.invalidQuantity)
+                return .failure(.tradeMutationFailed(Self.describe(error)))
             }
-            guard let updated = store.item(for: symbol), updated.transactions.contains(where: { $0.id == recordedID }) else {
-                return .failure(.invalidPrice)
+            guard let updated = store.item(for: symbol) ?? store.retainedHistoryItem(for: symbol),
+                  updated.transactions.contains(where: { $0.id == recordedID }) else {
+                return .failure(.tradeMutationFailed(Self.describe(TransactionWriteError.notRecorded)))
             }
             return .success(mutation(
                 positionSnapshot(updated),
@@ -523,10 +528,10 @@ public struct AgentWatchlistCommands {
             guard let symbol = symbol(from: ref) else {
                 return .failure(.invalidSymbol(ref))
             }
-            guard let item = store.item(for: symbol) else {
+            guard store.item(for: symbol) != nil || store.retainedHistoryItem(for: symbol) != nil else {
                 return .failure(.itemNotOnWatchlist)
             }
-            guard let existing = item.transactions.first(where: { $0.id == id }) else {
+            guard let existing = Self.transaction(of: id, in: store, symbol: symbol) else {
                 return .failure(.transactionNotFound(id))
             }
 
@@ -566,9 +571,24 @@ public struct AgentWatchlistCommands {
             let before = Set(store.symbols)
             let alreadyApplied = updated == existing
             if !alreadyApplied {
-                store.updateTransaction(symbol, updated)
+                // The live record is the *original*, not the edited value: the
+                // checked route compares it byte-for-byte and refuses a draft
+                // built against a record that has since moved. A historical
+                // record is edited in the retained ledger it actually lives in,
+                // and the symbol's watchlist membership is never rewritten —
+                // reading it back must not re-add a removed instrument.
+                do {
+                    _ = try store.updateTransaction(
+                        symbol,
+                        updated,
+                        expected: existing,
+                        account: store.activeBrokerageAccountID
+                    )
+                } catch {
+                    return .failure(.tradeMutationFailed(Self.describe(error)))
+                }
             }
-            guard let updatedItem = store.item(for: symbol) else {
+            guard let updatedItem = Self.record(of: symbol, in: store) else {
                 return .failure(.itemNotOnWatchlist)
             }
             return .success(mutation(
@@ -587,22 +607,40 @@ public struct AgentWatchlistCommands {
             guard let symbol = symbol(from: ref) else {
                 return .failure(.invalidSymbol(ref))
             }
-            guard let item = store.item(for: symbol) else {
+            guard store.item(for: symbol) != nil || store.retainedHistoryItem(for: symbol) != nil else {
                 return .failure(.itemNotOnWatchlist)
             }
 
             let before = Set(store.symbols)
-            let alreadyApplied = !item.transactions.contains(where: { $0.id == id })
-            if !alreadyApplied {
-                store.deleteTransaction(symbol, id: id)
+            // An id that is already gone is the operation's own end state, so a
+            // retry stays a success and says so rather than refusing.
+            guard let existing = Self.transaction(of: id, in: store, symbol: symbol) else {
+                guard let item = Self.record(of: symbol, in: store) else {
+                    return .failure(.itemNotOnWatchlist)
+                }
+                return .success(mutation(
+                    positionSnapshot(item),
+                    before: before,
+                    alreadyApplied: true
+                ))
             }
-            guard let updated = store.item(for: symbol) else {
+            do {
+                _ = try store.deleteTransaction(
+                    symbol,
+                    id: id,
+                    expected: existing,
+                    account: store.activeBrokerageAccountID
+                )
+            } catch {
+                return .failure(.tradeMutationFailed(Self.describe(error)))
+            }
+            guard let updated = Self.record(of: symbol, in: store) else {
                 return .failure(.itemNotOnWatchlist)
             }
             return .success(mutation(
                 positionSnapshot(updated),
                 before: before,
-                alreadyApplied: alreadyApplied
+                alreadyApplied: false
             ))
         }
     }
@@ -667,6 +705,45 @@ public struct AgentWatchlistCommands {
             didChangeSymbolUnion: before != Set(store.symbols),
             alreadyApplied: alreadyApplied
         )
+    }
+
+    /// A store refusal is never collapsed into a generic code: the sentence the
+    /// store wrote is the whole reason the caller can act on the refusal.
+    private static func describe(_ error: Error) -> String {
+        if let executionError = error as? TradePlanExecutionError,
+           let description = executionError.errorDescription {
+            return description
+        }
+        if let mutationError = error as? TradeMutationError,
+           let description = mutationError.errorDescription {
+            return description
+        }
+        let localized = error.localizedDescription
+        return localized.isEmpty ? String(describing: error) : localized
+    }
+
+    /// The record a transaction lives in: an active item wins, and a dormant
+    /// record is read from retained history. Both are legitimate homes for an
+    /// edit or a delete, so neither lookup may be skipped.
+    private static func record(of symbol: SymbolID, in store: WatchlistStore) -> WatchItem? {
+        store.item(for: symbol) ?? store.retainedHistoryItem(for: symbol)
+    }
+
+    /// The original a draft was built against, read from the same two places.
+    private static func transaction(of id: UUID, in store: WatchlistStore, symbol: SymbolID) -> PositionTransaction? {
+        record(of: symbol, in: store)?.transactions.first { $0.id == id }
+    }
+
+    /// The one reason this layer can report that the store itself never states:
+    /// a write that returned without landing.
+    enum TransactionWriteError: LocalizedError {
+        case notRecorded
+
+        var errorDescription: String? {
+            PulseLocalization.currentLanguageIdentifier.hasPrefix("zh")
+                ? "成交未被写入，请刷新后重试。"
+                : "The trade was not written. Refresh and try again."
+        }
     }
 
     private func groupSnapshot(_ group: WatchlistGroup) -> AgentGroupSnapshot {

@@ -137,7 +137,7 @@ struct PositionVerificationSheet: View {
                     && $0.title.trimmingCharacters(in: .whitespacesAndNewlines).count <= 240 && ($0.note?.count ?? 0) <= 4_000
                     && ($0.reviewDate?.timeIntervalSince1970.isFinite ?? true)
             }
-            && !appState.folderSync.positionAllocationConflicts.contains { $0.symbol == item.symbol }
+            && !appState.folderSync.hasPositionConflict(symbol: item.symbol, account: draftAccount)
     }
 
     var body: some View {

@@ -600,7 +600,7 @@ struct TransactionRow: View {
                 .font(.system(size: 10).monospacedDigit())
                 .foregroundStyle(.tertiary)
                 .frame(width: 34, alignment: .leading)
-            TradeKindBadge(kind: entry.transaction.kind, palette: palette)
+            TradeKindBadge(kind: entry.transaction.kind)
             (Text("\(PriceFormatter.quantity(entry.transaction.quantity)) @ \(PriceFormatter.price(entry.transaction.price))")
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.primary)
@@ -646,39 +646,6 @@ struct TransactionRow: View {
             ))
             .font(.system(size: 10.5).monospacedDigit())
             .foregroundStyle(.secondary)
-        }
-    }
-}
-
-struct TradeKindBadge: View {
-    let kind: PositionTransaction.Kind
-    let palette: ChangePalette
-
-    var body: some View {
-        Text(label)
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(color.opacity(kind == .adjustment ? 0.12 : 0.15))
-            )
-    }
-
-    private var label: String {
-        switch kind {
-        case .buy: PulseLocalization.localizedString("transaction.kind.buy")
-        case .sell: PulseLocalization.localizedString("transaction.kind.sell")
-        case .adjustment: PulseLocalization.localizedString("transaction.kind.adjustment")
-        }
-    }
-
-    private var color: Color {
-        switch kind {
-        case .buy: palette.color(isUp: true)
-        case .sell: palette.color(isUp: false)
-        case .adjustment: .secondary
         }
     }
 }

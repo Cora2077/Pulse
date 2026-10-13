@@ -20,4 +20,8 @@ public enum AgentWatchlistError: Error, Equatable, Sendable {
     case invalidGroupOrder
     /// `symbols` is not a permutation of the target group's members.
     case invalidSymbolOrder
+    /// The store refused a checked trade mutation. The sentence is the store's
+    /// own localized reason, carried verbatim so a caller reads *why* the write
+    /// was declined instead of a collapsed generic code. Nothing was written.
+    case tradeMutationFailed(String)
 }

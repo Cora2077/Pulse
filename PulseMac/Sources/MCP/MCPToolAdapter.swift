@@ -503,6 +503,11 @@ final class MCPToolAdapter {
                 code: "invalid_symbol_order",
                 message: "symbols must be a permutation of every member of the target group. Call list_watchlists first."
             )
+        case .tradeMutationFailed(let reason):
+            // The store's own refusal, carried verbatim: it describes the record
+            // that moved and what to do about it. The message is store-authored
+            // text about the user's own data, never an echoed argument.
+            ToolFailure(code: "trade_mutation_failed", message: reason)
         }
     }
 }

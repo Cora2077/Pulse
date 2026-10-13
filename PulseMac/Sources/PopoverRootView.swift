@@ -129,9 +129,12 @@ struct PopoverRootView: View {
     private var displayRoute: PopoverRoute {
         if route.preservesAccountDraft { return route }
         switch route {
-        case .position(let symbol, _), .trade(let symbol, _, _),
-             .transactions(let symbol, _), .calibrate(let symbol, _):
+        case .position(let symbol, _), .trade(let symbol, _, _), .calibrate(let symbol, _):
             return appState.watchlist.item(for: symbol) == nil ? .list : route
+        case .transactions(let symbol, _):
+            // The log is cross-account and includes retained history; membership
+            // in the currently selected watchlist is not its existence check.
+            return appState.watchlist.tradeHistory(for: symbol).isEmpty ? .list : route
         case .plan(let symbol, let planID, let returnRoute):
             // A plan deleted out from under the editor (or a symbol leaving the
             // watchlist) falls back to the page it was opened from.
@@ -200,6 +203,7 @@ struct PopoverRootView: View {
                         route: $route,
                         account: draftRouteAccount ?? appState.watchlist.activeBrokerageAccountID
                     )
+                    .id(displayRoute)
                     .frame(height: height(for: displayRoute))
                     .transition(pushTransition)
                 }
@@ -428,6 +432,9 @@ struct PopoverRootView: View {
         .onChange(of: appState.watchlist.activeBrokerageAccountID) { _, _ in
             guard route != .list else { return }
             if route.preservesAccountDraft { return }
+            // The cross-account plan page owns its sheet drafts. Selecting a
+            // plan's source must not unmount it before the fill sheet appears.
+            if case .planList = route { return }
             // The shared market detail can contain an in-place thesis draft.
             if case .detail = route { return }
             var transaction = Transaction(animation: nil)

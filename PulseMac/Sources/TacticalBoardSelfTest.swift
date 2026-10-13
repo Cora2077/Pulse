@@ -38,7 +38,9 @@ enum TacticalBoardSelfTest {
         failures = []
         let outputDirectory = URL(fileURLWithPath: "build/artifacts/tactical", isDirectory: true)
         do {
-            try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+            if !CommandLine.arguments.contains("--export-render-base64") {
+                try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+            }
         } catch {
             report("output-directory", "cannot create \(outputDirectory.path): \(error)")
             return finish()
@@ -3353,7 +3355,7 @@ enum TacticalBoardSelfTest {
         guard let data = rep.representation(using: .png, properties: [:]) else {
             throw ShareImageError.encodingFailed
         }
-        try data.write(to: url)
+        if !CommandLine.arguments.contains("--export-render-base64") { try data.write(to: url) }
         // Synthetic artifacts only. Export through stdout for review when the
         // app sandbox owns the render directory and the host cannot read it.
         if CommandLine.arguments.contains("--export-render-base64") {

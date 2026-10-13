@@ -110,7 +110,7 @@ struct PositionBuySourceSheet: View {
 
     private func submit() {
         guard canSave, let selectedID else { return }
-        guard !appState.folderSync.positionAllocationConflicts.contains(where: { $0.symbol == item.symbol }) else {
+        guard !appState.folderSync.hasPositionConflict(symbol: item.symbol, account: draftAccount) else {
             errorMessage = copy("该标的存在同步冲突，请先核对。", "Resolve the sync conflict for this instrument first.")
             return
         }
