@@ -179,3 +179,10 @@
 - `PulseLocalization` 解析点固定 zh-Hans；1535 处调用点与 zh-Hans 键表零改动。
 - 矩阵渲染保留数据形态维度（HK/crypto），文件名去掉语言后缀。
 - 本案结论：多语言的所有长期成本（4 文件同步、预览通道、漂移 lint、镜像写）一次性归零。
+
+## 追加事故：TimelineView 包裹 MenuBarExtra 标签导致状态项不创建
+
+- 现象：菜单栏连图标都不出现；离屏渲染与 label body 求值均正常，唯独真实状态项永不物化。
+- 结论：MenuBarExtra 的 label 托管不接受 TimelineView 调度器。修复：30 秒时段时钟挪进
+  AppState（`menuBarClock`，@Observable 读取即订阅），标签回到朴素 Group。教训写进
+  PulseMacApp.swift 注释（do not reintroduce）。

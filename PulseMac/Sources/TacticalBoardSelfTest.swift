@@ -775,6 +775,18 @@ enum TacticalBoardSelfTest {
             }
             expect(store.syncSnapshot() == baseline, "plan-label-matrix",
                    "rendering the label matrix must not write data")
+
+            // The menu bar label is the one surface the offscreen harness had
+            // never drawn; a label that renders empty here is invisible in the
+            // status item too.
+            appState.settings.showPriceInMenuBar = true
+            appState.settings.menuBarMode = .single
+            appState.settings.primarySymbol = hk
+            try renderInOffscreenWindow(
+                view: MenuBarLabel(appState: appState).environment(appState),
+                width: 220, height: 60,
+                to: directory.appendingPathComponent("menubar-label.png"),
+                scheme: .light, requiresBoardBand: false)
         } catch { report("plan-label-matrix-render", error.localizedDescription) }
     }
 

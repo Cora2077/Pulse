@@ -235,6 +235,7 @@ final class AppState {
         if !isSelfTestMode && !isOfflinePreview { planAlerts.start() }
         if !isSelfTestMode && !isOfflinePreview { folderSync.start() }
         if !isOfflinePreview { startRotation() }
+        if !isOfflinePreview { startMenuBarClock() }
         observeMenuTracking()
         // Image-rendering self-tests must not touch the Keychain (the MCP token
         // lives there), so they run without the agent endpoint entirely.
@@ -680,6 +681,22 @@ final class AppState {
     }
 
     // MARK: - Rotation
+
+    /// A half-minute clock the menu bar label reads so the trading-hours gate can
+    /// flip the pill at a session boundary even when no quote push arrives. The
+    /// label redraws on quote updates anyway; this only covers the quiet edges.
+    /// Kept off TimelineView: a scheduler inside the MenuBarExtra label keeps the
+    /// status item from ever materializing.
+    private(set) var menuBarClock = Date()
+
+    private func startMenuBarClock() {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                self?.menuBarClock = .now
+            }
+        }
+    }
 
     private func startRotation() {
         rotationTask = Task { [weak self] in

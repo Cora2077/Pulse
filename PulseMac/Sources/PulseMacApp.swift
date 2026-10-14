@@ -203,21 +203,22 @@ struct MenuBarLabel: View {
     }
 
     var body: some View {
-        // A timer drives the group so a session boundary (the 15:00 A-share close,
-        // say) flips the label even when no quote push arrives to redraw it.
-        TimelineView(.periodic(from: .now, by: 30)) { _ in
-            Group {
-                // Icon only by default; price text appears only after the user enables
-                // "show quotes in menu bar" in settings, and the trading-hours gate
-                // takes it away again outside the displayed market's session.
-                if !appState.settings.showPriceInMenuBar || appState.watchlist.isEmpty
-                    || (appState.settings.menuBarTradingHoursOnly && !appState.menuBarQuoteInSession) {
-                    Image(nsImage: templateIcon)
-                        .accessibilityLabel(AppBrand.name)
-                } else {
-                    Text(appState.menuBarText)
-                        .font(.system(size: 12).monospacedDigit())
-                }
+        // Reading the half-minute clock subscribes the label to it, so the
+        // trading-hours gate flips the pill at a session boundary even when no
+        // quote push arrives to redraw. (A TimelineView wrapped around this
+        // label kept the status item from ever appearing — do not reintroduce.)
+        let _ = appState.menuBarClock
+        return Group {
+            // Icon only by default; price text appears only after the user enables
+            // "show quotes in menu bar" in settings, and the trading-hours gate
+            // takes it away again outside the displayed market's session.
+            if !appState.settings.showPriceInMenuBar || appState.watchlist.isEmpty
+                || (appState.settings.menuBarTradingHoursOnly && !appState.menuBarQuoteInSession) {
+                Image(nsImage: templateIcon)
+                    .accessibilityLabel(AppBrand.name)
+            } else {
+                Text(appState.menuBarText)
+                    .font(.system(size: 12).monospacedDigit())
             }
         }
         // The label is the one view alive for the app's whole lifetime, which makes it
