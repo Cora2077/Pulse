@@ -1122,6 +1122,7 @@
 "main.transactions.empty" = "No trades recorded yet.";
 "main.plans.caption" = "Price levels and status";
 "main.plans.empty" = "No trade plans for this instrument.";
+"main.plans.rail.all" = "See All";
 "main.plans.changeStatus" = "Change plan status";
 "main.thesis.edit" = "Edit reason";
 
@@ -1249,6 +1250,7 @@
 "chart.annotation.drawing.delete" = "Delete Drawing";
 "chart.annotation.plan.fit" = "Fit plans";
 "chart.annotation.plan.edgeHint" = "%@ · %@";
+"chart.annotation.plan.focusHint" = "Click to zoom to this price; click again to restore";
 "data.error.invalidChartDrawing" = "The backup contains invalid drawings or duplicate drawing identifiers.";
 "data.import.drawings" = "Drawing updates: %d";
 

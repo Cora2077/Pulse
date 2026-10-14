@@ -1122,6 +1122,7 @@
 "main.transactions.empty" = "取引履歴はありません。";
 "main.plans.caption" = "価格水準と状態";
 "main.plans.empty" = "この銘柄の取引計画はありません。";
+"main.plans.rail.all" = "すべて表示";
 "main.plans.changeStatus" = "計画の状態を変更";
 "main.thesis.edit" = "買入理由を編集";
 
@@ -1250,6 +1251,7 @@
 "chart.annotation.drawing.delete" = "描画を削除";
 "chart.annotation.plan.fit" = "計画に合わせる";
 "chart.annotation.plan.edgeHint" = "%@ · %@";
+"chart.annotation.plan.focusHint" = "クリックでこの価格にズーム、もう一度クリックで復帰";
 "data.error.invalidChartDrawing" = "バックアップに無効な描画データ、または重複した描画 ID が含まれています。";
 "data.import.drawings" = "図形の更新：%d 件。";
 

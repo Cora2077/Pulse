@@ -1122,6 +1122,7 @@
 "main.transactions.empty" = "아직 기록된 거래가 없습니다.";
 "main.plans.caption" = "가격 구간 및 상태";
 "main.plans.empty" = "이 종목의 거래 계획이 없습니다.";
+"main.plans.rail.all" = "전체 보기";
 "main.plans.changeStatus" = "계획 상태 변경";
 "main.thesis.edit" = "매수 근거 편집";
 
@@ -1250,6 +1251,7 @@
 "chart.annotation.drawing.delete" = "그리기 삭제";
 "chart.annotation.plan.fit" = "계획에 맞추기";
 "chart.annotation.plan.edgeHint" = "%@ · %@";
+"chart.annotation.plan.focusHint" = "클릭하면 이 가격으로 확대하고, 다시 클릭하면 복원합니다";
 "data.error.invalidChartDrawing" = "백업에 유효하지 않은 그리기 데이터 또는 중복된 그리기 ID가 포함되어 있습니다.";
 "data.import.drawings" = "그리기 업데이트: %d개.";
 

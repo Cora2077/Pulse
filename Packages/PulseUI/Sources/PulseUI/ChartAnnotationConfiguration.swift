@@ -71,6 +71,17 @@ public final class ChartAnnotationController {
         clearMeasurementAvailability()
     }
 
+    /// Toggles the plan-price fit for a tag tap: tapping the tag of the price
+    /// that is already fitted clears the fit and hands back the plain view.
+    public func togglePlanFocus(_ price: Double) {
+        focusedPlanPrice = focusedPlanPrice == price ? nil : price
+    }
+
+    /// Clears any plan-price fit, for example when the chart view resets.
+    public func clearPlanFocus() {
+        focusedPlanPrice = nil
+    }
+
     /// Clears the temporary two-point measurement while leaving the current tool
     /// selected. The host may call this from its Clear Measurement command.
     public func clearMeasurement() {
@@ -159,6 +170,10 @@ public struct ChartAnnotationConfiguration {
     public var currencyCode: String?
     public var quantityUnit: String?
     public var planColor: (@MainActor (TradePlan.Kind) -> Color)?
+    /// Draws the plan tag as a one-line chip. The narrow popover chart uses it so
+    /// tags stop covering the recent bars; the wide main chart keeps the rich tag
+    /// with the size and the money line.
+    public var usesCompactPlanLabels: Bool
     public var onUpsert: @MainActor (ChartDrawing) -> Void
     public var onDelete: @MainActor (UUID) -> Void
     public var onEditDrawing: @MainActor (UUID) -> Void
@@ -173,6 +188,7 @@ public struct ChartAnnotationConfiguration {
         currencyCode: String?,
         quantityUnit: String? = nil,
         planColor: (@MainActor (TradePlan.Kind) -> Color)? = nil,
+        usesCompactPlanLabels: Bool = false,
         onUpsert: @escaping @MainActor (ChartDrawing) -> Void,
         onDelete: @escaping @MainActor (UUID) -> Void,
         onEditDrawing: @escaping @MainActor (UUID) -> Void,
@@ -186,6 +202,7 @@ public struct ChartAnnotationConfiguration {
         self.currencyCode = currencyCode
         self.quantityUnit = quantityUnit
         self.planColor = planColor
+        self.usesCompactPlanLabels = usesCompactPlanLabels
         self.onUpsert = onUpsert
         self.onDelete = onDelete
         self.onEditDrawing = onEditDrawing

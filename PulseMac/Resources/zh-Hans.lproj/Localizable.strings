@@ -1122,6 +1122,7 @@
 "main.transactions.empty" = "还没有交易记录。";
 "main.plans.caption" = "价格计划与状态";
 "main.plans.empty" = "该标的暂无交易计划。";
+"main.plans.rail.all" = "查看全部";
 "main.plans.changeStatus" = "更改计划状态";
 "main.thesis.edit" = "编辑买入理由";
 
@@ -1249,6 +1250,7 @@
 "chart.annotation.drawing.delete" = "删除画线";
 "chart.annotation.plan.fit" = "适配计划";
 "chart.annotation.plan.edgeHint" = "%@ · %@";
+"chart.annotation.plan.focusHint" = "点击缩放到该价位，再次点击恢复";
 "data.error.invalidChartDrawing" = "备份中的画线数据无效或包含重复标识。";
 "data.import.drawings" = "画线更新：%d 条。";
 

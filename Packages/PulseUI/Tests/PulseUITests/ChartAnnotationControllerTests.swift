@@ -93,6 +93,25 @@ struct ChartAnnotationControllerTests {
         #expect(!controller.isMeasurementSelected)
     }
 
+    @Test("Tapping a fitted plan price clears the fit; another price moves it")
+    func togglePlanFocus() {
+        let controller = ChartAnnotationController()
+        controller.togglePlanFocus(59.5)
+        #expect(controller.focusedPlanPrice == 59.5)
+        controller.togglePlanFocus(59.5)
+        #expect(controller.focusedPlanPrice == nil)
+        controller.togglePlanFocus(54)
+        #expect(controller.focusedPlanPrice == 54)
+    }
+
+    @Test("Clearing plan focus restores the plain view")
+    func clearPlanFocus() {
+        let controller = ChartAnnotationController()
+        controller.togglePlanFocus(59.5)
+        controller.clearPlanFocus()
+        #expect(controller.focusedPlanPrice == nil)
+    }
+
     private func makeConfiguration(
         controller: ChartAnnotationController,
         drawing: ChartDrawing,

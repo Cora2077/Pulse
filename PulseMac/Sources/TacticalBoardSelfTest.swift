@@ -585,6 +585,15 @@ enum TacticalBoardSelfTest {
         } catch { report("plan-status", error.localizedDescription); return }
         appState.market.apply(quotes: [Quote(symbol: symbol, name: "虚构计划验证", price: 105, previousClose: 100,
             sourceID: "fictional-status", timestamp: .now, marketState: .regular)])
+        // The popover chart reads the same demo candle cache as the main window, and
+        // plan lines only exist once a chart renders: seed both periods the
+        // acceptance renders open.
+        for seedPeriod in [CandlePeriod.minute1, .day] {
+            appState.market.cache(
+                candles: planStatusCandles(symbol: symbol, period: seedPeriod, basePrice: 105),
+                for: CandleCacheKey(symbol: symbol, period: seedPeriod)
+            )
+        }
         let baseline = store.syncSnapshot()
         do {
             for scheme in [ColorScheme.light, .dark] {
@@ -597,7 +606,17 @@ enum TacticalBoardSelfTest {
                 try renderInOffscreenWindow(view: MainPlanListView(route: .constant(.planList), initialFilter: .all).environment(appState),
                     width: 1_240, height: 660, to: directory.appendingPathComponent("plans-main-all-\(suffix).png"),
                     scheme: scheme, requiresBoardBand: false)
+                // The plan rail is the default tab's companion column, so it is
+                // rendered from the ordinary waiting plans on the position tab.
+                try renderInOffscreenWindow(view: MainInstrumentView(symbol: symbol).environment(appState),
+                    width: 1_240, height: 760, to: directory.appendingPathComponent("plans-instrument-rail-\(suffix).png"),
+                    scheme: scheme, requiresBoardBand: false)
             }
+            // Below the rail's 1120pt threshold the column must not appear at
+            // all, so the narrow render is what fixes that behavior.
+            try renderInOffscreenWindow(view: MainInstrumentView(symbol: symbol).environment(appState),
+                width: 1_000, height: 760, to: directory.appendingPathComponent("plans-instrument-rail-narrow.png"),
+                scheme: .light, requiresBoardBand: false)
             try renderInOffscreenWindow(view: MainPlanListView(route: .constant(.planList), initialFilter: .done).environment(appState),
                 width: 1_240, height: 660, to: directory.appendingPathComponent("plans-main-filled.png"),
                 scheme: .light, requiresBoardBand: false)
@@ -607,6 +626,14 @@ enum TacticalBoardSelfTest {
             try renderInOffscreenWindow(view: DetailView(symbol: symbol, route: .constant(.detail(symbol))).environment(appState),
                 width: 340, height: 740, to: directory.appendingPathComponent("plans-detail-light.png"),
                 scheme: .light, requiresBoardBand: false)
+            // The intraday render above now carries plan lines; these two prove the
+            // same overlay holds on the candle chart in both schemes.
+            for scheme in [ColorScheme.light, .dark] {
+                let suffix = scheme == .dark ? "dark" : "light"
+                try renderInOffscreenWindow(view: DetailView(symbol: symbol, route: .constant(.detail(symbol)), initialPeriod: .day).environment(appState),
+                    width: 340, height: 740, to: directory.appendingPathComponent("plans-detail-chart-day-\(suffix).png"),
+                    scheme: scheme, requiresBoardBand: false)
+            }
             try renderInOffscreenWindow(view: PlanWorkflowDetailView(symbol: symbol, planID: completed.id, account: .financing).environment(appState),
                 width: 650, height: 600, to: directory.appendingPathComponent("plans-filled-workflow-light.png"),
                 scheme: .light, requiresBoardBand: false)
@@ -658,6 +685,33 @@ enum TacticalBoardSelfTest {
                 width: 340, height: 620, to: directory.appendingPathComponent("plans-history-after-fill.png"),
                 scheme: .light, requiresBoardBand: false)
         } catch { report("plan-status-render", error.localizedDescription) }
+    }
+
+    /// Deterministic candles around the fixture quote so the 102 and 110 plans sit
+    /// inside the visible range while the 140 plan exercises the beyond-edge prompt.
+    private static func planStatusCandles(symbol: SymbolID, period: CandlePeriod, basePrice: Double) -> [Candle] {
+        let interval: TimeInterval = period == .minute1 ? 60 : 86_400
+        let count = period == .minute1 ? 390 : 180
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = symbol.market.timeZone
+        let anchor: Date
+        if period == .minute1 {
+            let dayStart = calendar.startOfDay(for: .now)
+            anchor = calendar.date(byAdding: .minute, value: 570, to: dayStart)
+                ?? .now.addingTimeInterval(-interval * Double(count))
+        } else {
+            anchor = Date.now.addingTimeInterval(-interval * Double(count - 1))
+        }
+        return (0..<count).map { index in
+            let time = anchor.addingTimeInterval(Double(index) * interval)
+            let wave = sin(Double(index) * 0.11) * 0.03 + cos(Double(index) * 0.041) * 0.015
+            let close = basePrice * (1 + wave)
+            let open = index == 0 ? close * 0.998 : basePrice * (1 + sin(Double(index - 1) * 0.11) * 0.03 + cos(Double(index - 1) * 0.041) * 0.015)
+            let spread = basePrice * 0.004
+            return Candle(time: time, open: open,
+                high: max(open, close) + spread, low: max(0.0001, min(open, close) - spread),
+                close: close, volume: 100_000 + abs(sin(Double(index))) * 50_000)
+        }
     }
 
     /// Uses AppKit's accessibility actions against the real SwiftUI controls,

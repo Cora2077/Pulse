@@ -82,6 +82,7 @@ struct ChartAnnotationOverlay: View {
                   measurementHandle(at: value.location) == nil,
                   !isMeasurementSelectionHit(value.location),
                   !isPlanLabelHit(value.location) else { return }
+            controller.clearPlanFocus()
             coordinates.resetView()
         })
         .onAppear {
@@ -466,7 +467,12 @@ struct ChartAnnotationOverlay: View {
     /// size and the amount. Staying readable means the placement pass has to step the tag clear
     /// of the candles underneath it instead.
     private var planLabelSize: CGSize {
-        CGSize(width: min(max(coordinates.plot.width * 0.36, 74), 128), height: planLabelHeight)
+        if configuration.usesCompactPlanLabels {
+            // The chip must hold "● 买 110.00"-class text near full size: below
+            // ~66pt the monospaced price truncates instead of shrinking.
+            return CGSize(width: min(max(coordinates.plot.width * 0.24, 66), 84), height: 15)
+        }
+        return CGSize(width: min(max(coordinates.plot.width * 0.36, 74), 128), height: planLabelHeight)
     }
 
     /// The tag grows by a second line only when there is money to put on it.
@@ -487,7 +493,11 @@ struct ChartAnnotationOverlay: View {
     }
 
     private var planLabelCenterX: CGFloat {
-        coordinates.plot.maxX - min(max(coordinates.plot.width * 0.18, 42), 65)
+        if configuration.usesCompactPlanLabels {
+            // Kept fully inside the pane: the clip would otherwise eat the price.
+            return coordinates.plot.maxX - planLabelSize.width / 2 - 2
+        }
+        return coordinates.plot.maxX - min(max(coordinates.plot.width * 0.18, 42), 65)
     }
 
     private var planLayerClip: CGRect { coordinates.pricePane }
@@ -526,6 +536,8 @@ struct ChartAnnotationOverlay: View {
     private func planLabel(_ group: PlanGroup, beyondEdge: Bool) -> some View {
         let first = group.plans[0]
         let kind = PulseLocalization.localizedString(first.kind == .buy ? "plan.kind.buy" : "plan.kind.sell")
+        // The compact chip borrows the single-glyph badge word the plan rows use.
+        let shortKind = PulseLocalization.localizedString(first.kind == .buy ? "transaction.kind.buy" : "transaction.kind.sell")
         let price = PriceFormatter.price(first.price, market: coordinates.market)
         let quantity = group.plans.reduce(0) { $0 + $1.quantity }
         let reached = configuration.currentPrice.map { current in
@@ -534,19 +546,22 @@ struct ChartAnnotationOverlay: View {
         let unit = configuration.quantityUnit ?? planQuantityUnit
         let arrow = beyondEdge ? (coordinates.yForPrice(first.price).map { $0 < coordinates.pricePane.minY } == true ? "↑ " : "↓ ") : ""
         let edgeHint = beyondEdge ? planEdgeHint(for: first.price) : nil
+        let isFocused = controller.focusedPlanPrice == first.price
         if beyondEdge {
             Button {
                 guard controller.tool == .browse else { return }
-                controller.focusedPlanPrice = first.price
+                controller.togglePlanFocus(first.price)
             } label: {
-                planLabelContents(kind: kind, price: price, quantity: quantity, unit: unit,
+                planLabelContents(kind: kind, shortKind: shortKind, price: price, quantity: quantity, unit: unit,
                                   count: group.plans.count, reached: reached, arrow: arrow,
                                   color: planColor(first.kind), edgeHint: edgeHint?.percent,
-                                  cost: planCost(for: group))
+                                  cost: planCost(for: group), isFocused: isFocused)
             }
             .buttonStyle(.plain)
             .disabled(controller.tool != .browse)
-            .help(planTooltip(group, reached: reached) + (edgeHint.map { "\n\($0.detail)" } ?? ""))
+            .help(planTooltip(group, reached: reached)
+                  + (edgeHint.map { "\n\($0.detail)" } ?? "")
+                  + "\n" + PulseLocalization.localizedString("chart.annotation.plan.focusHint"))
             .accessibilityLabel(planAccessibilityLabel(kind: kind, price: price, quantity: quantity,
                                                        unit: unit, count: group.plans.count,
                                                        cost: planCost(for: group)?.text)
@@ -556,10 +571,10 @@ struct ChartAnnotationOverlay: View {
                 guard controller.tool == .browse else { return }
                 configuration.onEditPlan(first.id)
             } label: {
-                planLabelContents(kind: kind, price: price, quantity: quantity, unit: unit,
+                planLabelContents(kind: kind, shortKind: shortKind, price: price, quantity: quantity, unit: unit,
                                   count: 1, reached: reached, arrow: arrow,
                                   color: planColor(first.kind), edgeHint: nil,
-                                  cost: planCost(for: group))
+                                  cost: planCost(for: group), isFocused: isFocused)
             }
             .buttonStyle(.plain)
             .disabled(controller.tool != .browse)
@@ -578,10 +593,10 @@ struct ChartAnnotationOverlay: View {
                     .help(plan.note ?? "")
                 }
             } label: {
-                planLabelContents(kind: kind, price: price, quantity: quantity, unit: unit,
+                planLabelContents(kind: kind, shortKind: shortKind, price: price, quantity: quantity, unit: unit,
                                   count: group.plans.count, reached: reached, arrow: arrow,
                                   color: planColor(first.kind), edgeHint: nil,
-                                  cost: planCost(for: group))
+                                  cost: planCost(for: group), isFocused: isFocused)
             }
             .menuStyle(.borderlessButton)
             .disabled(controller.tool != .browse)
@@ -593,9 +608,44 @@ struct ChartAnnotationOverlay: View {
 
     }
 
-    private func planLabelContents(kind: String, price: String, quantity: Double, unit: String?,
+    private func planLabelContents(kind: String, shortKind: String, price: String, quantity: Double, unit: String?,
                                    count: Int, reached: Bool, arrow: String, color: Color,
-                                   edgeHint: String?, cost: (text: String, tone: TradePlan.CostTone)?) -> some View {
+                                   edgeHint: String?, cost: (text: String, tone: TradePlan.CostTone)?,
+                                   isFocused: Bool) -> some View {
+        Group {
+            if configuration.usesCompactPlanLabels {
+                // The narrow tag carries the side and the price only. Size and money
+                // live in the tooltip and in the plan board under the chart, and the
+                // chip has to leave the recent bars visible.
+                HStack(spacing: 3) {
+                    if reached { Text("●").foregroundStyle(.green) }
+                    Text("\(arrow)\(shortKind) \(price)").lineLimit(1).minimumScaleFactor(0.8)
+                    if count > 1 { Text("×\(count)").foregroundStyle(.secondary) }
+                }
+                .font(.system(size: 9, weight: .semibold, design: .rounded).monospacedDigit())
+                .padding(.horizontal, 4)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(color.opacity(0.8), lineWidth: 0.8)
+                    .overlay(alignment: .center) {
+                        if isFocused {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(color.opacity(0.15))
+                                .allowsHitTesting(false)
+                        }
+                    })
+            } else {
+                richPlanLabelContents(kind: kind, price: price, quantity: quantity, unit: unit,
+                                      count: count, reached: reached, arrow: arrow, color: color,
+                                      edgeHint: edgeHint, cost: cost, isFocused: isFocused)
+            }
+        }
+    }
+
+    private func richPlanLabelContents(kind: String, price: String, quantity: Double, unit: String?,
+                                       count: Int, reached: Bool, arrow: String, color: Color,
+                                       edgeHint: String?, cost: (text: String, tone: TradePlan.CostTone)?,
+                                       isFocused: Bool) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 3) {
                 if reached { Text("●").foregroundStyle(.green) }
@@ -632,7 +682,14 @@ struct ChartAnnotationOverlay: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity,
                alignment: cost == nil ? .center : .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
-        .overlay(RoundedRectangle(cornerRadius: 4).stroke(color.opacity(0.8), lineWidth: 0.8))
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(color.opacity(0.8), lineWidth: 0.8)
+            .overlay(alignment: .center) {
+                if isFocused {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(color.opacity(0.15))
+                        .allowsHitTesting(false)
+                }
+            })
     }
 
     /// Amber rather than red: on a chart already painted red and green for

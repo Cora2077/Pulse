@@ -32,11 +32,16 @@ struct DetailView: View {
     /// page state, and an account switch can replace the store's ledger while it
     /// is open.
     @State private var frozenAccount: BrokerageAccountID?
+    /// Plan lines are the only annotation this page reads. The popover never
+    /// hosts the host's tools, so the controller stays in read-only browse mode.
+    @State private var annotationController = ChartAnnotationController()
 
     init(symbol: SymbolID, route: Binding<PopoverRoute>, initialPeriod: CandlePeriod = .minute1) {
         self.symbol = symbol
         _route = route
         _period = State(initialValue: initialPeriod)
+        // Read-only browse: plan lines show, user drawings never enter the popover.
+        annotationController.showsDrawings = false
     }
 
     /// Non-nil only when the store still holds the ledger this draft came from.
@@ -954,6 +959,63 @@ struct DetailView: View {
         }
     }
 
+    // MARK: - Chart annotations (read-only browse)
+
+    /// The popover shows plan lines only. It is a glance surface, not an editor:
+    /// the controller stays on `.browse`, `showsDrawings` is off from `init`, and
+    /// every drawing callback is a no-op. Plan edits route out to the plan
+    /// editor, which owns the real mutation.
+    private var chartAnnotations: ChartAnnotationConfiguration {
+        ChartAnnotationConfiguration(
+            controller: annotationController,
+            drawings: [],
+            plans: BrokerageBoardReader.displayPlans(store: appState.watchlist, symbol: symbol).map(\.chartPlan),
+            currentPrice: annotationReferencePrice,
+            scope: chartDrawingScope,
+            currencyCode: currencyCode,
+            quantityUnit: symbol.cryptoPair?.baseAsset ?? PulseLocalization.localizedString("trade.unit.shares"),
+            planColor: { PlanSideStyle.color(for: $0) },
+            usesCompactPlanLabels: true,
+            onUpsert: { _ in },
+            onDelete: { _ in },
+            onEditDrawing: { _ in },
+            onEditPlan: { id in
+                guard let entry = BrokerageBoardReader.displayPlans(store: appState.watchlist, symbol: symbol)
+                    .first(where: { $0.id == id }) else { return }
+                openPlanEditor(entry.plan.id)
+            }
+        )
+    }
+
+    /// The same reference the main window uses: a percentage or ladder readout is
+    /// only honest against a finite, positive price.
+    private var annotationReferencePrice: Double? {
+        if let price = quote?.price, price.isFinite, price > 0 { return price }
+        return nil
+    }
+
+    private var chartDrawingScope: ChartDrawingScope {
+        if period == .minute1 {
+            return .intraday(day: intradaySessionDay ?? .distantPast)
+        }
+        return .candles(period: period)
+    }
+
+    /// Intraday annotations are keyed to the loaded chart session, normalized in
+    /// the exchange timezone — the same rule the main window applies.
+    private var intradaySessionDay: Date? {
+        guard period == .minute1,
+              let timestamp = chartCandles.last?.time ?? sourceCandles.last?.time ?? quote?.timestamp else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = symbol.market.timeZone
+        let session = IntradayTradingSession(
+            market: symbol.market,
+            referenceDate: timestamp,
+            includesExtendedHours: appState.showsExtendedHours(for: symbol)
+        )
+        return calendar.startOfDay(for: session.open)
+    }
+
     @ViewBuilder
     private var chart: some View {
         ZStack {
@@ -984,7 +1046,8 @@ struct DetailView: View {
                     market: symbol.market,
                     palette: appState.palette,
                     showsExtendedHours: appState.showsExtendedHours(for: symbol),
-                    showsPercentageAxis: true
+                    showsPercentageAxis: true,
+                    annotations: chartAnnotations
                 )
                 .transition(.opacity)
             } else {
@@ -999,7 +1062,8 @@ struct DetailView: View {
                         ? appState.watchlist.transactionsForDisplay(symbol)
                         : [],
                     currencyCode: currencyCode,
-                    viewport: candleViewport
+                    viewport: candleViewport,
+                    annotations: chartAnnotations
                 )
                     .transition(.opacity)
             }
