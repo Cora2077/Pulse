@@ -37,7 +37,7 @@
 
 虚构复现：已完成计划被重新视为可补录；再补录后，目标账本数量从 **10 变成 20**。这是本地持仓记录重复，并非执行了第二次券商交易。
 
-证据入口：`WatchlistStore.assignBrokerageRecords`、`WatchlistStore.transactionsForPlan`、`TradePlanExecution.sourceAccountID`、`TradePlanEntry.canBackfillFill`。迁移前后进度的实际输出保存在 [基线验证日志](/Users/cora/Projects/Pulse/audit/ownership-2026-10-12/baseline-validation.log)。
+证据入口：`WatchlistStore.assignBrokerageRecords`、`WatchlistStore.transactionsForPlan`、`TradePlanExecution.sourceAccountID`、`TradePlanEntry.canBackfillFill`。迁移前后进度的实际输出保存在 [基线验证日志](../../audit/ownership-2026-10-12/baseline-validation.log)。
 
 建议：把归类作为整个快照的原子操作。部分迁移冻结迁出前的计划来源；整体迁移更新所有账本中的相关引用，按标的、计划 ID、原来源账户精确匹配，不能仅按 UUID 改全部计划。
 
@@ -110,7 +110,7 @@
 
 建议保留经过验证的成本算法和同步骨架，集中归属规则与归类事务，通过统一投影将计划执行意图与来源身份分开。“未归属”应收敛为待确认历史状态，而不是默认新业务账户。
 
-具体开发设计和验收标准见 [重构设计](/Users/cora/Projects/Pulse/OWNERSHIP-REFACTOR-DESIGN.md)。
+具体开发设计和验收标准见 [重构设计](../design/ownership-refactor.md)。
 
 ## 验证范围与边界
 
@@ -118,7 +118,7 @@
 - 另外运行七个隔离诊断复现，全部观察到预期的基线行为。**这些诊断“通过”表示缺陷得到复现，不是业务逻辑正确。**
 - 源码覆盖账户模型、Store 写入与归类、计划成交、份额归集、账户总览与预算、成交展示、编辑保护、MCP、同步、完整备份及单账户归档。
 - 没有搬移或补录真实成交，没有录入真实现金，没有执行券商交易；没有进行两台 Mac 的现场同步验收。
-- [基线诊断代码](/Users/cora/Projects/Pulse/audit/ownership-2026-10-12/OwnershipAuditProbes.swift) 是审计证据，不属于持续回归测试目标；重构完成后应使用断言正确行为的新回归测试。
+- [基线诊断代码](../../audit/ownership-2026-10-12/OwnershipAuditProbes.swift) 是审计证据，不属于持续回归测试目标；重构完成后应使用断言正确行为的新回归测试。
 
 ## 重构交付状态
 
@@ -130,7 +130,7 @@
 
 完整 Core 55 项 XCTest 与 915 项 Swift Testing / 85 套件通过，共 970 项测试。原生计划 112 项检查通过（包含真实保存按钮跨账户买入、卖出）；资金池和账户总览原生自测通过。全账户成交原生自测覆盖三个账户、两笔虚构成交和 15 张图；日 K 与详情确认 B 标记与跨账户成交显示。四语言 1411 个键一致，差异空白校验通过。
 
-已更新 `/Users/cora/Applications/FFF.app`；签名验证通过，安装二进制与验收构建一致，使用与旧日常应用相同的稳定签名要求。旧应用保留为本地恢复备份。用户追加要求在更新完成后提交并推送。
+已更新 `~/Applications/FFF.app`；签名验证通过，安装二进制与验收构建一致，使用与旧日常应用相同的稳定签名要求。旧应用保留为本地恢复备份。用户追加要求在更新完成后提交并推送。
 
 安装后实际界面确认原问题标的的已成交买入显示实际成交账户，日 K 对应的 B 标记可见；没有为验收修改真实成交。安装包原生计划、账户总览及资金池隔离自测均通过。
 

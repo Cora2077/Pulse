@@ -14,7 +14,7 @@
 
 ## 当前进展：图表工具首版（2026-09-30）
 
-本节为最新状态，详细设计和使用说明见 `CHART-TOOLS-DESIGN.md`。下方保留此前开发记录。
+本节为最新状态，详细设计和使用说明见 [图表工具设计](../design/chart-tools.md)。下方保留此前开发记录。
 
 - 已实现主窗口水平线、趋势线、临时区间测量；点击创建、拖动调整、双击标签精确编辑、右键锁定/删除、Esc 取消、会话级撤销/重做。
 - 买卖计划直接投影到分时及各周期 K 线；默认显示进行中计划，可显示历史。支持同价分组、相邻标签错位、越界提示、适配计划、标签打开现有计划编辑页并返回行情；不会自动记录成交。
@@ -207,7 +207,7 @@
 ```bash
 cd Packages/PulseCore && swift test --disable-sandbox -Xswiftc -disable-sandbox
 
-cd /Users/cora/Projects/Pulse
+cd "$REPO_ROOT"
 ~/.local/bin/xcodegen generate
 xcodebuild -project Pulse.xcodeproj -scheme PulseMac -configuration Debug \
   -derivedDataPath build/DerivedData TELEMETRYDECK_APP_ID= \
@@ -261,7 +261,7 @@ xcodebuild -project Pulse.xcodeproj -scheme PulseMac -configuration Debug \
 
 ```bash
 # 基础命令（Codex 环境直接可用）
-cd /Users/cora/Projects/Pulse
+cd "$REPO_ROOT"
 ~/.local/bin/xcodegen generate
 xcodebuild -project Pulse.xcodeproj -scheme PulseMac -configuration Debug \
   -derivedDataPath build/DerivedData TELEMETRYDECK_APP_ID= \
