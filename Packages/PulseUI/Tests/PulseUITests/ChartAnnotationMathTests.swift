@@ -171,6 +171,44 @@ struct ChartAnnotationMathTests {
         #expect(outside.end == CGPoint(x: 60, y: -30))
     }
 
+    @Test("the compact plan tag keeps its floor, its ceiling and its height")
+    func compactPlanLabelGeometry() {
+        let floor = ChartAnnotationMath.planLabelSize(plotWidth: 220, compact: true, richHeight: 30)
+        #expect(floor.width == 80)
+        #expect(floor.height == 15)
+
+        let ceiling = ChartAnnotationMath.planLabelSize(plotWidth: 800, compact: true, richHeight: 30)
+        #expect(ceiling.width == 104)
+
+        // Between the two bounds the width follows the plot, not a step.
+        let between = ChartAnnotationMath.planLabelSize(plotWidth: 280, compact: true, richHeight: 30)
+        #expect(abs(between.width - 95.2) < 0.0001)
+    }
+
+    @Test("the compact plan tag stays wholly inside the plot at every width")
+    func compactPlanLabelStaysInsideThePlot() {
+        for plotWidth in [240.0, 340.0, 800.0] {
+            let plot = CGRect(x: 0, y: 0, width: plotWidth, height: 200)
+            let size = ChartAnnotationMath.planLabelSize(plotWidth: plotWidth, compact: true, richHeight: 30)
+            let centerX = ChartAnnotationMath.planLabelCenterX(plot: plot, labelSize: size, compact: true)
+            #expect(centerX + size.width / 2 <= plot.maxX)
+            #expect(centerX - size.width / 2 >= plot.minX)
+        }
+    }
+
+    @Test("the rich plan tag keeps the width, height and anchor it has always had")
+    func richPlanLabelGeometry() {
+        let size = ChartAnnotationMath.planLabelSize(plotWidth: 300, compact: false, richHeight: 30)
+        #expect(size.width == 108)
+        // The height is the caller's, so the cost line is what decides it.
+        #expect(size.height == 30)
+        #expect(ChartAnnotationMath.planLabelSize(plotWidth: 300, compact: false, richHeight: 19).height == 19)
+
+        let plot = CGRect(x: 0, y: 0, width: 300, height: 200)
+        let centerX = ChartAnnotationMath.planLabelCenterX(plot: plot, labelSize: size, compact: false)
+        #expect(centerX == plot.maxX - 54)
+    }
+
     private func planGroup(price: Double, id: UUID) -> PlanGroup {
         let plan = TradePlan(id: id, kind: .buy, price: price, quantity: 10)
         return PlanGroup(key: PlanGroupKey(kind: .buy, price: price), plans: [plan])

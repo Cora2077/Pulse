@@ -273,6 +273,9 @@ struct MainInstrumentView: View {
         GeometryReader { geometry in
             let tabHeight = min(245, max(200, geometry.size.height * 0.31))
             let chartHeight = max(240, geometry.size.height - 216 - tabHeight)
+            // Resolved once for the whole body: the rail's visibility, its header
+            // count, and its rows all read the same list.
+            let railEntries = planRailEntries
 
             VStack(spacing: 0) {
                 quoteHeader
@@ -299,9 +302,9 @@ struct MainInstrumentView: View {
                             .frame(height: tabHeight)
                     }
                     .frame(maxWidth: .infinity)
-                    if showsPlanRail(width: geometry.size.width) {
+                    if showsPlanRail(width: geometry.size.width, entries: railEntries) {
                         Divider().opacity(0.45)
-                        planRail
+                        planRail(railEntries)
                             .frame(width: 328)
                     }
                 }
@@ -1279,49 +1282,35 @@ struct MainInstrumentView: View {
     /// The plans the rail keeps in view: everything still waiting on its price
     /// condition, in the order that answers "what needs me now".
     ///
-    /// Only live plans belong here. A filled, abandoned, or stopped plan is a
-    /// record, not a pending decision, and the rail exists to keep pending
-    /// decisions in sight while the reader is looking at something else.
-    ///
-    /// With a usable quote the order is reached-first, then nearest to the
-    /// price, because those are the rows a reader can act on. Distance is
-    /// absolute so a buy below the market and a sell above it are compared by
-    /// how far away they are rather than by which side they sit on. Without a
-    /// current quote there is no honest distance to sort by, so the rail falls
-    /// back to recency instead of inventing one. Ties break by id so the order
-    /// is stable across re-renders.
+    /// The rule itself lives in `PlanRailOrdering` so the ordering and its
+    /// tiebreaks can be asserted without rendering the window; this only resolves
+    /// the two things the rule cannot see for itself — which plans the board
+    /// holds, and whether the live quote is trustworthy enough to sort by.
     private var planRailEntries: [TradePlanEntry] {
-        let waiting = BrokerageBoardReader.displayPlans(store: appState.watchlist, symbol: symbol)
-            .filter { $0.displayState == .waiting }
-        guard let quote, TradingQuoteHealth.isCurrent(quote) else {
-            return waiting.sorted {
-                if $0.plan.updatedAt != $1.plan.updatedAt { return $0.plan.updatedAt > $1.plan.updatedAt }
-                return $0.plan.id.uuidString < $1.plan.id.uuidString
-            }
-        }
-        return waiting.sorted { lhs, rhs in
-            let lhsReached = lhs.plan.isReached(at: quote.price)
-            let rhsReached = rhs.plan.isReached(at: quote.price)
-            if lhsReached != rhsReached { return lhsReached }
-            let lhsGap = abs(lhs.plan.price - quote.price)
-            let rhsGap = abs(rhs.plan.price - quote.price)
-            if lhsGap != rhsGap { return lhsGap < rhsGap }
-            if lhs.plan.updatedAt != rhs.plan.updatedAt { return lhs.plan.updatedAt > rhs.plan.updatedAt }
-            return lhs.plan.id.uuidString < rhs.plan.id.uuidString
-        }
+        PlanRailOrdering.sortedWaiting(
+            BrokerageBoardReader.displayPlans(store: appState.watchlist, symbol: symbol),
+            currentPrice: quote?.price,
+            quoteIsCurrent: quote.map { TradingQuoteHealth.isCurrent($0) } ?? false
+        )
     }
 
     /// The rail is a wide-window companion to the tab area, so it only appears
     /// when the dashboard can afford the 328pt column without squeezing the
     /// chart and tabs. It also steps aside inside the plans tab, where the full
     /// grouped list — the thing the rail is a shortcut to — is already showing.
-    private func showsPlanRail(width: CGFloat) -> Bool {
-        width >= 1120 && selectedTab != .plans && !planRailEntries.isEmpty
+    ///
+    /// The entries arrive as an argument rather than being read here: one body
+    /// evaluation asks this question, counts the header, and fills the list, and
+    /// every read of `planRailEntries` re-filters and re-sorts the whole board.
+    private func showsPlanRail(width: CGFloat, entries: [TradePlanEntry]) -> Bool {
+        PlanRailOrdering.showsRail(width: width,
+                                   plansTabActive: selectedTab == .plans,
+                                   hasWaitingPlans: !entries.isEmpty)
     }
 
-    private var planRailHeader: some View {
+    private func planRailHeader(_ entries: [TradePlanEntry]) -> some View {
         HStack(spacing: 8) {
-            Text("\(PulseLocalization.localizedString("detail.section.plan")) · \(planRailEntries.count)")
+            Text("\(PulseLocalization.localizedString("detail.section.plan")) · \(entries.count)")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
@@ -1350,13 +1339,13 @@ struct MainInstrumentView: View {
         .padding(.horizontal, 12)
     }
 
-    private var planRail: some View {
+    private func planRail(_ entries: [TradePlanEntry]) -> some View {
         VStack(spacing: 0) {
-            planRailHeader
+            planRailHeader(entries)
                 .frame(height: 34)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(planRailEntries) { entry in
+                    ForEach(entries) { entry in
                         planRow(entry).id(entry)
                     }
                 }

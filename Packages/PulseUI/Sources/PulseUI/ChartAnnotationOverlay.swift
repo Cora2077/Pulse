@@ -466,13 +466,16 @@ struct ChartAnnotationOverlay: View {
     /// the axis gutter is only as wide as the price readout, so moving it there would cost the
     /// size and the amount. Staying readable means the placement pass has to step the tag clear
     /// of the candles underneath it instead.
+    ///
+    /// The formula itself lives in `ChartAnnotationMath` so the widths and the containment it
+    /// promises can be asserted without a rendered chart; this only supplies the live inputs,
+    /// including the rich tag's own height, which is the one part that depends on the data.
     private var planLabelSize: CGSize {
-        if configuration.usesCompactPlanLabels {
-            // The chip must hold "● 买 110.00"-class text near full size: below
-            // ~66pt the monospaced price truncates instead of shrinking.
-            return CGSize(width: min(max(coordinates.plot.width * 0.24, 66), 84), height: 15)
-        }
-        return CGSize(width: min(max(coordinates.plot.width * 0.36, 74), 128), height: planLabelHeight)
+        ChartAnnotationMath.planLabelSize(
+            plotWidth: coordinates.plot.width,
+            compact: configuration.usesCompactPlanLabels,
+            richHeight: planLabelHeight
+        )
     }
 
     /// The tag grows by a second line only when there is money to put on it.
@@ -492,12 +495,15 @@ struct ChartAnnotationOverlay: View {
         visiblePlanGroups.contains { planCost(for: $0) != nil }
     }
 
+    /// Where the tag's centre sits, which is what keeps it a tag *inside* the plot rather than a
+    /// callout hanging off the edge. The rule lives in `ChartAnnotationMath` beside the size it
+    /// depends on, so the compact branch's containment is testable.
     private var planLabelCenterX: CGFloat {
-        if configuration.usesCompactPlanLabels {
-            // Kept fully inside the pane: the clip would otherwise eat the price.
-            return coordinates.plot.maxX - planLabelSize.width / 2 - 2
-        }
-        return coordinates.plot.maxX - min(max(coordinates.plot.width * 0.18, 42), 65)
+        ChartAnnotationMath.planLabelCenterX(
+            plot: coordinates.plot,
+            labelSize: planLabelSize,
+            compact: configuration.usesCompactPlanLabels
+        )
     }
 
     private var planLayerClip: CGRect { coordinates.pricePane }
@@ -1100,6 +1106,33 @@ enum ChartAnnotationMath {
             return (first, second)
         }
         return (start, end)
+    }
+
+    /// The plan tag's box for the plot it is drawn in.
+    ///
+    /// Compact keeps the chip shorter and narrower: it must hold "● SELL 61000.00"-class
+    /// text near full size — the label matrix showed five-digit crypto prices truncating
+    /// even at a 0.28 share of a narrow popover plot, so the share is 0.34 with an 80pt
+    /// floor and a 104pt cap. The rich tag is taller whenever `richHeight` carries the
+    /// second line, so the caller keeps supplying that one input rather than this guessing
+    /// from a price it cannot see.
+    static func planLabelSize(plotWidth: CGFloat, compact: Bool, richHeight: CGFloat) -> CGSize {
+        if compact {
+            return CGSize(width: min(max(plotWidth * 0.34, 80), 104), height: 15)
+        }
+        return CGSize(width: min(max(plotWidth * 0.36, 74), 128), height: richHeight)
+    }
+
+    /// The x the plan tag's centre is positioned at.
+    ///
+    /// A compact chip is kept fully inside the pane — the clip would otherwise eat the price —
+    /// so its centre is derived from its own width. The rich tag is wide enough that it reads
+    /// better anchored at a share of the plot, which lets it overhang when the plot is narrow.
+    static func planLabelCenterX(plot: CGRect, labelSize: CGSize, compact: Bool) -> CGFloat {
+        if compact {
+            return plot.maxX - labelSize.width / 2 - 2
+        }
+        return plot.maxX - min(max(plot.width * 0.18, 42), 65)
     }
 
     static func pricePane(plot: CGRect, reservesVolume: Bool, volumeFraction: CGFloat) -> CGRect {

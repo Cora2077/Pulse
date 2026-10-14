@@ -69,9 +69,6 @@ public struct CandlestickChartView: View {
         let range = viewport.visibleRange(dataCount: candles.count)
         let xDomain = (range.lowerBound - 1)...max(range.upperBound, 1)
         let visible = candles[safeRange: range]
-        let _ = (viewport.wheelZoomAllowed = annotations.map {
-            $0.controller.tool == .browse && !$0.controller.isInteracting
-        } ?? true)
         let tradeMarkers = period == .day
             ? CandleTradeMarker.dailyMarkers(
                 candles: candles,
@@ -253,8 +250,24 @@ public struct CandlestickChartView: View {
         }
         .onChange(of: annotations?.scope) { _, _ in annotations?.controller.resetTransientState() }
         .onChange(of: candles) { _, _ in viewport.hoveredIndex = nil }
-        .onAppear { viewport.startMonitoring() }
+        // The viewport's own copy of this rule, kept in step from the lifecycle
+        // rather than written during body evaluation: the wheel decides whether
+        // it may zoom without asking the chart, so the two must not drift.
+        .onAppear {
+            viewport.wheelZoomAllowed = wheelZoomAllowed
+            viewport.startMonitoring()
+        }
+        .onChange(of: wheelZoomAllowed) { _, new in viewport.wheelZoomAllowed = new }
         .onDisappear { viewport.stopMonitoring() }
+    }
+
+    /// Whether the scroll wheel may zoom this chart.
+    ///
+    /// Any active drawing tool takes the wheel for its own work, and so does a
+    /// pointer interaction in progress, so zooming steps aside for both. A chart
+    /// with no annotations at all has nothing to yield to.
+    private var wheelZoomAllowed: Bool {
+        annotations.map { $0.controller.tool == .browse && !$0.controller.isInteracting } ?? true
     }
 
     /// Mouse drag pans like grabbing the chart: content follows the cursor.
