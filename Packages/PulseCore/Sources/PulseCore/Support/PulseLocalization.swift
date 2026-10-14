@@ -1,5 +1,9 @@
 import Foundation
 
+/// Retained only to decode older settings snapshots and historical reports:
+/// they store the case's `rawValue`, so removing the enum would make those
+/// payloads fail to decode. The interface language itself is fixed to
+/// Simplified Chinese and no longer consults this preference.
 public enum PulseLanguagePreference: String, Codable, CaseIterable, Sendable {
     case system
     case english
@@ -10,7 +14,7 @@ public enum PulseLanguagePreference: String, Codable, CaseIterable, Sendable {
     public var localeIdentifier: String {
         switch self {
         case .system:
-            PulseLocalization.systemLanguageIdentifier()
+            "zh-Hans"
         case .english:
             "en"
         case .simplifiedChinese:
@@ -39,39 +43,19 @@ public enum PulseLanguagePreference: String, Codable, CaseIterable, Sendable {
 }
 
 public enum PulseLocalization {
-    public static let languagePreferenceKey = "pulse.language.v1"
-
+    /// The app ships one interface language, so every resolution point below is
+    /// a constant. The former `--preview-language` channel and the
+    /// `UserDefaults` preference read are gone with the other language tables.
     public static var currentPreference: PulseLanguagePreference {
-        #if DEBUG
-        // Offline native previews can exercise a shipped language without
-        // changing the user's daily language preference.
-        if CommandLine.arguments.contains("--main-window-demo"),
-           let index = CommandLine.arguments.firstIndex(of: "--preview-language"),
-           CommandLine.arguments.indices.contains(index + 1),
-           let preference = PulseLanguagePreference(rawValue: CommandLine.arguments[index + 1]) {
-            return preference
-        }
-        #endif
-        let rawValue = UserDefaults.standard.string(forKey: languagePreferenceKey)
-        return rawValue.flatMap(PulseLanguagePreference.init(rawValue:)) ?? .system
+        .simplifiedChinese
     }
 
     public static var currentLanguageIdentifier: String {
-        currentPreference.localeIdentifier
+        "zh-Hans"
     }
 
     public static var currentLocale: Locale {
-        Locale(identifier: currentLanguageIdentifier)
-    }
-
-    public static func systemLanguageIdentifier(
-        preferredLanguages: [String] = Locale.preferredLanguages
-    ) -> String {
-        guard let preferred = preferredLanguages.first else { return "en" }
-        if preferred.hasPrefix("zh") { return "zh-Hans" }
-        if preferred.hasPrefix("ja") { return "ja" }
-        if preferred.hasPrefix("ko") { return "ko" }
-        return "en"
+        Locale(identifier: "zh-Hans")
     }
 
     public static func localizedString(_ key: String, _ arguments: CVarArg...) -> String {

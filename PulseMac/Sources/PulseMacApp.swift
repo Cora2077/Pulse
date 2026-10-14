@@ -203,14 +203,21 @@ struct MenuBarLabel: View {
     }
 
     var body: some View {
-        Group {
-            // Icon only by default; price text appears only after the user enables "show quotes in menu bar" in settings
-            if !appState.settings.showPriceInMenuBar || appState.watchlist.isEmpty {
-                Image(nsImage: templateIcon)
-                    .accessibilityLabel(AppBrand.name)
-            } else {
-                Text(appState.menuBarText)
-                    .font(.system(size: 12).monospacedDigit())
+        // A timer drives the group so a session boundary (the 15:00 A-share close,
+        // say) flips the label even when no quote push arrives to redraw it.
+        TimelineView(.periodic(from: .now, by: 30)) { _ in
+            Group {
+                // Icon only by default; price text appears only after the user enables
+                // "show quotes in menu bar" in settings, and the trading-hours gate
+                // takes it away again outside the displayed market's session.
+                if !appState.settings.showPriceInMenuBar || appState.watchlist.isEmpty
+                    || (appState.settings.menuBarTradingHoursOnly && !appState.menuBarQuoteInSession) {
+                    Image(nsImage: templateIcon)
+                        .accessibilityLabel(AppBrand.name)
+                } else {
+                    Text(appState.menuBarText)
+                        .font(.system(size: 12).monospacedDigit())
+                }
             }
         }
         // The label is the one view alive for the app's whole lifetime, which makes it

@@ -122,3 +122,60 @@
 - PulseUI 单测（Swift Testing）：toggle 设置/同价清除/异价切换 + clearPlanFocus。
 - 编译 + `--plan-status-only` 渲染：既有 3 张悬浮面板图自动呈现紧凑标签，逐张人工复核。
 - 改动面：PulseUI 两源文件 + PulseUI Tests + DetailView（1 行）+ 4 个 strings（各 1 键）。
+
+---
+
+# 第四轮：卫生迭代（2026-10-14，纯重构零行为变化）
+
+- 标签宽度/收纳公式从 overlay 下沉 `ChartAnnotationMath.planLabelSize/planLabelCenterX`，
+  配边界与图区 containment 单测（上轮的截断缺陷转为永不回归的断言）。
+- 计划栏排序与可见谓词下沉 `PulseCore/Models/PlanRailOrdering.swift` 纯函数，
+  8 个单测覆盖全部分支（waiting 过滤、无报价回退、reached 优先、距离/时间/id 平局、三条件边界）。
+- rail 条目在 `dashboard` 一次求值、逐级传递（showsPlanRail/header/rows 不再各自重算 3 遍）。
+- `CandlestickChartView` body 内的 `wheelZoomAllowed` 副作用挪到 onAppear/onChange（取值逻辑逐字不变）。
+- 验证：PulseUI 44、PulseCore 951 全绿；编译 + 双自测通过；渲染复核与上轮一致
+  （附带收益：第二轮的蜡烛播种让主窗口自测渲染首次呈现真实图表，不再是心电图占位符）。
+
+---
+
+# 第五轮：渲染基建 + 菜单栏时段开关（2026-10-14）
+
+## 渲染基建（A1/A4/B2/C2）
+
+- 多语言×数据形态矩阵：`--plan-label-matrix-only --preview-language <lang>` 分支，
+  HK 395.80 / crypto 63400.50 两个 fixture × 4 语言 = 8 张渲染。**首轮即立功**：
+  抓到 crypto 五位价格胶囊截断（「BUY 6580…」），宽度公式从 0.24/[66,84] 修正为
+  0.34/[80,104] 后全矩阵通过——这类问题从此不用等人肉眼发现。
+- 渲染内容锚点 `RenderAnchorChecks.swift`：像素级断言「虚线存在」（实测 33 行含虚线段，
+  阈值 2）与「胶囊不溢出图区」（右轴槽零饱和色），只挂在 --plan-status-only 路径。
+- `MarketStore.candleCache` 加 48 键上限（fetchedAt 最旧逐出，纯成本取舍）+ 3 个测试。
+- ~~`scripts/l10n-lint.sh`：4 语言键集 diff + plutil -lint，锁住 1415 键零漂移。~~
+  已被第六轮单语言化删除（只剩 zh-Hans，无跨语言漂移可测）。
+
+## 菜单栏（两项用户反馈）
+
+- 新增设置「仅在交易时段显示」（默认关）：`TradingCalendar.isInContinuousSession`
+  = regular + lunchBreak（A股 9:15–15:00 含午休，美股不含盘前盘后，crypto 常开）；
+  轮换模式组内任一市场在时段内即显示；`MenuBarLabel` 包 30s TimelineView 保证时段边界
+  无推送也准点翻转；非时段内只显示图标。设置持久化自测覆盖新键。
+- 菜单栏涨跌幅从「▼1.36%」箭头式改为与行情头部一致的有符号格式（-1.36%/+0.98%）。
+
+---
+
+# 第六轮：单语言化（方案 B）与韩文事件复盘（2026-10-14）
+
+## 事故复盘：界面为何一度变韩文
+
+- 矩阵渲染用 `--preview-language korean` 驱动时，DEBUG 预览通道让 `PulseLocalization.currentPreference`
+  返回 ko；AppSettings 恢复逻辑把 languagePreference 镜像写进 `UserDefaults.standard` ——
+  沙盒进程的真实容器偏好域，隔离套件在语言这一项上有洞。装回日常版后读到的就是 ko。
+- 应急处理：直接把容器偏好与设置快照双双锁定为 simplifiedChinese，重启即恢复。
+
+## 决策：只留简体中文（自用软件，不要 4 语言矩阵）
+
+- 删除 en/ja/ko 三个 lproj、设置里的语言选择器、`--preview-language` 通道、
+  `scripts/l10n-lint.sh`、`LocalizationTableTests`；`PulseLanguagePreference` 枚举保留仅作旧快照解码。
+  `Project.yml` 以目录 glob 收集资源，三个 lproj 删除后 XcodeGen 自动只打包 zh-Hans。
+- `PulseLocalization` 解析点固定 zh-Hans；1535 处调用点与 zh-Hans 键表零改动。
+- 矩阵渲染保留数据形态维度（HK/crypto），文件名去掉语言后缀。
+- 本案结论：多语言的所有长期成本（4 文件同步、预览通道、漂移 lint、镜像写）一次性归零。

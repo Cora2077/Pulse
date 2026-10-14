@@ -24,6 +24,15 @@ public final class MarketStore {
     @ObservationIgnored private var candleCache: [CandleCacheKey: (candles: [Candle], fetchedAt: Date)] = [:]
     @ObservationIgnored private var profileCache: [SymbolID: (profile: SecurityProfile?, fetchedAt: Date)] = [:]
 
+    /// Upper bound on distinct candle-cache keys. This is a menu-bar app that
+    /// runs for days while the user pages through instruments and periods, so an
+    /// unbounded dictionary would grow for the whole session. The figure is a
+    /// deliberate over-estimate: nine periods times a realistic focused set of
+    /// symbols (a few watchlist rows plus whatever detail pages were opened).
+    /// Eviction only costs a re-fetch; it can never change a rendered result, so
+    /// the cap is free to be approximate.
+    static let candleCacheCapacity = 48
+
     public init() {}
 
     public func quote(for symbol: SymbolID) -> Quote? { quotes[symbol] }
@@ -83,6 +92,21 @@ public final class MarketStore {
 
     public func cache(candles: [Candle], for key: CandleCacheKey) {
         candleCache[key] = (candles, .now)
+        evictOldestCandlesIfNeeded()
+    }
+
+    /// Drops the least recently fetched entries until the cache fits its cap.
+    /// `fetchedAt` doubles as the recency stamp: every write refreshes it, so
+    /// the oldest stamp is exactly the entry a re-fetch would cost the least to
+    /// recreate. Eviction is a cost trade, never a correctness one — a miss
+    /// simply falls through to the provider.
+    private func evictOldestCandlesIfNeeded() {
+        guard candleCache.count > Self.candleCacheCapacity else { return }
+        let overflow = candleCache.count - Self.candleCacheCapacity
+        let oldest = candleCache
+            .sorted { $0.value.fetchedAt < $1.value.fetchedAt }
+            .prefix(overflow)
+        for entry in oldest { candleCache.removeValue(forKey: entry.key) }
     }
 
     // MARK: - Profile cache

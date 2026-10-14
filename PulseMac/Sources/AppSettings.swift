@@ -79,6 +79,11 @@ final class AppSettings {
     /// Show quote text (price/change) in the menu bar. Off by default: icon only — subtle and space-saving
     var showPriceInMenuBar: Bool = false { didSet { save() } }
 
+    /// Hide the menu-bar quote whenever its market sits outside its continuous
+    /// session (A-share lunch counts as open). Off by default: the quote stays
+    /// up around the clock unless the user asks for the trading-hours gate.
+    var menuBarTradingHoursOnly: Bool = false { didSet { save() } }
+
     var menuBarMode: MenuBarMode = .rotate { didSet { save() } }
     /// The symbol pinned in single mode; nil falls back to the first watchlist item
     var primarySymbol: SymbolID? { didSet { save() } }
@@ -97,12 +102,6 @@ final class AppSettings {
     var prioritizeOpenMarkets: Bool = true { didSet { save() } }
     /// Last resolution chosen from the intraday candlestick menu.
     var minuteCandlePeriod: CandlePeriod = .minute5 { didSet { save() } }
-    var languagePreference: PulseLanguagePreference = .system {
-        didSet {
-            UserDefaults.standard.set(languagePreference.rawValue, forKey: PulseLocalization.languagePreferenceKey)
-            save()
-        }
-    }
 
     /// Which cost the position summary reports. A display choice only: the two
     /// bases describe the same holding and agree on the total P&L.
@@ -257,12 +256,12 @@ final class AppSettings {
                 menuBarPanelHeight = storedHeight
             }
             showPriceInMenuBar = snapshot.showPriceInMenuBar ?? false
-            languagePreference = snapshot.languagePreference ?? .system
+            menuBarTradingHoursOnly = snapshot.menuBarTradingHoursOnly ?? false
+            // `snapshot.languagePreference` is deliberately ignored: the field
+            // survives only so an old snapshot still decodes, and the interface
+            // language is now fixed to Simplified Chinese.
             positionCostBasis = snapshot.positionCostBasis ?? .average
             shareAnonymousUsageData = snapshot.shareAnonymousUsageData ?? true
-            UserDefaults.standard.set(languagePreference.rawValue, forKey: PulseLocalization.languagePreferenceKey)
-        } else {
-            languagePreference = PulseLocalization.currentPreference
         }
         launchAtLogin = SMAppService.mainApp.status == .enabled
         isInitializing = false
@@ -290,6 +289,9 @@ final class AppSettings {
         var pinnedWindowTopLeft: CGPoint?
         var menuBarPanelHeight: CGFloat?
         var showPriceInMenuBar: Bool?
+        var menuBarTradingHoursOnly: Bool?
+        /// Decoded from older snapshots only; never read or rewritten. Kept so a
+        /// stored `languagePreference` key cannot fail the whole decode.
         var languagePreference: PulseLanguagePreference?
         var positionCostBasis: PositionCostBasis?
         var providerPollIntervals: [String: TimeInterval]?
@@ -313,7 +315,8 @@ final class AppSettings {
                                 pinnedWindowTopLeft: pinnedWindowTopLeft,
                                 menuBarPanelHeight: menuBarPanelHeight,
                                 showPriceInMenuBar: showPriceInMenuBar,
-                                languagePreference: languagePreference,
+                                menuBarTradingHoursOnly: menuBarTradingHoursOnly,
+                                languagePreference: nil,
                                 positionCostBasis: positionCostBasis,
                                 providerPollIntervals: providerPollIntervals,
                                 shareAnonymousUsageData: shareAnonymousUsageData)

@@ -71,14 +71,6 @@ struct SettingsView: View {
 
             Form {
                 Section {
-                    Picker(
-                        PulseLocalization.localizedString("settings.general.language"),
-                        selection: $settings.languagePreference
-                    ) {
-                        ForEach(PulseLanguagePreference.allCases, id: \.self) { preference in
-                            Text(preference.localizedDisplayName).tag(preference)
-                        }
-                    }
                     Toggle(
                         PulseLocalization.localizedString("settings.general.launchAtLogin"),
                         isOn: $settings.launchAtLogin

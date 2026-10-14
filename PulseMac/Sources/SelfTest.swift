@@ -252,22 +252,25 @@ enum SelfTest {
             let configured = AppSettings(defaults: defaults)
             configured.redUp = false
             configured.watchRowMetricMode = .changePercent
+            configured.menuBarTradingHoursOnly = true
 
             let reloaded = AppSettings(defaults: defaults)
             let passed = !reloaded.redUp && reloaded.watchRowMetricMode == .changePercent
+                && reloaded.menuBarTradingHoursOnly
             defaults.removePersistentDomain(forName: suiteName)
 
             guard passed else {
                 print(
                     "PULSE_SETTINGS_PERSISTENCE_SELFTEST failed " +
-                    "redUp=\(reloaded.redUp) metric=\(reloaded.watchRowMetricMode.rawValue)"
+                    "redUp=\(reloaded.redUp) metric=\(reloaded.watchRowMetricMode.rawValue) " +
+                    "menuBarTradingHoursOnly=\(reloaded.menuBarTradingHoursOnly)"
                 )
                 fflush(stdout)
                 exit(1)
             }
             print(
                 "PULSE_SETTINGS_PERSISTENCE_SELFTEST ok " +
-                "redUp=false metric=changePercent"
+                "redUp=false metric=changePercent menuBarTradingHoursOnly=true"
             )
             fflush(stdout)
             exit(0)
@@ -755,7 +758,6 @@ enum SelfTest {
 
         let snapshot = SupportDiagnostics.Snapshot(
             host: .menuBar,
-            languagePreference: "system",
             launchAtLogin: false,
             anonymousAnalytics: true,
             providers: [("yahoo", true), ("longbridge", false)],

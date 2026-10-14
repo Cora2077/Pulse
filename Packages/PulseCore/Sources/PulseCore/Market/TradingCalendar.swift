@@ -170,6 +170,19 @@ public enum TradingCalendar {
         }
     }
 
+    /// Whether this market is inside its continuous session right now: the
+    /// regular session plus the lunch break that interrupts it, so an A-share
+    /// midday pause still reads as "the market is on". The extended US sessions
+    /// (`preMarket`, `postMarket`, `overnight`) deliberately do not count, and
+    /// crypto never closes. This is a display question — whether a quote still
+    /// speaks for a live market — not a refresh cadence; `isActive` answers that.
+    public static func isInContinuousSession(_ market: Market, at date: Date = .now) -> Bool {
+        switch state(of: market, at: date) {
+        case .regular, .lunchBreak: true
+        case .closed, .preMarket, .postMarket, .overnight: false
+        }
+    }
+
     public static func anyActive(_ markets: some Sequence<Market>, at date: Date = .now) -> Bool {
         markets.contains { isActive($0, at: date) }
     }

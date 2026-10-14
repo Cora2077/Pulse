@@ -80,7 +80,6 @@ enum SupportDiagnostics {
     /// report itself can be exercised without an `AppState` (see the self-test).
     struct Snapshot {
         var host: PulseHost
-        var languagePreference: String
         var launchAtLogin: Bool
         var anonymousAnalytics: Bool
         var providers: [(id: String, enabled: Bool)]
@@ -99,7 +98,6 @@ enum SupportDiagnostics {
         let store = appState.watchlist
         return Snapshot(
             host: host,
-            languagePreference: settings.languagePreference.rawValue,
             launchAtLogin: settings.launchAtLogin,
             anonymousAnalytics: settings.shareAnonymousUsageData,
             providers: appState.providerDescriptors.map { ($0.id, appState.isProviderEnabled($0.id)) },
@@ -154,7 +152,6 @@ enum SupportDiagnostics {
         lines.append("")
 
         lines.append("## Settings")
-        lines.append(field("Language", snapshot.languagePreference))
         lines.append(field("Launch at login", snapshot.launchAtLogin ? "on" : "off"))
         lines.append(field("Anonymous analytics", snapshot.anonymousAnalytics ? "on" : "off"))
         lines.append("")

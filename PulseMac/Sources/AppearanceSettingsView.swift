@@ -65,12 +65,20 @@ struct AppearanceSettingsView: View {
                             }
                             .transition(contextualRowTransition)
                         }
+                        Toggle(
+                            PulseLocalization.localizedString("settings.menuBar.tradingHoursOnly"),
+                            isOn: $settings.menuBarTradingHoursOnly
+                        )
+                        .transition(contextualRowTransition)
                     }
                 } header: {
                     Text(PulseLocalization.localizedString("settings.section.menuBar"))
                 } footer: {
                     if !settings.showPriceInMenuBar {
                         Text(PulseLocalization.localizedString("settings.menuBar.iconOnlyHelp"))
+                            .transition(.opacity)
+                    } else if settings.menuBarTradingHoursOnly {
+                        Text(PulseLocalization.localizedString("settings.menuBar.tradingHoursOnlyHelp"))
                             .transition(.opacity)
                     }
                 }

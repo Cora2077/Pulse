@@ -279,6 +279,8 @@
 "settings.menuBar.rotateInterval" = "轮播间隔";
 "settings.menuBar.rotateGroup" = "轮播列表";
 "settings.menuBar.showQuote" = "在菜单栏显示行情";
+"settings.menuBar.tradingHoursOnly" = "仅在交易时段显示";
+"settings.menuBar.tradingHoursOnlyHelp" = "跟随所显示标的的市场时段：A股 9:15–15:00、港股 9:30–16:10（均含午休）；美股 9:30–16:00（不含盘前盘后）；数字货币常开。非交易时段只显示图标。";
 "settings.providers.allDisabled" = "所有数据源均已关闭，行情和搜索将不可用";
 "settings.providers.help" = "多数据源自动路由：按能力与市场选择，故障时自动降级。未来支持添加自定义数据源。";
 "settings.section.general" = "通用";

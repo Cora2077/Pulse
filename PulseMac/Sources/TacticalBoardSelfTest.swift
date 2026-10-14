@@ -54,6 +54,13 @@ enum TacticalBoardSelfTest {
             renderPlanStatuses(appState: appState, into: outputDirectory)
             return finish()
         }
+        if CommandLine.arguments.contains("--plan-label-matrix-only") {
+            guard CommandLine.arguments.contains("--main-window-demo") else {
+                report("plan-label-matrix", "isolated demo required"); return finish()
+            }
+            renderPlanLabelMatrix(appState: appState, into: outputDirectory)
+            return finish()
+        }
         if CommandLine.arguments.contains("--buy-source-only") {
             guard CommandLine.arguments.contains("--main-window-demo") else {
                 report("buy-source", "isolated demo required")
@@ -634,6 +641,28 @@ enum TacticalBoardSelfTest {
                     width: 340, height: 740, to: directory.appendingPathComponent("plans-detail-chart-day-\(suffix).png"),
                     scheme: scheme, requiresBoardBand: false)
             }
+            // Content anchors, not just "a file exists". The fixture has two
+            // in-range plan lines (110 and 102) drawn dashed, so the light day
+            // chart must contain many rows carrying several dash segments.
+            // Measured on this fixture: 33 rows with 8+ saturated runs (the dash
+            // pattern is [5,3]pt, ~10px per segment at 2x, and the lines span the
+            // plot; an independent PNG decode agreed at 35). A floor of 2 rows
+            // leaves a >16x margin against AA/geometry drift while still failing
+            // outright if the overlay disappears.
+            let dayChartURL = directory.appendingPathComponent("plans-detail-chart-day-light.png")
+            let dashRows = RenderAnchorChecks.countSaturatedDashRows(dayChartURL, minRuns: 8)
+            print("PLAN_STATUS_ANCHOR dashRows=\(dashRows)")
+            fflush(stdout)
+            expect(dashRows >= 2, "plan-status-anchor",
+                   "the day chart must draw dashed plan lines (found \(dashRows) rows with 8+ saturated runs)")
+            // The price axis in the right gutter is neutral gray. Any saturated
+            // pixel there means a plan capsule - the thing this regression is
+            // about - has spilled out of the plot area over the labels.
+            let gutterInk = RenderAnchorChecks.hasSaturatedColorInRightGutter(dayChartURL,
+                                                                             gutterFraction: 0.07,
+                                                                             bottomFraction: 0.5)
+            expect(!gutterInk, "plan-status-anchor",
+                   "plan capsules must stay inside the plot area, not over the right price axis")
             try renderInOffscreenWindow(view: PlanWorkflowDetailView(symbol: symbol, planID: completed.id, account: .financing).environment(appState),
                 width: 650, height: 600, to: directory.appendingPathComponent("plans-filled-workflow-light.png"),
                 scheme: .light, requiresBoardBand: false)
@@ -685,6 +714,68 @@ enum TacticalBoardSelfTest {
                 width: 340, height: 620, to: directory.appendingPathComponent("plans-history-after-fill.png"),
                 scheme: .light, requiresBoardBand: false)
         } catch { report("plan-status-render", error.localizedDescription) }
+    }
+
+    /// Renders the compact plan label over the two data shapes that produce the
+    /// widest text, so a truncation fix verified on one cannot silently regress
+    /// the other: HK equities form `SELL 395.80` and crypto forms
+    /// `买 63400.50`. The language dimension this matrix used to cover is gone
+    /// with the single-language move, so the file names carry only the fixture.
+    private static func renderPlanLabelMatrix(appState: AppState, into directory: URL) {
+        let store = appState.watchlist
+        store.enableBrokerageAccounts()
+        _ = appState.selectBrokerageAccount(.financing)
+        // Same isolation as `renderPlanStatuses`: this branch is reachable only
+        // with the isolated offline demo suite, and it starts from empty books.
+        for item in store.allItems {
+            for plan in item.plans { store.deleteTradePlan(plan.id, for: item.symbol) }
+            store.remove(item.symbol)
+        }
+
+        // HK equities: a 4-significant-figure price, the widest decimal form a
+        // HK$ label produces.
+        let hk = SymbolID(market: .hk, code: "MTXHK")
+        store.add(SymbolInfo(symbol: hk, name: "矩阵验证HK"))
+        let hkSell = TradePlan(kind: .sell, price: 428.50, quantity: 800)   // beyond the top of the range
+        let hkBuy = TradePlan(kind: .buy, price: 380.00, quantity: 500)     // inside the range
+        for plan in [hkSell, hkBuy] {
+            expect(store.setTradePlan(plan, for: hk), "plan-label-matrix", "HK fixture plan must save")
+        }
+        appState.market.apply(quotes: [Quote(symbol: hk, name: "矩阵验证HK", price: 395.80, previousClose: 392,
+            currencyCode: "HKD", sourceID: "fictional-label-matrix", timestamp: .now, marketState: .regular)])
+
+        // Crypto: five integer digits before the point, the widest numeric label
+        // the app can produce, plus a fractional quantity.
+        let crypto = SymbolID(cryptoBase: "MTX", quote: "USDT")
+        store.add(SymbolInfo(symbol: crypto, name: "Matrix Coin"))
+        let cryptoSell = TradePlan(kind: .sell, price: 61000.00, quantity: 0.02) // inside the range
+        let cryptoBuy = TradePlan(kind: .buy, price: 65800.00, quantity: 0.05)   // beyond the top of the range
+        for plan in [cryptoSell, cryptoBuy] {
+            expect(store.setTradePlan(plan, for: crypto), "plan-label-matrix", "crypto fixture plan must save")
+        }
+        appState.market.apply(quotes: [Quote(symbol: crypto, name: "Matrix Coin", price: 63400.50,
+            previousClose: 63000, currencyCode: "USDT", sourceID: "fictional-label-matrix",
+            timestamp: .now, marketState: .regular)])
+
+        // Plan lines only exist once the chart has candles, and both fixtures are
+        // rendered at `.day`, so that is the only period seeded.
+        appState.market.cache(candles: planStatusCandles(symbol: hk, period: .day, basePrice: 388),
+                              for: CandleCacheKey(symbol: hk, period: .day))
+        appState.market.cache(candles: planStatusCandles(symbol: crypto, period: .day, basePrice: 62_800),
+                              for: CandleCacheKey(symbol: crypto, period: .day))
+
+        let baseline = store.syncSnapshot()
+        do {
+            for (symbol, name) in [(hk, "hk"), (crypto, "crypto")] {
+                try renderInOffscreenWindow(
+                    view: DetailView(symbol: symbol, route: .constant(.detail(symbol)), initialPeriod: .day).environment(appState),
+                    width: 340, height: 740,
+                    to: directory.appendingPathComponent("plans-label-matrix-\(name).png"),
+                    scheme: .light, requiresBoardBand: false)
+            }
+            expect(store.syncSnapshot() == baseline, "plan-label-matrix",
+                   "rendering the label matrix must not write data")
+        } catch { report("plan-label-matrix-render", error.localizedDescription) }
     }
 
     /// Deterministic candles around the fixture quote so the 102 and 110 plans sit

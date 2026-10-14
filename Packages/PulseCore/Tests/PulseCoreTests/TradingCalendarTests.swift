@@ -133,3 +133,50 @@ struct ShanghaiMetalCalendarTests {
             == DateComponents(day: 20, hour: 20))
     }
 }
+
+/// The continuous session is what the menu bar gates a quote on: regular hours
+/// plus the lunch break, with the US extended sessions excluded.
+@Suite("Continuous session")
+struct ContinuousSessionTests {
+    private func at(
+        _ market: Market,
+        _ day: Int,
+        _ hour: Int,
+        _ minute: Int = 0
+    ) throws -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = market.timeZone
+        return try #require(calendar.date(
+            from: DateComponents(year: 2026, month: 8, day: day, hour: hour, minute: minute)
+        ))
+    }
+
+    // 2026-08-17 is a Monday; the week runs 17th (Mon) to 21st (Fri).
+    @Test("Shanghai counts the call auction and holds through lunch")
+    func shanghaiSession() throws {
+        #expect(!TradingCalendar.isInContinuousSession(.sh, at: try at(.sh, 17, 9, 14)))
+        #expect(TradingCalendar.isInContinuousSession(.sh, at: try at(.sh, 17, 9, 15)))
+        #expect(TradingCalendar.isInContinuousSession(.sh, at: try at(.sh, 17, 11, 45)))
+        #expect(TradingCalendar.isInContinuousSession(.sh, at: try at(.sh, 17, 12, 59)))
+        #expect(TradingCalendar.isInContinuousSession(.sh, at: try at(.sh, 17, 13)))
+        #expect(!TradingCalendar.isInContinuousSession(.sh, at: try at(.sh, 17, 15)))
+    }
+
+    @Test("A weekend has no continuous session")
+    func shanghaiWeekend() throws {
+        #expect(!TradingCalendar.isInContinuousSession(.sh, at: try at(.sh, 22, 10)))
+    }
+
+    @Test("The US gate is the regular session, not the extended ones")
+    func usSession() throws {
+        #expect(!TradingCalendar.isInContinuousSession(.us, at: try at(.us, 17, 4, 30)))
+        #expect(TradingCalendar.isInContinuousSession(.us, at: try at(.us, 17, 10, 30)))
+        #expect(!TradingCalendar.isInContinuousSession(.us, at: try at(.us, 17, 17, 30)))
+    }
+
+    @Test("Crypto never closes")
+    func cryptoSession() throws {
+        #expect(TradingCalendar.isInContinuousSession(.crypto, at: try at(.crypto, 22, 3)))
+        #expect(TradingCalendar.isInContinuousSession(.crypto, at: try at(.crypto, 23, 23, 59)))
+    }
+}

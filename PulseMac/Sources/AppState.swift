@@ -592,6 +592,26 @@ final class AppState {
         return sharedWatchlist.groups.first?.id
     }
 
+    /// The markets the menu bar quote speaks for right now: the fixed symbol in
+    /// single mode, every market in the rotation group in rotate mode. Compact
+    /// mode shows no quote and has nothing to gate.
+    private var menuBarSessionMarkets: [Market] {
+        switch settings.menuBarMode {
+        case .compact: return []
+        case .single: return menuBarItem.map { [$0.symbol.market] } ?? []
+        case .rotate:
+            return Array(Set(sharedWatchlist.items(in: menuBarRotationGroupID).map { $0.symbol.market }))
+        }
+    }
+
+    /// Whether whatever the menu bar displays sits inside its continuous session
+    /// (lunch counts as open). With no market to judge, the quote stays visible.
+    var menuBarQuoteInSession: Bool {
+        let markets = menuBarSessionMarkets
+        guard !markets.isEmpty else { return true }
+        return markets.contains { TradingCalendar.isInContinuousSession($0) }
+    }
+
     func setMenuBarRotationGroup(_ id: UUID) {
         guard sharedWatchlist.group(for: id) != nil else { return }
         settings.rotateGroupID = id
@@ -625,9 +645,7 @@ final class AppState {
         guard let quote = market.quote(for: item.symbol) else {
             return shortName(for: item)
         }
-        let arrow = PriceFormatter.arrow(quote.change)
-        let percent = abs(quote.changePercent).formatted(.number.precision(.fractionLength(2)))
-        return "\(shortName(for: item)) \(PriceFormatter.price(quote.price, market: item.symbol.market)) \(arrow)\(percent)%"
+        return "\(shortName(for: item)) \(PriceFormatter.price(quote.price, market: item.symbol.market)) \(PriceFormatter.percent(quote.changePercent))"
     }
 
     /// One presentation name per instrument, independent of whichever provider
