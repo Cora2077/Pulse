@@ -115,6 +115,8 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
     public var resolvedDisplayName: String {
         if let index = symbol.indexID { return index.displayName }
         if let metal = symbol.metalID { return metal.displayName }
+        if let board = symbol.sectorIndex { return board.displayName }
+        if let chineseName = KoreanSecurityCatalog.displayName(for: symbol) { return chineseName }
         let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? symbol.displayCode : displayName
     }
@@ -139,6 +141,11 @@ public struct WatchItem: Codable, Sendable, Hashable, Identifiable {
         if symbol.indexID != nil { return .index }
         if symbol.metalID != nil { return .commodity }
         if symbol.cryptoPair != nil { return .crypto }
+        // A board index is an index on both counts: it is a calculated
+        // benchmark, and its "price" is a weighted level rather than something
+        // anyone can hold, so it is excluded from cost-basis math the same way
+        // a market index is.
+        if symbol.sectorIndex != nil { return .index }
         return instrumentType
     }
 

@@ -14,6 +14,10 @@ public enum IntradaySessionKind: Sendable, Hashable {
 /// regular session — the layout mainstream brokerage apps use. The regular session keeps
 /// its 0...totalMinutes coordinates, so wings extend the axis outward instead of shifting it.
 public struct IntradayTradingSession: Sendable, Hashable {
+    /// The exchange this session belongs to. Needed by `projected(to:)` to know
+    /// which time zone the boundaries were originally read in; without it a
+    /// projected session cannot tell 09:00-KST from 09:00-CST.
+    public let market: Market
     public let open: Date
     public let morningEnd: Date?
     public let afternoonStart: Date?
@@ -23,6 +27,7 @@ public struct IntradayTradingSession: Sendable, Hashable {
     public let postClose: Date?
 
     public init(market: Market, referenceDate: Date, includesExtendedHours: Bool = false) {
+        self.market = market
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = market.timeZone
         let day = calendar.startOfDay(for: referenceDate)
@@ -109,6 +114,153 @@ public struct IntradayTradingSession: Sendable, Hashable {
 
     public var morningMinutes: Double {
         (morningEnd ?? close).timeIntervalSince(open) / 60
+    }
+
+    /// Constructs a session from already-resolved boundaries. Used by
+    /// `projected(to:)`, which has to hand back exact wall-clock dates rather than
+    /// re-derive them from a market's fixed hours. Not public: every other caller
+    /// should name a market and a date, which is the only way the boundaries can
+    /// be known to be right.
+    init(
+        market: Market,
+        open: Date,
+        morningEnd: Date?,
+        afternoonStart: Date?,
+        close: Date
+    ) {
+        self.market = market
+        self.open = open
+        self.morningEnd = morningEnd
+        self.afternoonStart = afternoonStart
+        self.close = close
+        self.preOpen = nil
+        self.postClose = nil
+    }
+
+    /// The same trading session with its boundaries re-read in `reference`'s time
+    /// zone, so a bar is positioned by its absolute clock time rather than by how
+    /// far into its own exchange's session it falls.
+    ///
+    /// Seoul 09:00 open reads as 08:00 in Beijing and Seoul's 15:30 close as
+    /// 14:30, which is what lets a Korean line and a Chinese line share one
+    /// Beijing-time axis: both are drawn against `minuteOffset(for:)`, and a bar
+    /// stamped 14:12 Beijing / 15:12 Seoul lands on the same fraction of the plot
+    /// width in each.
+    ///
+    /// The absolute instants are unchanged — only the wall-clock reading moves.
+    /// A session with no lunch break (`morningEnd == nil`) projects to one with
+    /// no lunch break, so Seoul's unbroken 390-minute axis stays unbroken.
+    /// US extended-hours wings are deliberately not projected: they are a
+    /// US-only presentation and a reference market with different wings would
+    /// misstate them.
+    ///
+    /// This only re-reads the boundaries. Positioning a row against a *shared*
+    /// axis is `axisBounds(for:)`, which is what the aligned list rows use:
+    /// re-reading the frame alone leaves each row still measuring from its own
+    /// open, so two sessions of different lengths would place the same instant
+    /// at two different fractions of the plot.
+    public func projected(to reference: Market) -> IntradayTradingSession {
+        // Same zone: the boundaries already read correctly, so return them as they
+        // are rather than round-tripping through a calendar that could shift them.
+        guard reference != market else { return self }
+
+        // The offset is read at the session's own open, not at "now": on a
+        // daylight-saving transition day the two zones' offsets differ by an hour
+        // from their usual difference, and only the transition-aware overload
+        // knows that. Seoul and Beijing have no DST, but this also has to hold for
+        // a US reference.
+        let shift = reference.timeZone.secondsFromGMT(for: open)
+            - market.timeZone.secondsFromGMT(for: open)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = reference.timeZone
+        // Every boundary is re-placed on the reference zone's own calendar day, so
+        // a session that opens near midnight keeps the day its bars are stamped
+        // with instead of sliding to the neighbouring one.
+        let referenceDay = calendar.startOfDay(for: open)
+
+        func project(_ boundary: Date) -> Date {
+            let components = calendar.dateComponents([.hour, .minute, .second], from: boundary)
+            return calendar.date(
+                bySettingHour: components.hour ?? 0,
+                minute: components.minute ?? 0,
+                second: components.second ?? 0,
+                of: referenceDay
+            ) ?? boundary.addingTimeInterval(TimeInterval(shift))
+        }
+
+        return IntradayTradingSession(
+            market: reference,
+            open: project(open),
+            morningEnd: morningEnd.map(project),
+            afternoonStart: afternoonStart.map(project),
+            close: project(close)
+        )
+    }
+
+    /// The clock window every row of an aligned group is drawn against, as
+    /// (start, end) in minutes past midnight of `reference`'s own calendar day.
+    ///
+    /// This is the piece that actually aligns the rows. `projected(to:)` alone
+    /// re-reads a session's boundaries but leaves `minuteOffset` measuring from
+    /// that session's own open, so Seoul's 390-minute axis and Shanghai's
+    /// 240-minute one would still put the same instant at two different
+    /// fractions of the plot. Measuring against one window fixes both rows to
+    /// absolute Beijing time instead.
+    ///
+    /// The window is the union of every session in the group, widened to the
+    /// reference market's own session when that is wider: a Korean row and a
+    /// Chinese row in one group have to share the left edge and the right edge,
+    /// or the axis strip above them has nothing to label.
+    public static func axisBounds(
+        for sessions: [IntradayTradingSession],
+        reference: Market
+    ) -> (start: Double, end: Double) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = reference.timeZone
+
+        func minuteOfDay(_ date: Date) -> Double {
+            let components = calendar.dateComponents([.hour, .minute, .second], from: date)
+            return Double(components.hour ?? 0) * 60
+                + Double(components.minute ?? 0)
+                + Double(components.second ?? 0) / 60
+        }
+
+        // The reference market's own session is the floor: the axis strip is
+        // labelled in its clock, so it has to be fully inside the window.
+        let referenceFrame = IntradayTradingSession(
+            market: reference, referenceDate: sessions.first?.open ?? .now
+        )
+        var start = min(minuteOfDay(referenceFrame.open), minuteOfDay(referenceFrame.preOpen ?? referenceFrame.open))
+        var end = max(minuteOfDay(referenceFrame.close), minuteOfDay(referenceFrame.postClose ?? referenceFrame.close))
+
+        for session in sessions {
+            let projected = session.projected(to: reference)
+            start = min(start, minuteOfDay(projected.preOpen ?? projected.open))
+            end = max(end, minuteOfDay(projected.postClose ?? projected.close))
+        }
+        // A window with no width would divide by zero in every x position.
+        guard end > start else { return (start, start + 1) }
+        return (start, end)
+    }
+
+    /// Axis fraction (0…1) of an instant against a shared clock window.
+    /// Returns nil when the instant falls outside the window, so a caller can
+    /// drop the bar rather than clamp it onto the plot edge where it would read
+    /// as a real price at a time the market was shut.
+    public func axisFraction(
+        for date: Date,
+        reference: Market,
+        bounds: (start: Double, end: Double)
+    ) -> Double? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = reference.timeZone
+        let components = calendar.dateComponents([.hour, .minute, .second], from: date)
+        let minute = Double(components.hour ?? 0) * 60
+            + Double(components.minute ?? 0)
+            + Double(components.second ?? 0) / 60
+        guard minute >= bounds.start, minute <= bounds.end else { return nil }
+        return (minute - bounds.start) / (bounds.end - bounds.start)
     }
 
     public var totalMinutes: Double {

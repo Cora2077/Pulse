@@ -135,7 +135,8 @@ public final class RefreshEngine {
                   let providerID = quote.sourceID,
                   let source = provider.displayNameSource(
                     for: providerID,
-                    market: quote.symbol.market
+                    market: quote.symbol.market,
+                    name: name
                   ) else {
                 continue
             }

@@ -79,6 +79,11 @@ public struct NaverProvider: QuoteProvider {
     public func search(_ query: String) async throws -> [SymbolInfo] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
+        try Task.checkCancellation()
+        // Chinese aliases are not indexed by Naver. Resolve known listings
+        // locally without changing their Korean exchange codes or quote paths.
+        let local = KoreanSecurityCatalog.search(trimmed)
+        if !local.isEmpty { return local }
 
         var components = URLComponents(string: "https://ac.stock.naver.com/ac")!
         components.queryItems = [

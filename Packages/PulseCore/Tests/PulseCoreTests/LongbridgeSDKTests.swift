@@ -529,5 +529,45 @@ struct LongbridgeSDKTests {
             previousClose: previousClose
         )
     }
+
+    /// A US snapshot has no Chinese name, so the Chinese-first order falls
+    /// through to `nameEN`. That name must not be published under `zh-Hans`: a
+    /// locale match now outranks every provider rank, so a Latin name wearing a
+    /// Chinese tag would beat the genuinely Chinese name another source offers
+    /// and pin the English label for good.
+    @Test func fallbackNameKeepsItsOwnLanguage() throws {
+        let us = LBSDKSecurityName(symbol: "AAPL.US", nameCN: "", nameEN: "Apple Inc.", nameHK: "")
+        let resolved = try #require(
+            LongbridgeSDKBridge.preferredName(from: us, localeIdentifier: "zh-Hans")
+        )
+        #expect(resolved.name == "Apple Inc.")
+        #expect(resolved.localeIdentifier == "en")
+
+        // A snapshot that really carries Chinese keeps the Chinese tag.
+        let hk = LBSDKSecurityName(symbol: "700.HK", nameCN: "腾讯控股", nameEN: "Tencent Holdings", nameHK: "騰訊控股")
+        let chinese = try #require(
+            LongbridgeSDKBridge.preferredName(from: hk, localeIdentifier: "zh-Hans")
+        )
+        #expect(chinese.name == "腾讯控股")
+        #expect(chinese.localeIdentifier == "zh-Hans")
+
+        // Requesting Traditional prefers the HK field and labels it so.
+        let traditional = try #require(
+            LongbridgeSDKBridge.preferredName(from: hk, localeIdentifier: "zh-Hant")
+        )
+        #expect(traditional.name == "騰訊控股")
+        #expect(traditional.localeIdentifier == "zh-Hant")
+
+        // An English request takes the English field first.
+        let english = try #require(
+            LongbridgeSDKBridge.preferredName(from: hk, localeIdentifier: "en")
+        )
+        #expect(english.name == "Tencent Holdings")
+        #expect(english.localeIdentifier == "en")
+
+        // Every field empty means no name at all rather than an empty one.
+        let blank = LBSDKSecurityName(symbol: "X.US", nameCN: "", nameEN: "", nameHK: "")
+        #expect(LongbridgeSDKBridge.preferredName(from: blank, localeIdentifier: "zh-Hans") == nil)
+    }
 }
 #endif

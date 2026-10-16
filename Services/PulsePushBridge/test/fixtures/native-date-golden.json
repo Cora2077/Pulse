@@ -1,0 +1,52 @@
+{
+  "dates" : [
+    {
+      "appleReferenceSeconds" : 721692800,
+      "name" : "quote-source",
+      "swiftEncodedJSON" : "{\"date\":721692800}",
+      "unixSeconds" : 1700000000
+    },
+    {
+      "appleReferenceSeconds" : 721693100,
+      "name" : "stale-date",
+      "swiftEncodedJSON" : "{\"date\":721693100}",
+      "unixSeconds" : 1700000300
+    },
+    {
+      "appleReferenceSeconds" : 721692740,
+      "name" : "plan-as-of",
+      "swiftEncodedJSON" : "{\"date\":721692740}",
+      "unixSeconds" : 1699999940
+    },
+    {
+      "appleReferenceSeconds" : 0,
+      "name" : "reference-epoch",
+      "swiftEncodedJSON" : "{\"date\":0}",
+      "unixSeconds" : 978307200
+    },
+    {
+      "appleReferenceSeconds" : -978307200,
+      "name" : "unix-epoch",
+      "swiftEncodedJSON" : "{\"date\":-978307200}",
+      "unixSeconds" : 0
+    }
+  ],
+  "decodedContentState" : {
+    "currencyCode" : "CNY",
+    "plansAsOfUnix" : 1699999940,
+    "price" : 1680.5,
+    "primaryQuoteSourceTimeUnix" : 1700000000,
+    "quoteSourceTimeUnix" : 1700000000,
+    "sessionID" : "sh.2026-10-16.regular",
+    "staleDateUnix" : 1700000300,
+    "status" : "live",
+    "syncState" : "pending"
+  },
+  "generator" : "Apple Swift 6.4 (swiftlang-6.4.0.34.1), Foundation JSONEncoder\/JSONDecoder with default strategies, decoding into the real PulseActivityState from Packages\/PulseActivity",
+  "outerAps" : {
+    "staleDate" : 1700000300,
+    "timestamp" : 1700000010
+  },
+  "reencodedContentStateMatchesNode" : true,
+  "referenceDateUnixSeconds" : 978307200
+}

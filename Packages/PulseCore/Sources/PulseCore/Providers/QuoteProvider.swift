@@ -51,6 +51,24 @@ public protocol QuoteProvider: Sendable {
 
     /// Real-time streaming (optional capability)
     func quoteStream(for symbols: [SymbolID]) -> AsyncThrowingStream<Quote, any Error>?
+
+    /// Whether this source can address the instrument at all, independent of the
+    /// market it belongs to.
+    ///
+    /// Routing is otherwise market-only, which assumes any source that declares a
+    /// market can be handed anything in it. Sector boards break that assumption:
+    /// they live in the A-share market but no exchange source knows them, so an
+    /// ordinary `.sh` dispatch would ask Longbridge, Fuyao, Tencent and Yahoo for
+    /// a code none of them can price. Their failures are the kind that trip the
+    /// circuit breaker, and the breaker is shared with real stocks — so a single
+    /// board symbol could take away the user's quotes for 600519.
+    ///
+    /// This is a protocol *requirement*, not just an extension method, and that is
+    /// load-bearing: a member declared only in an extension is dispatched
+    /// statically, so a call through `any QuoteProvider` would always run the
+    /// default and silently ignore a source's own answer. Routing holds these as
+    /// existentials, so the requirement is what makes the override take effect.
+    func covers(_ symbol: SymbolID) -> Bool
 }
 
 public extension QuoteProvider {
@@ -63,4 +81,9 @@ public extension QuoteProvider {
     }
 
     func quoteStream(for symbols: [SymbolID]) -> AsyncThrowingStream<Quote, any Error>? { nil }
+
+    /// The default answers for every source that existed before boards did: it
+    /// covers everything except a board. A source that carries boards overrides
+    /// this, and nothing else has to change.
+    func covers(_ symbol: SymbolID) -> Bool { symbol.sectorIndex == nil }
 }

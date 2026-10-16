@@ -56,7 +56,7 @@ struct LBSDKSecurityQuote: Sendable {
     var overnight: LBSDKPrePostQuote?
 }
 
-private struct LBSDKSecurityName: Sendable {
+struct LBSDKSecurityName: Sendable {
     var symbol: String
     var nameCN: String
     var nameEN: String
@@ -406,7 +406,7 @@ private final class LongbridgeSDKDynamicLibrary: @unchecked Sendable {
         }
         return unsafeBitCast(symbol, to: type)
     }
-    #else
+    #elseif PULSE_LINKED_LONGBRIDGE_SDK
     /// iOS links the SDK's static library into the app binary, so every entry
     /// point binds at link time — same table, no loader in the picture.
     init() throws {
@@ -431,6 +431,13 @@ private final class LongbridgeSDKDynamicLibrary: @unchecked Sendable {
         self.decimalToDouble = lb_decimal_to_double
         self.errorMessage = lb_error_message
         self.errorCode = lb_error_code
+    }
+    #else
+    /// HTTP-only iPhone builds must remain linkable without pretending the
+    /// desktop plugin is present. Enable the explicit flag only when a vetted
+    /// static SDK is supplied by the application's iOS target.
+    init() throws {
+        throw LongbridgeError.socket("此版本尚未链接 iOS 长桥 SDK；请使用已配置的 HTTP 行情源")
     }
     #endif
 
@@ -711,19 +718,19 @@ actor LongbridgeSDKBridge {
                 library: library
             )
             let symbolsBySDKName = Dictionary(uniqueKeysWithValues: mapped.map { ($0.1, $0.0) })
-            let localeIdentifier = PulseLocalization.currentLanguageIdentifier
+            let requestedLocale = PulseLocalization.currentLanguageIdentifier
             let names = snapshots.compactMap { snapshot -> SecurityName? in
                 guard let symbol = symbolsBySDKName[snapshot.symbol],
-                      let name = Self.preferredName(
+                      let resolved = Self.preferredName(
                         from: snapshot,
-                        localeIdentifier: localeIdentifier
+                        localeIdentifier: requestedLocale
                       ) else {
                     return nil
                 }
                 return SecurityName(
                     symbol: symbol,
-                    name: name,
-                    localeIdentifier: localeIdentifier
+                    name: resolved.name,
+                    localeIdentifier: resolved.localeIdentifier
                 )
             }
             setStatus(.connected)
@@ -1473,21 +1480,45 @@ actor LongbridgeSDKBridge {
         return quote
     }
 
-    private static func preferredName(
+    /// The name to publish for one instrument, together with the language that
+    /// name is actually written in.
+    ///
+    /// The two must travel together. A snapshot for a US instrument usually has
+    /// an empty `nameCN`, so the Chinese-first order below falls through to
+    /// `nameEN` — a Latin name. Reporting it under the requested `zh-Hans`
+    /// locale would claim Chinese provenance for an English word, which now
+    /// matters because a locale match outranks every provider rank: the app
+    /// would then refuse the genuinely Chinese name another source offers, and
+    /// pin the English one for good.
+    static func preferredName(
         from snapshot: LBSDKSecurityName,
         localeIdentifier: String
-    ) -> String? {
-        let candidates: [String]
+    ) -> (name: String, localeIdentifier: String)? {
+        // Ordered best-first for the requested language; each candidate carries
+        // the language tag its own field is written in.
+        let candidates: [(text: String, localeIdentifier: String)]
         if localeIdentifier.hasPrefix("zh-Hant") || localeIdentifier.hasPrefix("zh-HK") {
-            candidates = [snapshot.nameHK, snapshot.nameCN, snapshot.nameEN]
+            candidates = [
+                (snapshot.nameHK, "zh-Hant"),
+                (snapshot.nameCN, "zh-Hans"),
+                (snapshot.nameEN, "en"),
+            ]
         } else if localeIdentifier.hasPrefix("zh") {
-            candidates = [snapshot.nameCN, snapshot.nameHK, snapshot.nameEN]
+            candidates = [
+                (snapshot.nameCN, "zh-Hans"),
+                (snapshot.nameHK, "zh-Hant"),
+                (snapshot.nameEN, "en"),
+            ]
         } else {
-            candidates = [snapshot.nameEN, snapshot.nameCN, snapshot.nameHK]
+            candidates = [
+                (snapshot.nameEN, "en"),
+                (snapshot.nameCN, "zh-Hans"),
+                (snapshot.nameHK, "zh-Hant"),
+            ]
         }
         return candidates
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty }
+            .map { (name: $0.text.trimmingCharacters(in: .whitespacesAndNewlines), localeIdentifier: $0.localeIdentifier) }
+            .first { !$0.name.isEmpty }
     }
 
     static func marketState(forTradeSession session: Int32) -> MarketState {

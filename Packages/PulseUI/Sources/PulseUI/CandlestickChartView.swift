@@ -26,6 +26,7 @@ public struct CandlestickChartView: View {
     let indicators: ChartIndicatorConfiguration
 
     @State private var viewport: CandleChartViewport
+    @State private var lastTouchMagnification: CGFloat = 1
 
     /// Pass a `viewport` to observe the zoom/pan window from outside (the detail view
     /// reads it when sharing so the card shows exactly the visible candles). The instance
@@ -237,6 +238,17 @@ public struct CandlestickChartView: View {
         // With annotations, keep the chart's own pan recognizer out of the way while
         // allowing gestures on the chart overlay's child views to handle drawing tools.
         .gesture(dragPan, including: annotations == nil ? .all : .subviews)
+        #if os(iOS)
+        .simultaneousGesture(
+            MagnifyGesture()
+                .onChanged { value in
+                    let factor = value.magnification / max(lastTouchMagnification, 0.01)
+                    viewport.zoom(by: Double(factor))
+                    lastTouchMagnification = value.magnification
+                }
+                .onEnded { _ in lastTouchMagnification = 1 }
+        )
+        #endif
         .simultaneousGesture(
             TapGesture(count: 2).onEnded { viewport.reset() },
             including: annotations == nil ? .all : .subviews
@@ -274,6 +286,7 @@ public struct CandlestickChartView: View {
     private var dragPan: some Gesture {
         DragGesture(minimumDistance: 3)
             .onChanged { value in
+                guard !viewport.touchInspecting else { return }
                 viewport.pan(byPoints: value.translation.width - viewport.lastDragWidth)
                 viewport.lastDragWidth = value.translation.width
             }
@@ -780,6 +793,7 @@ public final class CandleChartViewport {
     @ObservationIgnored var dataCount = 0
     @ObservationIgnored var plotWidth: CGFloat = 300
     @ObservationIgnored var cursorInside = false
+    @ObservationIgnored var touchInspecting = false
     @ObservationIgnored var wheelZoomAllowed = true
     @ObservationIgnored var lastDragWidth: CGFloat = 0
     @ObservationIgnored private var panRemainder: Double = 0
@@ -1194,6 +1208,23 @@ private struct CandleHoverCatcher: View {
                     viewport.hoveredIndex = nil
                 }
             }
+            #if os(iOS)
+            .highPriorityGesture(
+                LongPressGesture(minimumDuration: 0.35)
+                    .sequenced(before: DragGesture(minimumDistance: 0))
+                    .onChanged { value in
+                        switch value {
+                        case .first(true): viewport.touchInspecting = true
+                        case .second(true, let drag):
+                            viewport.touchInspecting = true
+                            if let drag { viewport.hoveredIndex = index(at: drag.location) }
+                        default: break
+                        }
+                    }
+                    .onEnded { _ in viewport.touchInspecting = false }
+            )
+            .onTapGesture { viewport.hoveredIndex = nil }
+            #endif
     }
 
     /// Invert the linear index scale by hand: `proxy.value(atX:)` on an Int scale truncates,

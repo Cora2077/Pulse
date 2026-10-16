@@ -3,7 +3,16 @@
 set -eu
 
 dsh_bin=${PULSE_DSH_BIN:-/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh}
-workbuddy_plugin=${PULSE_WORKBUDDY_PLUGIN:-${DSH_HOME:-$HOME/.dsh}/profiles/desktop/node_modules/dsh-connect-workbuddy/lib/index.js}
+# The connector lives in whichever DSH home actually holds it. A workspace-local
+# DSH_HOME (used when a sandbox forbids writing the real one) carries a symlink
+# instead of the package, so fall back to the real home when the link is absent.
+if [ -n "${PULSE_WORKBUDDY_PLUGIN:-}" ]; then
+    workbuddy_plugin=$PULSE_WORKBUDDY_PLUGIN
+elif [ -f "${DSH_HOME:-$HOME/.dsh}/profiles/desktop/node_modules/dsh-connect-workbuddy/lib/index.js" ]; then
+    workbuddy_plugin=${DSH_HOME:-$HOME/.dsh}/profiles/desktop/node_modules/dsh-connect-workbuddy/lib/index.js
+else
+    workbuddy_plugin=$HOME/.dsh/profiles/desktop/node_modules/dsh-connect-workbuddy/lib/index.js
+fi
 if [ ! -x "$dsh_bin" ]; then
     echo 'DSH is missing.' >&2
     exit 1
@@ -11,31 +20,53 @@ fi
 
 worker_patch=$(mktemp -t pulse-dsh-worker)
 trap 'rm -f "$worker_patch"' EXIT HUP INT TERM
-case "${PULSE_DSH_WORKER:-flash}" in
-  flash)
+case "${PULSE_DSH_WORKER:-step}" in
+  step|flash)
+    worker_model=step-5-preview
+    worker_model_name=Step-5-Preview
+    worker_context=500000
+    worker_max_tokens=64000
     if [ ! -f "$workbuddy_plugin" ]; then
         echo 'The installed WorkBuddy connector is missing.' >&2
         exit 1
     fi
     worker_mode=${DSH_PERMISSION_MODE:-workspace-write}
+    # Pin only the worker's plugin configuration, never the GUI's account pool.
+    account_slot=""
+    pool_slot=""
+    if [ -n "${PULSE_WORKBUDDY_ACCOUNT_ID:-}" ]; then
+      case "$PULSE_WORKBUDDY_ACCOUNT_ID" in
+        *[!a-fA-F0-9]*) echo 'Invalid WorkBuddy account id.' >&2; exit 2 ;;
+      esac
+      if [ "${#PULSE_WORKBUDDY_ACCOUNT_ID}" -ne 24 ]; then
+        echo 'Invalid WorkBuddy account id length.' >&2
+        exit 2
+      fi
+      account_slot="        accounts:
+          cn: \"$PULSE_WORKBUDDY_ACCOUNT_ID\""
+      pool_slot="            pool:
+              enabled: false"
+    fi
 cat > "$worker_patch" <<EOF
 - id: agent-default-model
   config:
     provider: workbuddy
-    model: deepseek-v4.1-flash
+    model: $worker_model
 - insert:
     - id: dsh-connect-workbuddy
       name: "$workbuddy_plugin"
       config:
+$account_slot
         regions:
           cn:
             enabled: true
-            enabledModelIds: [deepseek-v4.1-flash]
+$pool_slot
+            enabledModelIds: [$worker_model]
             lastCatalog:
-              - id: deepseek-v4.1-flash
-                name: DeepSeek V4.1 Flash
-                contextWindow: 64000
-                maxTokens: 16000
+              - id: $worker_model
+                name: $worker_model_name
+                contextWindow: $worker_context
+                maxTokens: $worker_max_tokens
           global:
             enabled: false
 EOF
@@ -55,7 +86,7 @@ cat > "$worker_patch" <<'EOF'
 EOF
     ;;
   *)
-    echo 'Unsupported worker; choose flash or kimi.' >&2
+    echo 'Unsupported worker; choose step or kimi (flash is a compatibility alias for step).' >&2
     exit 2
     ;;
 esac
@@ -83,6 +114,8 @@ cat >> "$worker_patch" <<'EOF'
         description: Review project files without writing them.
 EOF
 fi
-# The live WorkBuddy catalog replaces the conservative startup limits above.
-# Use the model's supported default reasoning instead of imposing Luna's scale.
+# The live WorkBuddy catalog replaces the startup limits above. The human
+# requested Step-5-Preview for routine workers on 2026-10-16; the former `flash`
+# selector remains an alias, so old commands do not silently consume DS quota.
+# Keep the selected model's default reasoning effort.
 DSH_PERMISSION_MODE="$worker_mode" "$dsh_bin" headless --patch "$worker_patch" "$@" -

@@ -19,6 +19,10 @@ final class AppState {
     let watchlist: WatchlistStore
     let sharedWatchlist: SharedWatchlist
     let folderSync: FolderSyncController
+    @ObservationIgnored private(set) var cloudSync: MacCloudSyncBinding?
+    private(set) var cloudSyncConfigurationError: String?
+    private(set) var cloudSyncRequested = false
+    @ObservationIgnored private var cloudSyncDefaults: UserDefaults?
     let market: MarketStore
     let planAlerts: PlanAlertController
     let localBackups: LocalBackupController
@@ -136,7 +140,7 @@ final class AppState {
         let fuyao = FuyaoProvider(apiKey: fuyaoKey)
         let binance = BinanceProvider()
         let providers: [any QuoteProvider] = [longbridge, fuyao, binance, TencentProvider(), NaverProvider(), YahooProvider(), SinaProvider(),
-                                              ShanghaiGoldExchangeProvider(), EastmoneyProvider()]
+                                              ShanghaiGoldExchangeProvider(), EastmoneyProvider(), ThsSectorProvider()]
         var disabledIDs = settings.disabledProviderIDs
         if authState == .none { disabledIDs.insert(LongbridgeProvider.providerID) }
         if fuyaoKey == nil { disabledIDs.insert(FuyaoProvider.providerID) }
@@ -148,6 +152,8 @@ final class AppState {
         self.watchlist = watchlist
         self.sharedWatchlist = SharedWatchlist(store: watchlist, defaults: storeDefaults)
         self.folderSync = folderSync
+        self.cloudSyncDefaults = storeDefaults
+        self.cloudSyncRequested = storeDefaults.bool(forKey: "pulse.cloudSync.enabled")
         self.market = market
         self.planAlerts = PlanAlertController(
             store: watchlist, market: market, defaults: storeDefaults,
@@ -233,7 +239,24 @@ final class AppState {
         let isSelfTestMode = CommandLine.arguments.contains { $0.contains("selftest") }
         planAlerts.onOpen = { [weak self] target in self?.pendingPlanAlertTarget = target }
         if !isSelfTestMode && !isOfflinePreview { planAlerts.start() }
-        if !isSelfTestMode && !isOfflinePreview { folderSync.start() }
+        if !isSelfTestMode && !isOfflinePreview {
+            if storeDefaults.bool(forKey: "pulse.cloudSync.enabled") {
+                let containerID = (Bundle.main.object(forInfoDictionaryKey: "FFFCloudKitContainerIdentifier") as? String) ?? ""
+                if folderSync.isConfigured {
+                    cloudSyncConfigurationError = "现有文件夹同步仍在使用；请先备份并确认迁移，不能同时启用两套主同步。"
+                } else if containerID.isEmpty || containerID.hasPrefix("$(") {
+                    cloudSyncConfigurationError = "当前构建未配置已授权的 CloudKit 容器，仍保持本机模式。"
+                } else {
+                    do {
+                        let binding = try MacCloudSyncBinding(store: watchlist, containerID: containerID)
+                        cloudSync = binding
+                        folderSync.cloudSyncActive = true
+                        binding.start(store: watchlist)
+                    } catch { cloudSyncConfigurationError = error.localizedDescription }
+                }
+            }
+            if cloudSync == nil { folderSync.start() }
+        }
         if !isOfflinePreview { startRotation() }
         if !isOfflinePreview { startMenuBarClock() }
         observeMenuTracking()
@@ -658,13 +681,20 @@ final class AppState {
         if let index = symbol.indexID {
             return index.displayName
         }
+        if let board = symbol.sectorIndex {
+            return board.displayName
+        }
+        if let chineseName = KoreanSecurityCatalog.displayName(for: symbol) {
+            return chineseName
+        }
         return market.quote(for: symbol)?.name ?? symbol.displayCode
     }
 
     /// Calculated benchmarks, not traded securities: catalog indices carry an
     /// `indexID`; search-classified ones rely on the stored instrument type.
     func isIndex(_ symbol: SymbolID) -> Bool {
-        symbol.indexID != nil || sharedWatchlist.item(for: symbol)?.resolvedInstrumentType == .index
+        symbol.indexID != nil || symbol.sectorIndex != nil
+            || sharedWatchlist.item(for: symbol)?.resolvedInstrumentType == .index
     }
 
     /// The US pre/post setting only applies to instruments that trade those
@@ -688,6 +718,24 @@ final class AppState {
     /// Kept off TimelineView: a scheduler inside the MenuBarExtra label keeps the
     /// status item from ever materializing.
     private(set) var menuBarClock = Date()
+
+    func requestPrivateCloudSync(_ enabled: Bool) {
+        if enabled {
+            guard !folderSync.isConfigured else {
+                cloudSyncConfigurationError = "请先备份并解除文件夹同步；不能让两套同步同时写同一个账本。"; return
+            }
+            let id = (Bundle.main.object(forInfoDictionaryKey: "FFFCloudKitContainerIdentifier") as? String) ?? ""
+            guard !id.isEmpty, !id.hasPrefix("$(") else {
+                cloudSyncConfigurationError = "当前本地签名构建未配置已授权的 iCloud 容器；不会因此访问或迁移你的账本。"; return
+            }
+            guard localBackups.createManualBackup() else {
+                cloudSyncConfigurationError = "本机备份未成功，未开启云同步。"; return
+            }
+        }
+        cloudSyncDefaults?.set(enabled, forKey: "pulse.cloudSync.enabled")
+        cloudSyncRequested = enabled
+        cloudSyncConfigurationError = "选择已保存，重新启动 App 后生效。当前同步方式在重启前保持不变。"
+    }
 
     private func startMenuBarClock() {
         Task { [weak self] in
@@ -857,7 +905,8 @@ final class AppState {
                   let providerID = quote.sourceID,
                   let source = provider.displayNameSource(
                     for: providerID,
-                    market: quote.symbol.market
+                    market: quote.symbol.market,
+                    name: name
                   ) else {
                 continue
             }
@@ -975,8 +1024,12 @@ final class AppState {
         )
         for index in results.indices {
             guard let preferred = namesBySymbol[results[index].symbol] else { continue }
-            let currentPriority = results[index].displayNameSource?.priority ?? Int.max
-            if preferred.source.priority <= currentPriority {
+            let current = results[index].displayNameSource
+            // A search result is not a persisted watermark, so an equally-ranked
+            // offer from the same language still refreshes it.
+            if preferred.source.outranks(current)
+                || (preferred.source.priority == current?.priority
+                    && preferred.source.localeIdentifier == current?.localeIdentifier) {
                 results[index].name = preferred.name
                 results[index].displayNameSource = preferred.source
             }

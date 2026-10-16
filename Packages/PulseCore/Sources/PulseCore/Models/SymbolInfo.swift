@@ -36,6 +36,10 @@ public struct SymbolInfo: Codable, Sendable, Hashable, Identifiable {
     /// Pulse owns those canonical names; ordinary securities keep the
     /// search-result name.
     public var resolvedDisplayName: String {
-        symbol.indexID?.displayName ?? symbol.metalID?.displayName ?? name
+        symbol.indexID?.displayName
+            ?? symbol.metalID?.displayName
+            ?? symbol.sectorIndex?.displayName
+            ?? KoreanSecurityCatalog.displayName(for: symbol)
+            ?? name
     }
 }

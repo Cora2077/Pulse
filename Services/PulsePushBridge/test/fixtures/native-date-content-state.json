@@ -1,0 +1,36 @@
+{
+  "aps": {
+    "timestamp": 1700000010,
+    "event": "update",
+    "content-state": {
+      "primary": {
+        "symbolKey": "600519.SH",
+        "displayName": "贵州茅台",
+        "identityText": "600519.SH",
+        "currencyCode": "CNY",
+        "price": 1680.5,
+        "change": 12.3,
+        "changePercent": 0.74,
+        "quoteSourceTime": 721692800,
+        "quoteSourceTimeUnix": 1700000000,
+        "sourceDelay": null,
+        "marketPhase": "regular"
+      },
+      "plans": {
+        "priceConditionReachedCount": 1,
+        "manualReviewCount": 2,
+        "remainingPlanCount": 3,
+        "asOf": 721692740,
+        "syncState": "pending"
+      },
+      "status": "live",
+      "staleDate": 721693100,
+      "staleDateUnix": 1700000300,
+      "quoteSourceTime": 721692800,
+      "quoteSourceTimeUnix": 1700000000,
+      "sessionID": "sh.2026-10-16.regular"
+    },
+    "stale-date": 1700000300,
+    "relevance-score": 80
+  }
+}

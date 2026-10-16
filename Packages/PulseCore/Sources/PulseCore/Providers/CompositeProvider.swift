@@ -91,6 +91,18 @@ public actor CompositeProvider: QuoteProvider {
         }
     }
 
+    /// The candidates that can actually address `symbol`. Market-level routing
+    /// picks a source for everything in a market; a sector board is the one
+    /// instrument that needs a narrower question, since it sits in a market whose
+    /// sources cannot price it.
+    private func candidates(
+        _ capability: Capability,
+        market: Market,
+        covering symbol: SymbolID
+    ) -> [any QuoteProvider] {
+        candidates(capability, market: market).filter { $0.covers(symbol) }
+    }
+
     private func isHealthy(_ id: String) -> Bool {
         guard let until = unhealthyUntil[id] else { return true }
         if until < .now {
@@ -194,6 +206,45 @@ public actor CompositeProvider: QuoteProvider {
         )
     }
 
+    /// Like the variant above, but records the language the supplied name is
+    /// actually written in rather than the language the source advertises.
+    ///
+    /// A source's advertised name language describes the source, not every string
+    /// it returns: Tencent names most US instruments in Chinese and a handful in
+    /// Latin script — `usIBM` answers `IBM`, `usMETA` answers `Meta Platforms`.
+    /// Stamping the advertised language on such a name claims Chinese provenance
+    /// for an English word, and because a locale match now outranks every
+    /// provider rank, that stamp would not merely install the English label: it
+    /// would also keep the real Chinese name from ever replacing it. Callers
+    /// holding the text must use this variant.
+    public nonisolated func displayNameSource(
+        for providerID: String,
+        market: Market,
+        name: String
+    ) -> DisplayNameSource? {
+        displayNameSource(
+            for: providerID,
+            market: market,
+            localeIdentifier: Self.languageIdentifier(of: name, advertisedBy: providerID)
+        )
+    }
+
+    /// The language to record for one received name: what the source advertises,
+    /// corrected when the text is plainly not written in it.
+    private nonisolated static func languageIdentifier(
+        of name: String,
+        advertisedBy providerID: String
+    ) -> String {
+        let advertised = nameLocaleIdentifier(for: providerID)
+        // A source that advertises Chinese and answers with a Latin listing name
+        // is naming the instrument in English; record that, so a real Chinese
+        // name from anywhere else still outranks it.
+        if advertised.hasPrefix("zh"), !SecurityName.isChineseName(name) {
+            return "en"
+        }
+        return advertised
+    }
+
     /// Only infrastructure-level errors (network down / 5xx / rate limiting) trip the circuit breaker;
     /// request-level errors (4xx, symbol not found) don't indicate a source failure and never trip it.
     /// Rate limiting gets a short cooldown (recovers quickly); network/5xx errors get the long one.
@@ -214,7 +265,7 @@ public actor CompositeProvider: QuoteProvider {
         for symbol in symbols {
             guard let primary = preferredQuoteProvider(
                 for: symbol.market,
-                among: candidates(.quotes, market: symbol.market)
+                among: candidates(.quotes, market: symbol.market, covering: symbol)
             ) else { continue }
             groups[primary.descriptor.id, default: []].append(symbol)
         }
@@ -260,7 +311,7 @@ public actor CompositeProvider: QuoteProvider {
         for symbol in missing {
             guard let primary = preferredQuoteProvider(
                 for: symbol.market,
-                among: candidates(.quotes, market: symbol.market)
+                among: candidates(.quotes, market: symbol.market, covering: symbol)
             ) else { continue }
             let id = primary.descriptor.id
             groups[id, default: []].append(symbol)
@@ -277,7 +328,7 @@ public actor CompositeProvider: QuoteProvider {
                 let quotes = try await provider.quotes(for: group).map { $0.sourced(by: provider.descriptor) }
                 for quote in quotes {
                     if let actualDelay = quote.sourceDelay,
-                       candidates(.quotes, market: quote.symbol.market).contains(where: {
+                       candidates(.quotes, market: quote.symbol.market, covering: quote.symbol).contains(where: {
                            $0.descriptor.id != id
                                && ($0.descriptor.delay[quote.symbol.market] ?? .infinity)
                                    < actualDelay
@@ -304,15 +355,27 @@ public actor CompositeProvider: QuoteProvider {
                 var remaining = marketSymbols
                 var attemptedIDs: Set<String> = [id]
                 while !remaining.isEmpty {
-                    let available = candidates(.quotes, market: market)
-                        .filter { !attemptedIDs.contains($0.descriptor.id) }
-                    guard let fallback = preferredQuoteProvider(for: market, among: available) else {
+                    // A source is only offered the symbols it can address. A
+                    // board and an ordinary A-share share a market but never a
+                    // source, so each batch is narrowed to the covered subset
+                    // while the market's own priority order still picks who goes
+                    // first.
+                    let ordered = orderedByQuotePriority(
+                        candidates(.quotes, market: market)
+                            .filter { !attemptedIDs.contains($0.descriptor.id) },
+                        market: market
+                    )
+                    guard let (fallback, batch) = ordered.lazy.compactMap({ provider
+                        -> (any QuoteProvider, [SymbolID])? in
+                        let covered = remaining.filter { provider.covers($0) }
+                        return covered.isEmpty ? nil : (provider, covered)
+                    }).first else {
                         break
                     }
                     let fallbackID = fallback.descriptor.id
                     attemptedIDs.insert(fallbackID)
                     do {
-                        let recovered = try await fallbackQuotes(from: fallback, for: remaining)
+                        let recovered = try await fallbackQuotes(from: fallback, for: batch)
                         for quote in recovered {
                             quoteCache[quote.symbol] = CacheEntry(value: quote)
                             quotesBySymbol[quote.symbol] = quote
@@ -359,8 +422,12 @@ public actor CompositeProvider: QuoteProvider {
     /// routing health. A metadata failure must not make prices fall back.
     public func preferredSecurityNames(for symbols: [SymbolID]) async throws -> [SourcedSecurityName] {
         // Indices and metals carry Pulse's own catalog name; asking a source to
-        // name them would only invite a provider spelling to win.
-        let requested = symbols.filter { $0.indexID == nil && $0.metalID == nil }
+        // name them would only invite a provider spelling to win. A sector board
+        // is the same: its name is the catalog's, so `881155` reads 银行 no matter
+        // which source answers the quotes.
+        let requested = symbols.filter {
+            $0.indexID == nil && $0.metalID == nil && $0.sectorIndex == nil
+        }
         guard !requested.isEmpty else { return [] }
 
         var resolved: [SymbolID: SourcedSecurityName] = [:]
@@ -387,7 +454,7 @@ public actor CompositeProvider: QuoteProvider {
                     for name in names {
                         let trimmed = name.name.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !trimmed.isEmpty else { continue }
-                        resolved[name.symbol] = SourcedSecurityName(
+                        let candidate = SourcedSecurityName(
                             symbol: name.symbol,
                             name: trimmed,
                             source: DisplayNameSource(
@@ -396,8 +463,24 @@ public actor CompositeProvider: QuoteProvider {
                                 localeIdentifier: name.localeIdentifier
                             )
                         )
+                        // Sources are consulted best-first, but "best" orders the
+                        // *market's* data, not the label the user reads. A later
+                        // source still wins when its name is the better label —
+                        // the same rule the watchlist applies before it stores one.
+                        if let existing = resolved[name.symbol], !candidate.source.outranks(existing.source) {
+                            continue
+                        }
+                        resolved[name.symbol] = candidate
                     }
-                    remaining.removeAll { resolved[$0] != nil }
+                    // A symbol is settled once its name is in the interface
+                    // language, because no later source can offer a better label.
+                    // A name in any other language stays queued so a later source
+                    // can still improve it; the resolved entry remains the
+                    // fallback if none does.
+                    remaining.removeAll { symbol in
+                        resolved[symbol]?.source.localeIdentifier
+                            == PulseLocalization.currentLanguageIdentifier
+                    }
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
@@ -504,7 +587,7 @@ public actor CompositeProvider: QuoteProvider {
         from provider: any QuoteProvider
     ) -> Bool {
         guard let actualDelay = quote.sourceDelay,
-              candidates(.quotes, market: quote.symbol.market).contains(where: {
+              candidates(.quotes, market: quote.symbol.market, covering: quote.symbol).contains(where: {
                   $0.descriptor.id != provider.descriptor.id
                       && ($0.descriptor.delay[quote.symbol.market] ?? .infinity) < actualDelay
               }) else {
@@ -526,7 +609,7 @@ public actor CompositeProvider: QuoteProvider {
         var symbolsByProvider: [String: [SymbolID]] = [:]
         var providerByID: [String: any QuoteProvider] = [:]
         for symbol in symbols {
-            let available = candidates(.streaming, market: symbol.market)
+            let available = candidates(.streaming, market: symbol.market, covering: symbol)
             guard let streamer = preferredQuoteProvider(for: symbol.market, among: available) else { continue }
             let id = streamer.descriptor.id
             symbolsByProvider[id, default: []].append(symbol)
@@ -560,6 +643,20 @@ public actor CompositeProvider: QuoteProvider {
         let metals = candidates(.quotes, market: .metal).isEmpty
             ? []
             : PreciousMetalCatalog.search(query)
+
+        // Seed local board hits even if provider search is cancelled at the
+        // aggregation deadline. Disabled or cooling sources do not offer them.
+        let boards = candidates(.quotes, market: .sh).contains(where: {
+            $0.descriptor.id == ThsSectorProvider.providerID
+        })
+            ? SectorIndexCatalog.search(query)
+            : []
+
+        // Chinese names for known Korean listings must not depend on a remote
+        // autocomplete response winning the enrichment race. Use ordinary
+        // SymbolIDs so adding them cannot duplicate existing Korean watch rows.
+        let korean = candidates(.quotes, market: .kr).isEmpty
+            ? [] : KoreanSecurityCatalog.search(query)
 
         // Search providers are independent. Return soon after the first useful source,
         // while keeping a short window for other fast sources to enrich the result set.
@@ -640,9 +737,9 @@ public actor CompositeProvider: QuoteProvider {
 
         // Catalog hits lead the merge: an exact alias match ("黄金", "XAU") is a
         // stronger answer than anything a provider returns for the same words.
-        var merged: [SymbolInfo] = metals
+        var merged: [SymbolInfo] = metals + boards + korean
         var indexBySymbol = Dictionary(
-            uniqueKeysWithValues: metals.enumerated().map { ($0.element.symbol, $0.offset) }
+            uniqueKeysWithValues: merged.enumerated().map { ($0.element.symbol, $0.offset) }
         )
         var lastError: (any Error)?
         for (index, outcome) in aggregation.outcomes {
@@ -650,9 +747,15 @@ public actor CompositeProvider: QuoteProvider {
             case .success(let infos):
                 let sourceProviderID = capable[index].descriptor.id
                 for var info in infos {
+                    // Name-aware: Tencent's smartbox answers several US tickers
+                    // in Latin script (`meta` → `metaplatforms`, `ibm` → `ibm`)
+                    // and `nameLocaleIdentifier` would call all of them zh-Hans.
+                    // A false Chinese tag now outranks every provider rank, so it
+                    // would also reject Yahoo's real English name for the same row.
                     info.displayNameSource = displayNameSource(
                         for: sourceProviderID,
-                        market: info.symbol.market
+                        market: info.symbol.market,
+                        name: info.name
                     )
                     if let existingIndex = indexBySymbol[info.symbol] {
                         let existing = merged[existingIndex]
@@ -665,8 +768,7 @@ public actor CompositeProvider: QuoteProvider {
                             for: info.symbol
                         )
                         let candidateOutranksExisting =
-                            (info.displayNameSource?.priority ?? Int.max)
-                            < (existing.displayNameSource?.priority ?? Int.max)
+                            info.displayNameSource?.outranks(existing.displayNameSource) ?? true
                         if !candidateIsPlaceholder
                             && (existingIsPlaceholder || candidateOutranksExisting) {
                             merged[existingIndex].name = info.name
@@ -714,6 +816,7 @@ public actor CompositeProvider: QuoteProvider {
         let compactQuery = compactSearchCode(query)
         var leadCrypto: [SymbolInfo] = []
         var metals: [SymbolInfo] = []
+        var boards: [SymbolInfo] = []
         var exactSecurities: [SymbolInfo] = []
         var securities: [SymbolInfo] = []
         var otherCrypto: [SymbolInfo] = []
@@ -726,6 +829,12 @@ public actor CompositeProvider: QuoteProvider {
                 // company whose ticker happens to read the same way.
                 if info.symbol.metalID != nil {
                     metals.append(info)
+                    continue
+                }
+                // A board is a catalog identity too, and the more precise one for
+                // a bare industry word: "银行" is `881155`, not the tenth bank ETF.
+                if info.symbol.sectorIndex != nil {
+                    boards.append(info)
                     continue
                 }
                 // A ticker is unique on its exchange, so a code that matches the
@@ -754,7 +863,10 @@ public actor CompositeProvider: QuoteProvider {
                 otherCrypto.append(info)
             }
         }
-        return metals + exactSecurities + leadCrypto + securities + otherCrypto
+        // Both catalog identities lead, ahead of anything a source returned: for a
+        // bare industry word the board is the precise answer ("银行" is `881155`,
+        // not the tenth bank ETF a smartbox lists).
+        return metals + boards + exactSecurities + leadCrypto + securities + otherCrypto
     }
 
     private nonisolated static func isExactSecurityMatch(
@@ -824,9 +936,12 @@ public actor CompositeProvider: QuoteProvider {
     }
 
     private func fetchCandles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] {
+        // `covers` is what keeps a nonexistent exchange symbol off an exchange
+        // source it would only fail on — and a board off every source but its own.
         let enabled = providers.filter {
             $0.descriptor.supports(candles: period, in: symbol.market)
                 && !disabledIDs.contains($0.descriptor.id)
+                && $0.covers(symbol)
         }
         guard !enabled.isEmpty else { throw ProviderError.unsupported(.candles) }
         let healthy = enabled.filter { isHealthy($0.descriptor.id) }

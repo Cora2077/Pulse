@@ -226,6 +226,7 @@ public struct SymbolID: Hashable, Codable, Sendable, CustomStringConvertible {
         case marketIndex(MarketIndexID)
         case preciousMetal(PreciousMetalID)
         case cryptoPair(CryptoPair)
+        case sectorIndex(SectorIndexID)
     }
 
     public init(market: Market, code: String) {
@@ -238,6 +239,9 @@ public struct SymbolID: Hashable, Codable, Sendable, CustomStringConvertible {
         } else if let index = MarketIndexID.resolve(market: market, code: code) {
             self.market = index.market
             storage = .marketIndex(index)
+        } else if let board = SectorIndexID.resolve(market: market, code: code) {
+            self.market = board.market
+            storage = .sectorIndex(board)
         } else {
             self.market = market
             storage = .securityCode(Self.normalizeSecurityCode(code, market: market))
@@ -259,6 +263,11 @@ public struct SymbolID: Hashable, Codable, Sendable, CustomStringConvertible {
         storage = .cryptoPair(cryptoPair)
     }
 
+    public init(sectorIndex board: SectorIndexID) {
+        market = board.market
+        storage = .sectorIndex(board)
+    }
+
     public init(cryptoBase baseAsset: String, quote quoteAsset: String) {
         self.init(cryptoPair: CryptoPair(baseAsset: baseAsset, quoteAsset: quoteAsset))
     }
@@ -271,10 +280,11 @@ public struct SymbolID: Hashable, Codable, Sendable, CustomStringConvertible {
         case .marketIndex(let index): index.displayCode
         case .preciousMetal(let metal): metal.displayCode
         case .cryptoPair(let pair): pair.canonicalCode
+        case .sectorIndex(let board): board.displayCode
         }
     }
 
-    // The three accessors below unwrap `storage`, and each is deliberately not
+    // The four accessors below unwrap `storage`, and each is deliberately not
     // inlined. Inlined into a caller that is holding the symbol borrowed — a
     // loop over a [SymbolID], say — the switch over the private storage lands
     // inside that borrow, and every stable Swift compiler through 6.3.3 crashes
@@ -301,12 +311,18 @@ public struct SymbolID: Hashable, Codable, Sendable, CustomStringConvertible {
         return pair
     }
 
+    @inline(never)
+    public var sectorIndex: SectorIndexID? {
+        guard case .sectorIndex(let board) = storage else { return nil }
+        return board
+    }
+
     /// Whether a business summary could exist for this symbol at all. An index
     /// is a calculated benchmark, a metal contract is a commodity, and a crypto
     /// pair has no issuer, so there is no company for any source to describe —
     /// known before asking one.
     public var isDescribable: Bool {
-        indexID == nil && cryptoPair == nil && metalID == nil
+        indexID == nil && cryptoPair == nil && metalID == nil && sectorIndex == nil
     }
 
     public var displayCode: String {
@@ -363,6 +379,7 @@ public struct SymbolID: Hashable, Codable, Sendable, CustomStringConvertible {
         case indexID
         case metalID
         case cryptoPair
+        case sectorIndex
     }
 
     public init(from decoder: any Decoder) throws {
@@ -376,6 +393,24 @@ public struct SymbolID: Hashable, Codable, Sendable, CustomStringConvertible {
         if let metal = try? values.decodeIfPresent(PreciousMetalID.self, forKey: .metalID) {
             self.market = metal.market
             storage = .preciousMetal(metal)
+            return
+        }
+        // Sector boards reuse the A-share market rather than declaring one of
+        // their own, so an older build reads this row as an ordinary Shanghai
+        // symbol it cannot price — the same thing it does today — instead of
+        // failing the snapshot on an unknown `market` and losing the watchlist.
+        if let board = try? values.decodeIfPresent(SectorIndexID.self, forKey: .sectorIndex) {
+            self.market = board.market
+            storage = .sectorIndex(board)
+            return
+        }
+        // Normalize legacy A-share rows exactly as init(market:code:) does,
+        // including a row saved under `sz`: the board's carrier is always `sh`.
+        if !values.contains(.indexID),
+           let code = try? values.decode(String.self, forKey: .code),
+           let board = SectorIndexID.resolve(market: market, code: code) {
+            self.market = board.market
+            storage = .sectorIndex(board)
             return
         }
         self.market = market
@@ -440,6 +475,13 @@ public struct SymbolID: Hashable, Codable, Sendable, CustomStringConvertible {
         case .cryptoPair(let pair):
             try values.encode(market, forKey: .market)
             try values.encode(pair, forKey: .cryptoPair)
+        case .sectorIndex(let board):
+            // `market` stays the real A-share market: an older build knows it,
+            // so it decodes this row as a Shanghai code it simply cannot price
+            // and keeps every other item. Only `sectorIndex` restores the board.
+            try values.encode(market, forKey: .market)
+            try values.encode(board.code, forKey: .code)
+            try values.encode(board, forKey: .sectorIndex)
         }
     }
 }

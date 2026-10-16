@@ -571,4 +571,55 @@ struct WatchlistSyncMergeTests {
 
         #expect(merged.items.first?.drawings == [drawing])
     }
+
+    /// The label and the provenance that justifies it must travel together. When
+    /// they were resolved by two independent byte comparisons, both fields
+    /// happened to prefer English (`"PDD..."` < `"\u62fc..."`, `"en"` < `"zh-Hans"`)
+    /// — so sync handed back exactly the pair the local rule exists to prevent.
+    @Test("A changed name merges with the provenance that explains it")
+    func displayNameAndProvenanceMergeAsOneUnit() throws {
+        let english = DisplayNameSource(providerID: "yahoo", priority: 1, localeIdentifier: "en")
+        let chinese = DisplayNameSource(providerID: "tencent", priority: 2, localeIdentifier: "zh-Hans")
+
+        let baseItem = WatchItem(symbol: symbolA, displayName: "PDD Holdings Inc.",
+                                 displayNameSource: english)
+        // Device A learned the Chinese name the app now prefers.
+        let localItem = WatchItem(symbol: symbolA, displayName: "拼多多", displayNameSource: chinese)
+        // Device B changed the same row too, in a way that keeps it English.
+        let remoteItem = WatchItem(symbol: symbolA, displayName: "PDD Holdings",
+                                   displayNameSource: english)
+
+        let merged = WatchlistSyncMerge.merge(
+            base: WatchlistSyncSnapshot(items: [baseItem], groups: []),
+            local: WatchlistSyncSnapshot(items: [localItem], groups: []),
+            remote: WatchlistSyncSnapshot(items: [remoteItem], groups: [])
+        )
+        let row = try #require(merged.snapshot.items.first { $0.symbol == symbolA })
+
+        // The Chinese pair wins on precedence, not on byte order.
+        #expect(row.displayName == "拼多多")
+        #expect(row.displayNameSource == chinese)
+
+        // And the pair is internally consistent: whatever name survived carries
+        // the provenance that justifies that name, never a mix.
+        #expect(row.displayNameSource?.localeIdentifier == "zh-Hans")
+    }
+
+    @Test("Legacy rows without provenance still merge deterministically")
+    func displayNameMergeFallsBackForUnrankedRows() throws {
+        let baseItem = WatchItem(symbol: symbolA, displayName: "Apple Inc.")
+        let localItem = WatchItem(symbol: symbolA, displayName: "Apple")
+        let remoteItem = WatchItem(symbol: symbolA, displayName: "AAPL")
+
+        let merged = WatchlistSyncMerge.merge(
+            base: WatchlistSyncSnapshot(items: [baseItem], groups: []),
+            local: WatchlistSyncSnapshot(items: [localItem], groups: []),
+            remote: WatchlistSyncSnapshot(items: [remoteItem], groups: [])
+        )
+        let row = try #require(merged.snapshot.items.first { $0.symbol == symbolA })
+
+        // No provenance on either side, so the stable byte order decides.
+        #expect(row.displayName == "AAPL")
+        #expect(row.displayNameSource == nil)
+    }
 }

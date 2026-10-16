@@ -227,6 +227,8 @@
 "provider.naver" = "Naver 财经";
 "provider.sge" = "上海黄金交易所";
 "provider.eastmoney" = "东方财富";
+"provider.ths" = "同花顺行业指数";
+"provider.ths.minuteHistoryNotice" = "同花顺免费分钟K线可能滞后，请核对末根时间；分时图更新较及时。";
 "provider.yahoo" = "Yahoo Finance";
 
 "quote.delay.minutes" = "延时约%d分钟";
@@ -331,6 +333,8 @@
 "watchlist.group.namePlaceholder" = "列表名称";
 "watchlist.group.new" = "新建列表";
 "watchlist.group.rename" = "重命名列表";
+"watchlist.group.timeAxis.on" = "开启时间轴同步";
+"watchlist.group.timeAxis.off" = "关闭时间轴同步";
 
 "watchRow.dragHelp" = "按住拖动调整顺序";
 "watchRow.metricHelp" = "点击切换：涨跌幅 / 今日盈亏 / 持仓盈亏";

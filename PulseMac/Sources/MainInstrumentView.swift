@@ -101,6 +101,8 @@ struct MainInstrumentView: View {
             type = .commodity
         } else if symbol.cryptoPair != nil {
             type = .crypto
+        } else if symbol.sectorIndex != nil {
+            type = .index
         } else {
             type = nil
         }
@@ -272,7 +274,9 @@ struct MainInstrumentView: View {
     private var dashboard: some View {
         GeometryReader { geometry in
             let tabHeight = min(245, max(200, geometry.size.height * 0.31))
-            let chartHeight = max(240, geometry.size.height - 216 - tabHeight)
+            let showsSourceNotice = symbol.sectorIndex != nil && chartMode.period.isMinuteK
+            let sourceNoticeHeight: CGFloat = showsSourceNotice ? 32 : 0
+            let chartHeight = max(240, geometry.size.height - 216 - tabHeight - sourceNoticeHeight)
             // Resolved once for the whole body: the rail's visibility, its header
             // count, and its rows all read the same list.
             let railEntries = planRailEntries
@@ -289,6 +293,14 @@ struct MainInstrumentView: View {
                 chartSurface
                     .frame(height: chartHeight)
                     .padding(.horizontal, 12)
+                if showsSourceNotice {
+                    Text(PulseLocalization.localizedString("provider.ths.minuteHistoryNotice"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(height: sourceNoticeHeight)
+                        .padding(.horizontal, 16)
+                }
                 ohlcvStrip
                     .frame(height: 40)
                     .padding(.horizontal, 16)

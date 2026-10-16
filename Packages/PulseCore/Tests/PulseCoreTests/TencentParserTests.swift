@@ -294,4 +294,93 @@ struct TencentParserTests {
         )
         #expect(quotes.isEmpty)
     }
+
+    /// Two US lines from the real `qt.gtimg.cn` snapshot body, GBK-decoded to
+    /// Swift strings: the second code answers with an empty name field, and
+    /// `usMSFT` was never requested.
+    static let securityNamesFixture = """
+    v_usPDD="200~拼多多~PDD.OQ~120.55~118.20~119.00~3481200~0~0~120.50~10~0~0~0~0~0~0~0~0~120.60~10~0~0~0~0~0~0~0~0~~2026-07-20 16:00:01~2.35~1.99~121.30~118.10~USD~3481200~419867600~0.30~12.40~~14.10~~2.10~1100.20~1102.40~PDD Holdings Inc.~1.20~122.00~80.00~50~15.20~0.20~1102.40~3.10~0.90~GP~20.10~10.20~1.10~2.30~4.50~1200000~1190000~1.00~2.10~0.50~120.70~~~";
+    v_usTSLA="200~~TSLA.OQ~250.10~248.00~249.00~1000000~0~0~250.00~5~0~0~0~0~0~0~0~0~250.20~5~0~0~0~0~0~0~0~0~~2026-07-20 16:00:01~2.10~0.85~251.00~247.00~USD~1000000~250100000~0.20~60.00~~70.00~~1.50~2000.00~2000.00~Tesla, Inc.~2.00~260.00~150.00~40~30.00~0.50~2000.00~5.00~1.00~GP~40.00~20.00~2.00~3.00~5.00~900000~890000~1.00~3.00~0.80~250.00~~~";
+    v_usMSFT="200~微软~MSFT.OQ~420.00~418.00~419.00~2000000~0~0~420.00~5~0~0~0~0~0~0~0~0~420.20~5~0~0~0~0~0~0~0~0~~2026-07-20 16:00:01~2.00~0.48~421.00~417.00~USD~2000000~840000000~0.30~35.00~~40.00~~1.20~3000.00~3000.00~Microsoft Corporation~1.50~430.00~300.00~60~20.00~0.40~3000.00~4.00~0.90~GP~30.00~15.00~1.50~2.50~3.50~1500000~1490000~1.00~2.50~0.60~420.00~~~";
+    """
+
+    @Test("Reference names come from the equity snapshot's name field")
+    func parseSecurityNames() throws {
+        let pdd = SymbolID(market: .us, code: "PDD")
+        let tesla = SymbolID(market: .us, code: "TSLA")
+        let names = TencentProvider.parseSecurityNames(
+            text: Self.securityNamesFixture,
+            mapping: ["usPDD": pdd, "usTSLA": tesla]
+        )
+
+        // The code with a real name is answered, in Simplified Chinese.
+        let pddName = try #require(names.first { $0.symbol == pdd })
+        #expect(pddName.name == "拼多多")
+        #expect(pddName.localeIdentifier == "zh-Hans")
+
+        // A name-less entry is skipped rather than returned as an empty name.
+        #expect(names.count == 1)
+        #expect(!names.contains { $0.symbol == tesla })
+
+        // A code absent from the body is silently omitted: that is not an error.
+        #expect(!names.contains { $0.symbol == SymbolID(market: .us, code: "MSFT") })
+    }
+
+    @Test("Reference names ignore the international-futures channel and unrequested keys")
+    func parseSecurityNamesSkipsOtherChannels() throws {
+        let gold = SymbolID(metal: .gold)
+        let names = TencentProvider.parseSecurityNames(
+            text: Self.metalFixture,
+            mapping: ["hf_GC": gold, "usAAPL": SymbolID(market: .us, code: "AAPL")]
+        )
+        // `hf_` payloads are comma-separated and never name an equity.
+        #expect(names.isEmpty)
+
+        // An empty request body is not an error either.
+        #expect(TencentProvider.parseSecurityNames(text: "", mapping: [:]).isEmpty)
+    }
+
+    /// The real endpoint names part of the US board in Latin script: these are
+    /// the literal field-1 values `usIBM`, `usMETA` and `usLITE` answer with.
+    static let latinNameFixture = """
+    v_usIBM="200~IBM~IBM.N~280.10~278.00~279.00~1000000~0~0~280.00~5~0~0~0~0~0~0~0~0~280.20~5~0~0~0~0~0~0~0~0~~2026-07-20 16:00:01~2.10~0.76~281.00~277.00~USD~1000000~280100000~0.20~25.00~~30.00~~1.50~2000.00~2000.00~International Business Machines~2.00~290.00~200.00~40~20.00~0.50~2000.00~5.00~1.00~GP~40.00~20.00~2.00~3.00~5.00~900000~890000~1.00~3.00~0.80~280.00~~~";
+    v_usMETA="200~Meta Platforms~META.OQ~620.00~618.00~619.00~1000000~0~0~620.00~5~0~0~0~0~0~0~0~0~620.20~5~0~0~0~0~0~0~0~~2026-07-20 16:00:01~2.00~0.32~621.00~617.00~USD~1000000~620000000~0.30~30.00~~35.00~~1.20~3000.00~3000.00~Meta Platforms, Inc.~1.50~630.00~500.00~60~20.00~0.40~3000.00~4.00~0.90~GP~30.00~15.00~1.50~2.50~3.50~1500000~1490000~1.00~2.50~0.60~620.00~~~";
+    """
+
+    @Test("A Latin listing name is not returned as a Chinese reference name")
+    func parseSecurityNamesRejectsLatinNames() throws {
+        let ibm = SymbolID(market: .us, code: "IBM")
+        let meta = SymbolID(market: .us, code: "META")
+        let names = TencentProvider.parseSecurityNames(
+            text: Self.latinNameFixture,
+            mapping: ["usIBM": ibm, "usMETA": meta]
+        )
+
+        // Neither is Chinese, so neither may be stamped `zh-Hans`: accepting them
+        // would replace a stored English name on the strength of provenance the
+        // source never supplied, and the row would keep its Latin name anyway.
+        #expect(names.isEmpty)
+
+        // The detector itself, both ways.
+        #expect(SecurityName.isChineseName("苹果"))
+        #expect(SecurityName.isChineseName("IBM国际商业机器"))
+        #expect(!SecurityName.isChineseName("IBM"))
+        #expect(!SecurityName.isChineseName("Meta Platforms"))
+        #expect(!SecurityName.isChineseName(""))
+        #expect(!SecurityName.isChineseName("600519"))
+    }
+
+    @Test("A names-only decode failure cannot trip the quote circuit")
+    func undecodableNameResponseDoesNotTripCircuit() {
+        // Name resolution is best-effort: prices must keep flowing when only the
+        // label lookup fails. Quotes are the product and still trip the circuit
+        // for a real outage; a missing label must not take prices down with it.
+        let failure = ProviderError.clientError(status: 200, detail: "tencent: undecodable name response")
+        #expect(!failure.shouldTripCircuit)
+
+        // Guard the distinction the other way too, so this cannot be "fixed" by
+        // making every Tencent error non-tripping.
+        #expect(ProviderError.badResponse("x").shouldTripCircuit)
+        #expect(ProviderError.network(underlying: "timed out").shouldTripCircuit)
+    }
 }

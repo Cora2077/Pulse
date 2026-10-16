@@ -89,12 +89,15 @@ struct SymbolDisplayNameTests {
     }
 
     @MainActor
-    @Test("Persisted names only move to a higher-priority provider")
+    @Test("A name in the interface language wins; provider priority decides inside one language")
     func displayNameSourceOnlyUpgrades() throws {
         let suiteName = "SymbolNamePriorityTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
+        // The interface ships Simplified Chinese, so "zh-Hans" is the locale that
+        // leads. `outranks` is two keys in order: interface-language match first,
+        // provider priority second.
         let pdd = SymbolID(market: .us, code: "PDD")
         let yahoo = DisplayNameSource(providerID: "yahoo", priority: 1, localeIdentifier: "en")
         let tencent = DisplayNameSource(providerID: "tencent", priority: 2, localeIdentifier: "zh-Hans")
@@ -110,22 +113,75 @@ struct SymbolDisplayNameTests {
             displayNameSource: yahoo
         ))
 
-        #expect(!watchlist.upgradeDisplayName(for: pdd, to: "拼多多", source: tencent))
-        #expect(watchlist.item(for: pdd)?.displayName == "PDD Holdings Inc.")
-        #expect(watchlist.upgradeDisplayName(
+        // The Chinese name is in the interface language and now outranks the
+        // English one, even though Yahoo carries the better provider rank.
+        #expect(watchlist.upgradeDisplayName(for: pdd, to: "拼多多", source: tencent))
+        #expect(watchlist.item(for: pdd)?.displayName == "拼多多")
+
+        // A better provider rank in the WRONG language no longer wins: Longbridge
+        // is priority 0 but names US instruments in English.
+        #expect(!watchlist.upgradeDisplayName(
             for: pdd,
             to: "PDD",
             source: longbridge,
             allowSameProviderRefresh: true
         ))
-        #expect(!watchlist.upgradeDisplayName(
-            for: pdd,
-            to: "PDD Holdings Inc.",
-            source: yahoo
-        ))
+        #expect(watchlist.item(for: pdd)?.displayName == "拼多多")
 
+        // Same language, same offer: the stored stamp must survive a reload.
         let reloaded = WatchlistStore(defaults: defaults, defaultGroupName: "Watchlist")
-        #expect(reloaded.item(for: pdd)?.displayName == "PDD")
-        #expect(reloaded.item(for: pdd)?.displayNameSource == longbridge)
+        #expect(reloaded.item(for: pdd)?.displayName == "拼多多")
+        #expect(reloaded.item(for: pdd)?.displayNameSource == tencent)
+    }
+
+    @MainActor
+    @Test("Locale match leads, then provider priority decides inside one language")
+    func displayNameOutranksKeysInOrder() throws {
+        let suiteName = "SymbolNameRankTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let aapl = SymbolID(market: .us, code: "AAPL")
+        let yahoo = DisplayNameSource(providerID: "yahoo", priority: 1, localeIdentifier: "en")
+        let longbridge = DisplayNameSource(
+            providerID: LongbridgeProvider.providerID,
+            priority: 0,
+            localeIdentifier: "en"
+        )
+        let tencent = DisplayNameSource(providerID: "tencent", priority: 2, localeIdentifier: "zh-Hans")
+
+        // Key 1 — a locale match beats a better provider priority, in both directions.
+        #expect(tencent.outranks(yahoo))
+        #expect(!yahoo.outranks(tencent))
+        #expect(tencent.outranks(longbridge))
+        #expect(!longbridge.outranks(tencent))
+
+        // Key 2 — two names in the same language fall back to pure provider order.
+        #expect(longbridge.outranks(yahoo))
+        #expect(!yahoo.outranks(longbridge))
+        #expect(!yahoo.outranks(yahoo))
+
+        // A nil watermark is always replaceable.
+        #expect(tencent.outranks(nil))
+
+        // Same two keys once persisted: a same-language offer from a higher-priority
+        // source still replaces, while a lower-priority one is refused.
+        let watchlist = WatchlistStore(defaults: defaults, defaultGroupName: "Watchlist")
+        watchlist.add(SymbolInfo(symbol: aapl, name: "Apple Inc.", displayNameSource: yahoo))
+        #expect(watchlist.upgradeDisplayName(
+            for: aapl,
+            to: "Apple",
+            source: longbridge,
+            allowSameProviderRefresh: true
+        ))
+        #expect(watchlist.item(for: aapl)?.displayNameSource == longbridge)
+        // Then a locale-matching offer replaces even the better-ranked English one.
+        #expect(watchlist.upgradeDisplayName(for: aapl, to: "苹果", source: tencent))
+        #expect(watchlist.item(for: aapl)?.displayName == "苹果")
+        #expect(watchlist.item(for: aapl)?.displayNameSource == tencent)
+
+        // And the English fallback can no longer take the name back.
+        #expect(!watchlist.upgradeDisplayName(for: aapl, to: "Apple Inc.", source: yahoo))
+        #expect(watchlist.item(for: aapl)?.displayName == "苹果")
     }
 }

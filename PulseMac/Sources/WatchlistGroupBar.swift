@@ -70,6 +70,18 @@ struct WatchlistGroupBar: View {
                                 Button(PulseLocalization.localizedString("watchlist.group.rename")) {
                                     beginRenaming(group)
                                 }
+                                Divider()
+                                // The row's axis is a per-group choice, so the switch
+                                // belongs on the group tab: a user reading two markets
+                                // side by side is already looking at the tab they want
+                                // to change, and a settings page would separate the
+                                // control from the thing it changes.
+                                Button(timeAxisTitle(for: group)) {
+                                    appState.sharedWatchlist.setChinaAligned(
+                                        !appState.sharedWatchlist.isChinaAligned(group.id),
+                                        for: group.id
+                                    )
+                                }
                                 if appState.sharedWatchlist.groups.count > 1 {
                                     Divider()
                                     Button(
@@ -168,6 +180,16 @@ struct WatchlistGroupBar: View {
 
     private func focusNameField() {
         Task { @MainActor in nameFieldFocused = true }
+    }
+
+    /// The menu item names the action the user gets by choosing it, so the label
+    /// always describes what the click does rather than the state it is in. A
+    /// menu whose item reads as a state and acts as a toggle is the one thing
+    /// users reliably misread.
+    private func timeAxisTitle(for group: WatchlistGroup) -> String {
+        appState.sharedWatchlist.isChinaAligned(group.id)
+            ? PulseLocalization.localizedString("watchlist.group.timeAxis.off")
+            : PulseLocalization.localizedString("watchlist.group.timeAxis.on")
     }
 
     private func scrollToSelectedGroup(using proxy: ScrollViewProxy) {

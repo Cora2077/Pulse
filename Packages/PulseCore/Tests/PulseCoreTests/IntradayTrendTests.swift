@@ -241,6 +241,146 @@ struct IntradayTrendTests {
         #expect(extended.map(\.close) == [1, 3, 4, 5])
     }
 
+    /// A projected session re-reads the same instants in the reference zone, which
+    /// is what lets a Korean row and a Chinese row share one Beijing-time axis.
+    @Test("Projecting onto Beijing moves Seoul's boundaries by the zone difference")
+    func seoulProjectedOntoBeijing() throws {
+        let seoul = exchangeCalendar(.kr)
+        let day = try #require(seoul.date(from: DateComponents(year: 2026, month: 8, day: 19)))
+        let session = IntradayTradingSession(market: .kr, referenceDate: day)
+
+        let projected = session.projected(to: .sh)
+        let beijing = exchangeCalendar(.sh)
+
+        // Seoul is one hour ahead, so its 09:00 open is Beijing's 08:00. Reading
+        // these in the reference zone's calendar is the whole point: a test that
+        // checked `open` against a hard-coded Date would pass even if the hour
+        // were placed on the wrong calendar day.
+        #expect(beijing.dateComponents([.hour, .minute], from: projected.open) == DateComponents(hour: 8, minute: 0))
+        #expect(beijing.dateComponents([.hour, .minute], from: projected.close) == DateComponents(hour: 14, minute: 30))
+        // Seoul has no lunch break, so the projected axis has none either: folding
+        // one in would silently invent a gap the exchange never had.
+        #expect(session.morningEnd == nil)
+        #expect(projected.morningEnd == nil)
+        #expect(projected.afternoonStart == nil)
+        #expect(projected.totalMinutes == 390)
+        #expect(projected.preOpen == nil && projected.postClose == nil)
+
+        // The same absolute instant must land on the same axis fraction both
+        // before and after projecting, or the two lines drift apart on screen.
+        let barTime = try #require(seoul.date(from: DateComponents(year: 2026, month: 8, day: 19, hour: 14, minute: 12)))
+        let originalOffset = session.minuteOffset(for: barTime)
+        let projectedOffset = projected.minuteOffset(for: barTime)
+        #expect(abs(originalOffset - projectedOffset) < 0.001)
+        #expect(abs(originalOffset / 390 - projectedOffset / projected.totalMinutes) < 0.001)
+    }
+
+    /// Projecting a session onto its own market has to be exact, not merely
+    /// close: the caller uses it as the identity case, and a session rebuilt
+    /// through a calendar could land a second off and break `==` comparisons
+    /// that hold sessions in sets.
+    @Test("Projecting onto the same market is the identity")
+    func projectionIsIdentityForSameMarket() throws {
+        let shanghai = exchangeCalendar(.sh)
+        let day = try #require(shanghai.date(from: DateComponents(year: 2026, month: 8, day: 19)))
+        let session = IntradayTradingSession(market: .sh, referenceDate: day)
+
+        #expect(session.projected(to: .sh) == session)
+
+        let tokyo = IntradayTradingSession(market: .jp, referenceDate: day)
+        #expect(tokyo.projected(to: .jp) == tokyo)
+    }
+
+    /// Hong Kong shares Beijing's zone, so its 09:30 open must not move. This
+    /// guards the shift calculation itself: a sign error or a missing zone
+    /// comparison would show up here as a two-hour drift.
+    @Test("Hong Kong keeps its 09:30 open on Beijing time")
+    func hongKongProjectedOntoBeijing() throws {
+        let hongKong = exchangeCalendar(.hk)
+        let day = try #require(hongKong.date(from: DateComponents(year: 2026, month: 8, day: 19)))
+        let session = IntradayTradingSession(market: .hk, referenceDate: day)
+
+        let projected = session.projected(to: .sh)
+        let beijing = exchangeCalendar(.sh)
+        #expect(beijing.dateComponents([.hour, .minute], from: projected.open) == DateComponents(hour: 9, minute: 30))
+        // Its lunch break survives the projection unchanged.
+        #expect(beijing.dateComponents([.hour, .minute], from: try #require(projected.morningEnd)) == DateComponents(hour: 12, minute: 0))
+        #expect(beijing.dateComponents([.hour, .minute], from: try #require(projected.afternoonStart)) == DateComponents(hour: 13, minute: 0))
+    }
+
+    /// Shanghai's own lunch boundaries must project to themselves, which is the
+    /// case the shared axis actually renders: the A-share line's break has to sit
+    /// at 11:30/13:00 on the Beijing axis, not an hour either side of it.
+    @Test("Shanghai's lunch boundaries survive projecting onto Beijing")
+    func shanghaiLunchBoundariesProjectOntoBeijing() throws {
+        let shanghai = exchangeCalendar(.sh)
+        let day = try #require(shanghai.date(from: DateComponents(year: 2026, month: 8, day: 19)))
+        let session = IntradayTradingSession(market: .sh, referenceDate: day)
+
+        let projected = session.projected(to: .sh)
+        #expect(projected.morningEnd == session.morningEnd)
+        #expect(projected.afternoonStart == session.afternoonStart)
+        #expect(projected.totalMinutes == 240)
+    }
+
+    /// The shared clock window every row of an aligned group is plotted against.
+    ///
+    /// This is the piece that makes the rows line up, and the reason it needs its
+    /// own test is that `projected(to:)` alone looks sufficient and is not: it
+    /// re-reads a session's boundaries but leaves the row measuring from its own
+    /// open, so Seoul's 390-minute axis and Shanghai's 240-minute one put the
+    /// same instant 53px apart at a 348px-wide plot. The window is what fixes
+    /// both rows to absolute Beijing time.
+    @Test("A shared axis window spans every session's Beijing reading")
+    func sharedAxisWindowSpansBothSessions() throws {
+        let shanghai = exchangeCalendar(.sh)
+        let day = try #require(shanghai.date(from: DateComponents(year: 2026, month: 8, day: 19)))
+        let seoul = IntradayTradingSession(market: .kr, referenceDate: day)
+        let china = IntradayTradingSession(market: .sh, referenceDate: day)
+
+        let bounds = IntradayTradingSession.axisBounds(for: [seoul, china], reference: .sh)
+
+        // Seoul 09:00 KST is 08:00 Beijing; Shanghai closes at 15:00. The window
+        // has to start at the earlier open and end at the later close, or one of
+        // the two rows is clipped at an edge.
+        #expect(bounds.start == 8 * 60)
+        #expect(bounds.end == 15 * 60)
+        #expect(bounds.end - bounds.start == 420)
+
+        // The same instant must land on the same fraction from either session.
+        // 14:12 Beijing is 15:12 Seoul, inside both sessions.
+        let bar = try #require(
+            shanghai.date(from: DateComponents(year: 2026, month: 8, day: 19, hour: 14, minute: 12))
+        )
+        let koreanFraction = seoul.projected(to: .sh).axisFraction(for: bar, reference: .sh, bounds: bounds)
+        let chineseFraction = china.projected(to: .sh).axisFraction(for: bar, reference: .sh, bounds: bounds)
+        #expect(koreanFraction != nil)
+        #expect(chineseFraction != nil)
+        #expect(abs((koreanFraction ?? -1) - (chineseFraction ?? -2)) < 0.0001)
+        // 372 minutes into a 420-minute window.
+        #expect(abs((koreanFraction ?? 0) - 372.0 / 420.0) < 0.0001)
+
+        // A bar outside the window is dropped rather than clamped onto the edge,
+        // where it would read as a real price at a time the market was shut.
+        let beforeOpen = try #require(
+            shanghai.date(from: DateComponents(year: 2026, month: 8, day: 19, hour: 7, minute: 30))
+        )
+        #expect(seoul.projected(to: .sh).axisFraction(for: beforeOpen, reference: .sh, bounds: bounds) == nil)
+    }
+
+    /// A single session's own window is its own session, which is the axis every
+    /// unaligned row already uses. If this drifted, every existing sparkline
+    /// would rescale.
+    @Test("A session with no reference market keeps its own window")
+    func ownWindowWithoutReference() throws {
+        let shanghai = exchangeCalendar(.sh)
+        let day = try #require(shanghai.date(from: DateComponents(year: 2026, month: 8, day: 19)))
+        let china = IntradayTradingSession(market: .sh, referenceDate: day)
+        let bounds = IntradayTradingSession.axisBounds(for: [china], reference: .sh)
+        #expect(bounds.start == 9 * 60 + 30)
+        #expect(bounds.end == 15 * 60)
+    }
+
     private func exchangeCalendar(_ market: Market) -> Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = market.timeZone

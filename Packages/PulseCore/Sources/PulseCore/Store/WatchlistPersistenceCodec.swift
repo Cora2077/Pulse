@@ -41,8 +41,7 @@ enum WatchlistPersistenceCodec {
     }
 
     private static func shouldAcceptDisplayName(_ candidate: DisplayNameSource, over current: DisplayNameSource?) -> Bool {
-        guard let current else { return true }
-        return candidate.priority < current.priority
+        candidate.outranks(current)
     }
 
     private static func shouldAcceptInstrumentType(_ candidate: InstrumentType?, over current: InstrumentType?) -> Bool {

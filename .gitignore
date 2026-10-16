@@ -40,8 +40,7 @@ xcuserdata/
 /coverage/
 /vendor/Sparkle/
 
-# Local iOS app work (not published from this repository)
-/PulseiOS/
+# Legacy per-machine iOS build configuration (iOS source is now shared)
 /project.ios.yml
 /scripts/build-longbridge-ios.sh
 *.ipa
@@ -62,6 +61,9 @@ xcuserdata/
 /local/
 
 # Local agent and planning state
+/.dsh-home/
+/.dsh-progress/
+/.archify/
 /plans/
 /.codex/
 /.conductor/

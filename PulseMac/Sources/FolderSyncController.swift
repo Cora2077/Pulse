@@ -286,6 +286,7 @@ final class FolderSyncController {
     private(set) var lastReadAt: Date?
     private(set) var lastWriteAt: Date?
     private(set) var lastError: String?
+    var cloudSyncActive = false
     private(set) var conflictSummaries: [ConflictSummary] = []
     private(set) var positionAllocationConflicts: [PositionAllocationConflictSummary] = []
 
@@ -337,12 +338,14 @@ final class FolderSyncController {
     }
 
     func start() {
+        guard !cloudSyncActive else { return }
         guard pollTask == nil else { return }
         if isConfigured { syncNow() }
         startPolling()
     }
 
     func chooseFolder() {
+        guard !cloudSyncActive else { lastError = "CloudKit 同步已启用；为避免双主写入，不能同时连接文件夹同步。"; return }
         let panel = NSOpenPanel()
         panel.title = PulseLocalization.localizedString("sync.choose.title")
         panel.prompt = PulseLocalization.localizedString("sync.choose.button")
@@ -401,6 +404,7 @@ final class FolderSyncController {
     }
 
     func syncNow() {
+        guard !cloudSyncActive else { return }
         guard isConfigured else { return }
         guard !isSyncing else {
             rerunRequested = true

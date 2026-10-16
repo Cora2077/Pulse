@@ -68,6 +68,29 @@ public final class SharedWatchlist {
         /// Resolved pin set for merged groups whose pin state cannot be written
         /// to a single physical source.
         var pinnedSymbols: [String: [SymbolID]] = [:]
+        /// Groups whose rows share one reference-market clock. Only the groups a
+        /// user has explicitly switched on appear here; absence means off, so the
+        /// blob does not grow one entry per group that will never use it.
+        var chinaAlignedGroups: Set<String> = []
+
+        /// Decoded key by key, each falling back to its default.
+        ///
+        /// The synthesized decoder would instead fail the whole blob the first
+        /// time a new field is read from preferences written by an older build —
+        /// and `loadLocalPreferences` swallows that failure, so a user upgrading
+        /// across this change would silently lose their group order, symbol order
+        /// and pins. Every field added here in future must be optional on read
+        /// for the same reason.
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            groupOrder = try container.decodeIfPresent([String].self, forKey: .groupOrder) ?? []
+            symbolOrder = try container.decodeIfPresent([String: [SymbolID]].self, forKey: .symbolOrder) ?? [:]
+            manualBaseline = try container.decodeIfPresent([String: [SymbolID]].self, forKey: .manualBaseline) ?? [:]
+            pinnedSymbols = try container.decodeIfPresent([String: [SymbolID]].self, forKey: .pinnedSymbols) ?? [:]
+            chinaAlignedGroups = try container.decodeIfPresent(Set<String>.self, forKey: .chinaAlignedGroups) ?? []
+        }
+
+        init() {}
     }
     private var local = LocalPreferences()
 
@@ -733,6 +756,32 @@ public final class SharedWatchlist {
         let insertion = sourceIndex < destinationIndex ? updatedDestination + 1 : updatedDestination
         updated.insert(moving, at: insertion)
         local.groupOrder = updated.map(\.id.uuidString)
+        saveLocalPreferences()
+    }
+
+    // MARK: - Shared time axis
+
+    /// Whether this group's rows all plot against one reference-market clock
+    /// instead of each exchange's own session.
+    ///
+    /// Off unless a user switched it on. Two reasons it is not inferred from the
+    /// group's contents: a group that happens to hold both markets would change
+    /// axis under the reader without anyone asking, and a user who wants the
+    /// alignment on a group holding only one market today would have to wait for
+    /// the next symbol to be added before the switch could be found.
+    public func isChinaAligned(_ groupID: UUID?) -> Bool {
+        guard let groupID else { return false }
+        return local.chinaAlignedGroups.contains(groupID.uuidString)
+    }
+
+    /// Switches the shared axis on or off. Switching off removes the key rather
+    /// than storing `false`, so the blob holds only the groups actually using it.
+    public func setChinaAligned(_ isAligned: Bool, for groupID: UUID) {
+        if isAligned {
+            local.chinaAlignedGroups.insert(groupID.uuidString)
+        } else {
+            local.chinaAlignedGroups.remove(groupID.uuidString)
+        }
         saveLocalPreferences()
     }
 

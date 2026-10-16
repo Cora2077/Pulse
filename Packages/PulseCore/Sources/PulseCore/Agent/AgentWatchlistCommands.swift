@@ -857,6 +857,7 @@ public struct AgentWatchlistCommands {
         if symbol.indexID != nil { return .index }
         if symbol.metalID != nil { return .commodity }
         if symbol.cryptoPair != nil { return .crypto }
+        if symbol.sectorIndex != nil { return .index }
         return .equity
     }
 

@@ -547,6 +547,7 @@ struct DetailView: View {
         if symbol.indexID != nil { return .index }
         if symbol.metalID != nil { return .commodity }
         if symbol.cryptoPair != nil { return .crypto }
+        if symbol.sectorIndex != nil { return .index }
         return nil
     }
 
@@ -816,6 +817,14 @@ struct DetailView: View {
             chart
                 .padding(.leading, 10)
                 .padding(.trailing, 12)
+            if symbol.sectorIndex != nil, period.isMinuteK {
+                Text(PulseLocalization.localizedString("provider.ths.minuteHistoryNotice"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

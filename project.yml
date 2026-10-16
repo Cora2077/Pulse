@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: app.pulse
   deploymentTarget:
     macOS: "14.0"
+    iOS: "18.0"
   createIntermediateGroups: true
 
 packages:
@@ -10,6 +11,12 @@ packages:
     path: Packages/PulseCore
   PulseUI:
     path: Packages/PulseUI
+  PulseSync:
+    path: Packages/PulseSync
+  PulseMobile:
+    path: Packages/PulseMobile
+  PulseActivity:
+    path: Packages/PulseActivity
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     from: "2.9.4"
@@ -27,9 +34,11 @@ targets:
     sources:
       - PulseMac/Sources
       - PulseMac/Resources
+      - SharedAppSupport
     dependencies:
       - package: PulseCore
       - package: PulseUI
+      - package: PulseSync
       - package: Sparkle
         product: Sparkle
       - package: TelemetryDeck
@@ -106,3 +115,129 @@ targets:
           PRODUCT_NAME: FFF
           BUNDLE_DISPLAY_NAME: FFF
           PRODUCT_BUNDLE_IDENTIFIER: app.pulse.mac
+
+  PulseIOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: PulseIOS/Sources
+      - path: SharedAppSupport
+      - path: PulseMac/Sources/TradingEventsController.swift
+      - path: PulseMac/Sources/PositionPoolPresentation.swift
+      - path: PulseMac/Sources/WorkbenchSelfTest.swift
+      - path: PulseIOS/Resources
+        optional: true
+      - path: PulseMac/Resources/zh-Hans.lproj
+        type: folder
+    dependencies:
+      - package: PulseCore
+      - package: PulseUI
+      - package: PulseMobile
+      - package: PulseSync
+      - package: PulseActivity
+      - target: PulseWidgets
+        embed: true
+    info:
+      path: PulseIOS/Info.plist
+      properties:
+        CFBundleDisplayName: FFF
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        NSSupportsLiveActivities: true
+        NSSupportsLiveActivitiesFrequentUpdates: true
+        UIApplicationSupportsIndirectInputEvents: true
+        UIBackgroundModes: [remote-notification]
+        CFBundleURLTypes:
+          - CFBundleURLName: app.pulse.ios
+            CFBundleURLSchemes: [fff-pulse]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_NAME: FFFiPhone
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        PRODUCT_BUNDLE_IDENTIFIER: app.pulse.ios.dev
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        DEVELOPMENT_LANGUAGE: zh-Hans
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: NO
+        GENERATE_INFOPLIST_FILE: NO
+
+  PulseWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: PulseWidgets/Sources
+    dependencies:
+      - package: PulseActivity
+    info:
+      path: PulseWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: FFF盯盘
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_NAME: FFFWidgets
+        PRODUCT_BUNDLE_IDENTIFIER: app.pulse.ios.dev.widgets
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"
+
+  PulseIOSUnitTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - PulseIOSUnitTests
+    dependencies:
+      - target: PulseIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.pulse.ios.unittests
+        SWIFT_VERSION: "6.0"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/FFFiPhone.app/FFFiPhone"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+
+  PulseIOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - PulseIOSUITests
+    dependencies:
+      - target: PulseIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.pulse.ios.uitests
+        SWIFT_VERSION: "6.0"
+        TEST_TARGET_NAME: PulseIOS
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+
+schemes:
+  PulseIOS:
+    build:
+      targets:
+        PulseIOS: all
+    test:
+      targets:
+        - PulseIOSUnitTests
+        - PulseIOSUITests

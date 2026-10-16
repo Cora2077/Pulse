@@ -629,7 +629,7 @@ struct PopoverRootView: View {
     /// benchmark and a metal quote is a futures contract whose size Pulse does
     /// not model, so neither can hold a position — or a plan for one.
     private func plansApply(to symbol: SymbolID) -> Bool {
-        if symbol.indexID != nil || symbol.metalID != nil { return false }
+        if symbol.indexID != nil || symbol.metalID != nil || symbol.sectorIndex != nil { return false }
         guard let item = appState.sharedWatchlist.item(for: symbol)
             ?? appState.watchlist.item(for: symbol) else { return true }
         return item.supportsPosition

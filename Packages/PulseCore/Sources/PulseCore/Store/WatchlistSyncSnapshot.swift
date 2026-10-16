@@ -481,13 +481,21 @@ public enum WatchlistSyncMerge {
 
         var result = seed
         result.symbol = symbol
-        result.displayName = threeWay(
-            base?.displayName,
-            local?.displayName,
-            remote?.displayName,
+        // The label and the provenance that justifies it are one value: resolving
+        // them separately lets a merge pair a name from one device with the source
+        // from another, a combination no device ever stored — and the two are
+        // compared over different bytes (name text vs. that struct's JSON), so
+        // they are not even guaranteed to prefer the same side. This is also the
+        // one ordering site that must agree with the local rule, or a synced
+        // device can hand back the English label the local rule just refused.
+        let resolvedName = Self.mergeDisplayName(
+            base: Self.displayNamePair(base),
+            local: Self.displayNamePair(local),
+            remote: Self.displayNamePair(remote),
             fallback: symbol.displayCode
-        ) ?? symbol.displayCode
-        result.displayNameSource = threeWay(base?.displayNameSource, local?.displayNameSource, remote?.displayNameSource)
+        )
+        result.displayName = resolvedName.name
+        result.displayNameSource = resolvedName.source
         result.instrumentType = threeWay(base?.instrumentType, local?.instrumentType, remote?.instrumentType)
         result.addedAt = threeWay(base?.addedAt, local?.addedAt, remote?.addedAt, fallback: seed.addedAt) ?? seed.addedAt
         result.thesis = threeWay(base?.thesis, local?.thesis, remote?.thesis)
@@ -1017,6 +1025,60 @@ public enum WatchlistSyncMerge {
     private static func precedes<Element: Equatable>(_ lhs: Element, _ rhs: Element, in order: [Element]) -> Bool? {
         guard let l = order.firstIndex(of: lhs), let r = order.firstIndex(of: rhs) else { return nil }
         return l < r
+    }
+
+    /// A display name together with the provenance that justifies it. The two are
+    /// only ever produced together, so a merge cannot mix one device's label with
+    /// another's source.
+    struct DisplayNamePair: Equatable, Encodable {
+        var name: String
+        var source: DisplayNameSource?
+    }
+
+    private static func displayNamePair(_ item: WatchItem?) -> DisplayNamePair? {
+        guard let item else { return nil }
+        return DisplayNamePair(name: item.displayName, source: item.displayNameSource)
+    }
+
+    /// Three-way merge of the label and its provenance as a single unit.
+    ///
+    /// A conflict is resolved by asking which side's *pair* the app's own
+    /// precedence rule would keep — the same `DisplayNameSource.outranks` the
+    /// watchlist applies locally — rather than by comparing bytes. Comparing bytes
+    /// would resolve the name text and the source struct independently and could
+    /// return the English pair the local rule exists to prevent; under
+    /// `canonicalChoice` the shorter English name wins on `n` < `\u62fc`, and the
+    /// `en` source wins on `e` < `z`, so both fields would agree on "English".
+    /// Ties and unrankable pairs still fall back to the stable byte order.
+    private static func mergeDisplayName(
+        base: DisplayNamePair?,
+        local: DisplayNamePair?,
+        remote: DisplayNamePair?,
+        fallback: String
+    ) -> DisplayNamePair {
+        if local == remote { return local ?? base ?? DisplayNamePair(name: fallback, source: nil) }
+        if local == base { return remote ?? local ?? DisplayNamePair(name: fallback, source: nil) }
+        if remote == base { return local ?? remote ?? DisplayNamePair(name: fallback, source: nil) }
+
+        // Both sides changed. Prefer whichever pair the local precedence rule
+        // would rank higher, so a synced row never contradicts the local outcome.
+        switch (local, remote) {
+        case let (local?, remote?):
+            if let localSource = local.source, let remoteSource = remote.source {
+                if localSource.outranks(remoteSource) { return local }
+                if remoteSource.outranks(localSource) { return remote }
+            }
+            // An unranked pair (no provenance) cannot be compared by language, so
+            // fall back to the byte order that keeps merges deterministic.
+            if local == remote { return local }
+            return encoded(local).lexicographicallyPrecedes(encoded(remote)) ? local : remote
+        case let (local?, nil):
+            return local
+        case let (nil, remote?):
+            return remote
+        case (nil, nil):
+            return DisplayNamePair(name: fallback, source: nil)
+        }
     }
 
     private static func threeWay<Value: Equatable & Encodable>(

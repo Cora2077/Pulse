@@ -414,24 +414,30 @@ struct CompositeProviderTests {
 
     @Test("Changing providers invalidates cached name provenance")
     func providerToggleInvalidatesSearchCache() async throws {
+        // Both sources are named so the composite assigns them the same locale
+        // rank, leaving registration order (provider priority) to decide. That is
+        // what this test is about; a language difference would decide the winner
+        // on its own and hide a stale cache. Neither name may equal the symbol
+        // code either: an equal name is a placeholder and would be replaced
+        // unconditionally, again hiding the provenance change under test.
         let symbol = SymbolID(market: .us, code: "PDD")
-        let tencent = MockProvider(
-            id: "tencent",
-            searchResults: [SymbolInfo(symbol: symbol, name: "拼多多")]
+        let alpha = MockProvider(
+            id: "alpha",
+            searchResults: [SymbolInfo(symbol: symbol, name: "Pinduoduo Inc.")]
         )
-        let yahoo = MockProvider(
-            id: "yahoo",
+        let beta = MockProvider(
+            id: "beta",
             searchResults: [SymbolInfo(symbol: symbol, name: "PDD Holdings Inc.")]
         )
-        let composite = CompositeProvider(providers: [tencent, yahoo])
+        let composite = CompositeProvider(providers: [alpha, beta])
 
         let initial = try #require(try await composite.search("PDD").first)
-        #expect(initial.displayNameSource?.providerID == "yahoo")
+        #expect(initial.displayNameSource?.providerID == "alpha")
 
-        await composite.setDisabled(["yahoo"])
+        await composite.setDisabled(["alpha"])
         let rerouted = try #require(try await composite.search("PDD").first)
-        #expect(rerouted.name == "拼多多")
-        #expect(rerouted.displayNameSource?.providerID == "tencent")
+        #expect(rerouted.name == "PDD Holdings Inc.")
+        #expect(rerouted.displayNameSource?.providerID == "beta")
     }
 
     @Test("US quotes prefer Yahoo while other markets keep provider order")
@@ -487,7 +493,7 @@ struct CompositeProviderTests {
         #expect(composite.namePriority(for: "yahoo", market: .hk) == 2)
     }
 
-    @Test("Search keeps the name from the higher-priority quote provider")
+    @Test("Search prefers a name in the interface language over a better-ranked English one")
     func searchNamesUseQuotePriority() async throws {
         let symbol = SymbolID(market: .us, code: "PDD")
         let tencent = MockProvider(
@@ -502,9 +508,19 @@ struct CompositeProviderTests {
 
         let result = try #require(try await composite.search("PDD").first)
 
-        #expect(result.name == "PDD Holdings Inc.")
-        #expect(result.displayNameSource?.providerID == "yahoo")
-        #expect(result.displayNameSource?.priority == 0)
+        // Tencent outranks Yahoo for a US name because its name is Chinese and
+        // the interface is Simplified Chinese, even though Yahoo carries the
+        // better provider priority (1 vs 2). Provider priority still breaks ties
+        // inside one language — see the English-only case below.
+        #expect(result.name == "拼多多")
+        #expect(result.displayNameSource?.providerID == "tencent")
+
+        // With the Chinese source disabled, the two remaining English names fall
+        // back to pure provider priority.
+        await composite.setDisabled(["tencent"])
+        let englishOnly = try #require(try await composite.search("PDD").first)
+        #expect(englishOnly.name == "PDD Holdings Inc.")
+        #expect(englishOnly.displayNameSource?.providerID == "yahoo")
     }
 
     @Test("Static names use the highest available provider without changing quote health")
@@ -766,5 +782,114 @@ struct CompositeProviderTests {
         ])
         #expect(try await composite.candles(for: Self.apple.symbol, period: .minute1, count: 10) == [first])
         #expect(try await composite.candles(for: Self.apple.symbol, period: .day, count: 1) == [first])
+    }
+
+    @MainActor
+    @Test("Tencent is asked for US reference names and its Chinese name wins the row")
+    func tencentSuppliesUsChineseNames() async throws {
+        let provider = TencentProvider()
+        // The wiring that the fix depends on: without this capability the
+        // composite never asks Tencent to name a US instrument.
+        #expect(provider.descriptor.supports(.referenceData, in: .us))
+        #expect(provider.descriptor.supports(.referenceData, in: .hk))
+        #expect(provider.descriptor.supports(.referenceData, in: .sh))
+
+        // And with it, the composite offers a zh-Hans name for a US symbol that a
+        // stored English watermark then yields to.
+        let symbol = SymbolID(market: .us, code: "AAPL")
+        let tencent = MockProvider(
+            id: "tencent",
+            supportsReferenceData: true,
+            referenceNames: [SecurityName(symbol: symbol, name: "苹果", localeIdentifier: "zh-Hans")]
+        )
+        let yahoo = MockProvider(
+            id: "yahoo",
+            supportsReferenceData: true,
+            referenceNames: [SecurityName(symbol: symbol, name: "Apple Inc.", localeIdentifier: "en")]
+        )
+        let composite = CompositeProvider(providers: [yahoo, tencent])
+
+        let preferred = try #require(
+            try await composite.preferredSecurityNames(for: [symbol]).first
+        )
+        #expect(preferred.name == "苹果")
+        #expect(preferred.source.localeIdentifier == "zh-Hans")
+
+        let suiteName = "TencentUsNames.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let watchlist = WatchlistStore(defaults: defaults, defaultGroupName: "Watchlist")
+        watchlist.add(SymbolInfo(
+            symbol: symbol,
+            name: "Apple Inc.",
+            displayNameSource: DisplayNameSource(providerID: "yahoo", priority: 1, localeIdentifier: "en")
+        ))
+        #expect(watchlist.upgradeDisplayName(
+            for: symbol, to: preferred.name, source: preferred.source, allowSameProviderRefresh: true
+        ))
+        #expect(watchlist.item(for: symbol)?.displayName == "苹果")
+    }
+
+    @MainActor
+    @Test("A quote tick records the language the name is actually written in")
+    func quoteNameLocaleReflectsTheText() async throws {
+        let composite = CompositeProvider(providers: [YahooProvider(), TencentProvider()])
+
+        // Tencent advertises zh-Hans, but it names part of the US board in Latin
+        // script. Stamping zh-Hans on such a name would claim Chinese provenance
+        // for an English word and — because a locale match now leads — would keep
+        // the real Chinese name from ever replacing it.
+        let ibm = composite.displayNameSource(for: "tencent", market: .us, name: "IBM")
+        #expect(ibm?.localeIdentifier == "en")
+        let meta = composite.displayNameSource(for: "tencent", market: .us, name: "Meta Platforms")
+        #expect(meta?.localeIdentifier == "en")
+
+        // A genuinely Chinese quote keeps zh-Hans.
+        let nvda = composite.displayNameSource(for: "tencent", market: .us, name: "英伟达")
+        #expect(nvda?.localeIdentifier == "zh-Hans")
+
+        // The nominal locale is unchanged for sources that do not advertise Chinese.
+        let yahoo = composite.displayNameSource(for: "yahoo", market: .us, name: "Apple Inc.")
+        #expect(yahoo?.localeIdentifier == "en")
+
+        // And the corrected tag is what decides the stored name: a Latin Tencent
+        // quote must not beat an existing Chinese name, while a Chinese one does.
+        let suiteName = "QuoteNameLocaleTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let watchlist = WatchlistStore(defaults: defaults, defaultGroupName: "Watchlist")
+        let symbol = SymbolID(market: .us, code: "AAPL")
+        let tencentChinese = try #require(composite.displayNameSource(for: "tencent", market: .us, name: "苹果"))
+        watchlist.add(SymbolInfo(symbol: symbol, name: "苹果", displayNameSource: tencentChinese))
+
+        // A quote tick, which is the path that stamps arrived names, does not
+        // grant the same-provider refresh. So a Latin Tencent name — the same
+        // provider and rank as the stored Chinese one — must still be refused.
+        let tencentLatin = try #require(ibm)
+        #expect(tencentLatin.providerID == tencentChinese.providerID)
+        #expect(tencentLatin.priority == tencentChinese.priority)
+        #expect(!watchlist.upgradeDisplayName(for: symbol, to: "Apple Inc.", source: tencentLatin))
+        #expect(watchlist.item(for: symbol)?.displayName == "苹果")
+    }
+
+    @MainActor
+    @Test("A Latin search result from a Chinese source is not stamped zh-Hans")
+    func searchNameLocaleReflectsTheText() async throws {
+        // Tencent's smartbox names some US tickers in Latin script (`meta` →
+        // `metaplatforms`, `ibm` → `ibm`) and others in Chinese (`aapl` → 苹果).
+        // Both arrive from the same provider, so the provider's advertised locale
+        // cannot be trusted for a search row either: a false zh-Hans stamp now
+        // outranks every provider rank and rejects the real English name.
+        let composite = CompositeProvider(providers: [TencentProvider()])
+
+        let latin = composite.displayNameSource(for: "tencent", market: .us, name: "metaplatforms")
+        #expect(latin?.localeIdentifier == "en")
+        let chinese = composite.displayNameSource(for: "tencent", market: .us, name: "苹果")
+        #expect(chinese?.localeIdentifier == "zh-Hans")
+
+        // The merge outcome that matters: a bogus zh-Hans stamp would have made
+        // Tencent's escaped-Latin "metaplatforms" beat Yahoo's real name.
+        #expect(chinese!.outranks(latin))
+        #expect(!latin!.outranks(chinese!))
     }
 }

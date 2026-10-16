@@ -54,7 +54,8 @@ public actor FuyaoProvider: QuoteProvider {
     /// (`600519.SH`). Indices need the separate a-share-index endpoints, which
     /// Pulse does not route here yet.
     static func thscode(for id: SymbolID) -> String? {
-        guard id.indexID == nil, id.metalID == nil, id.cryptoPair == nil else { return nil }
+        guard id.indexID == nil, id.metalID == nil, id.cryptoPair == nil,
+              id.sectorIndex == nil else { return nil }
         switch id.market {
         case .sh: return id.code + ".SH"
         case .sz: return id.code + ".SZ"

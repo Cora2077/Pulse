@@ -927,6 +927,30 @@ public final class WatchlistStore {
         return true
     }
 
+    /// A new plan may start from provider search without an existing watchlist
+    /// row. Validate the COMPLETE candidate before adding membership; cancelling
+    /// the editor or rejecting a plan must never create an empty watch item.
+    @discardableResult
+    public func createTradePlan(_ plan: TradePlan, for info: SymbolInfo,
+                                account: BrokerageAccountID) -> Bool {
+        guard activeBrokerageAccountID == account,
+              !allItems.contains(where: { $0.symbol == info.symbol }),
+              let groupID = selectedGroupID,
+              let groupIndex = groups.firstIndex(where: { $0.id == groupID }) else { return false }
+        let base = retainedHistoryItems.first { $0.symbol == info.symbol }
+            ?? WatchItem(symbol: info.symbol, displayName: info.name,
+                         displayNameSource: info.displayNameSource, instrumentType: info.type)
+        guard let candidate = TradePlanMutation.setting(plan, on: base,
+                  migrate: { Self.migratedPlan($0) }) else { return false }
+        retainedHistoryItems.removeAll { $0.symbol == info.symbol }
+        allItems.append(candidate)
+        if !groups[groupIndex].symbols.contains(info.symbol) {
+            insertAtTopOfUnpinned(info.symbol, inGroupAt: groupIndex)
+        }
+        save()
+        return true
+    }
+
     /// Explicit source-account actions compare the complete displayed record;
     /// status changes cannot overwrite a synchronized edit or a namesake plan.
     @discardableResult
@@ -2149,7 +2173,8 @@ public final class WatchlistStore {
     /// stale drafts after sync, review edits, or ownership corrections.
     @discardableResult
     public func updateTransaction(_ symbol: SymbolID, _ transaction: PositionTransaction,
-                                  expected: PositionTransaction, account: BrokerageAccountID) throws -> PositionTransaction {
+                                  expected: PositionTransaction, account: BrokerageAccountID,
+                                  replaceOptionalMetadata: Bool = false) throws -> PositionTransaction {
         let previous = try transactionItem(symbol, account: account)
         guard let index = previous.transactions.firstIndex(where: { $0.id == transaction.id }),
               expected.id == transaction.id else { throw TradeMutationError.transactionNotFound }
@@ -2165,7 +2190,12 @@ public final class WatchlistStore {
             || account == .financing || transaction.fundingSource == original.fundingSource else {
             throw TradeMutationError.fundingIncompatible
         }
-        var updated = TradeLedgerMutation.preservingTransactionMetadata(transaction, from: original)
+        // Import/legacy value edits retain absent metadata by default. A form
+        // that owns the complete optional metadata can explicitly replace it,
+        // so clearing a note/review is distinguishable from not supplying it.
+        // Immutable identity, chronology, account and plan context remain frozen.
+        var updated = replaceOptionalMetadata ? transaction
+            : TradeLedgerMutation.preservingTransactionMetadata(transaction, from: original)
         updated.createdAt = original.createdAt
         updated.brokerageAccountID = original.brokerageAccountID
         updated.planExecution = original.planExecution
@@ -3222,7 +3252,7 @@ public final class WatchlistStore {
         source: DisplayNameSource,
         allowSameProviderRefresh: Bool = false
     ) -> Bool {
-        guard symbol.indexID == nil, symbol.metalID == nil,
+        guard symbol.indexID == nil, symbol.metalID == nil, symbol.sectorIndex == nil,
               let index = allItems.firstIndex(where: { $0.symbol == symbol }) else {
             return false
         }
@@ -3237,7 +3267,7 @@ public final class WatchlistStore {
             || currentName.caseInsensitiveCompare(symbol.displayCode) == .orderedSame
         // Legacy watchlists have no provenance. Preserve a real saved name
         // against quote ticks; authoritative static data may adopt and rank it.
-        let isUpgrade = currentSource.map { source.priority < $0.priority }
+        let isUpgrade = currentSource.map { source.outranks($0) }
             ?? (allowSameProviderRefresh || hasPlaceholderName)
         let isSameProviderRefresh = allowSameProviderRefresh
             && currentSource?.providerID == source.providerID
@@ -3917,8 +3947,7 @@ public final class WatchlistStore {
         _ candidate: DisplayNameSource,
         over current: DisplayNameSource?
     ) -> Bool {
-        guard let current else { return true }
-        return candidate.priority < current.priority
+        candidate.outranks(current)
     }
 
     private func shouldAcceptInstrumentType(

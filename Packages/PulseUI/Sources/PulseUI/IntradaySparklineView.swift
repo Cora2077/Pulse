@@ -13,22 +13,79 @@ public struct IntradaySparklineView: View {
     let market: Market
     let tint: Color
     let includesExtendedHours: Bool
+    /// The market whose clock this line is positioned against. Nil (the default)
+    /// draws the line on its own exchange's session, which is what every existing
+    /// caller wants.
+    ///
+    /// Pass a reference market to place this line on someone else's axis: the
+    /// session's boundaries are re-read in the reference zone, so a Korean bar
+    /// stamped 15:12 Seoul and a Chinese bar stamped 14:12 Beijing both land on
+    /// the same fraction of the plot width. The bars themselves are untouched —
+    /// only the x-axis they are measured against moves.
+    let referenceMarket: Market?
 
     public init(
         candles: [Candle],
         previousClose: Double? = nil,
         market: Market,
         tint: Color,
-        includesExtendedHours: Bool = false
+        includesExtendedHours: Bool = false,
+        referenceMarket: Market? = nil
     ) {
         self.candles = candles
         self.previousClose = previousClose
         self.market = market
         self.tint = tint
         self.includesExtendedHours = includesExtendedHours
+        self.referenceMarket = referenceMarket
     }
 
     private static let wingTint = Color.secondary.opacity(0.75)
+
+    /// The session a line is drawn against: its own, or `referenceMarket`'s clock
+    /// when one is given.
+    ///
+    /// Static and separate from `body` because this is the one decision that has
+    /// to be right — every x position in the plot is derived from it — and it
+    /// needs to be testable without rendering a Canvas. `nonisolated` because it
+    /// touches no view state, only the session it is handed.
+    nonisolated static func plotSession(
+        of session: IntradayTradingSession,
+        referenceMarket: Market?
+    ) -> IntradayTradingSession {
+        guard let referenceMarket, referenceMarket != session.market else { return session }
+        return session.projected(to: referenceMarket)
+    }
+
+    /// The clock window this row is plotted against, shared by every row in an
+    /// aligned group.
+    ///
+    /// Without a reference market the window is the session's own bounds, which
+    /// is exactly the axis the unaligned rows have always used — a row drawn on
+    /// its own session is unchanged.
+    nonisolated static func axisBounds(
+        of session: IntradayTradingSession,
+        referenceMarket: Market?
+    ) -> (start: Double, end: Double) {
+        guard let referenceMarket else {
+            let lower = minuteOfDay(session.preOpen ?? session.open, in: session.market.timeZone)
+            let upper = minuteOfDay(session.postClose ?? session.close, in: session.market.timeZone)
+            return (lower, upper)
+        }
+        return IntradayTradingSession.axisBounds(
+            for: [session], reference: referenceMarket
+        )
+    }
+
+    /// Minutes past midnight in the zone the window is read in.
+    private nonisolated static func minuteOfDay(_ date: Date, in zone: TimeZone) -> Double {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let components = calendar.dateComponents([.hour, .minute, .second], from: date)
+        return Double(components.hour ?? 0) * 60
+            + Double(components.minute ?? 0)
+            + Double(components.second ?? 0) / 60
+    }
 
     public var body: some View {
         let trend = IntradayTrendSnapshot(
@@ -36,9 +93,16 @@ public struct IntradaySparklineView: View {
             market: market,
             includesExtendedHours: includesExtendedHours
         )
+        // Session used for two things: the axis the row is drawn against, and the
+        // gap/segment splitting that decides where the line breaks. With a
+        // reference market the row is measured against a shared clock window, so
+        // two sessions of different lengths place the same instant at the same x.
+        let session = Self.plotSession(
+            of: trend.session, referenceMarket: referenceMarket
+        )
+        let bounds = Self.axisBounds(of: trend.session, referenceMarket: referenceMarket)
         Canvas { context, size in
             guard trend.candles.count > 1 else { return }
-            let session = trend.session
             let domain = yDomain(for: trend.candles)
             let axisSpan = session.axisUpperBound - session.axisLowerBound
 
@@ -46,8 +110,21 @@ public struct IntradaySparklineView: View {
                 size.width * CGFloat((minute - session.axisLowerBound) / axisSpan)
             }
 
+            /// x by absolute clock in the window's zone, which is the only reading
+            /// that lines two rows up. Falls back to the session's own offset when
+            /// a bar sits outside the window, so a stray bar still draws at the
+            /// edge rather than vanishing.
+            func xPosition(for candle: Candle) -> CGFloat {
+                if let fraction = session.axisFraction(
+                    for: candle.time, reference: session.market, bounds: bounds
+                ) {
+                    return size.width * CGFloat(fraction)
+                }
+                return xPosition(forMinute: session.minuteOffset(for: candle.time))
+            }
+
             func point(for candle: Candle) -> CGPoint {
-                let x = xPosition(forMinute: session.minuteOffset(for: candle.time))
+                let x = xPosition(for: candle)
                 let y = 1 - (candle.close - domain.lowerBound) / (domain.upperBound - domain.lowerBound)
                 return CGPoint(x: x, y: size.height * CGFloat(y))
             }

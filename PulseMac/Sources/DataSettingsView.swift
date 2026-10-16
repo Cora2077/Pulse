@@ -86,6 +86,7 @@ struct DataSettingsView: View {
                 BackupSettingsCard()
                 if appState.watchlist.brokerageAccountsEnabled { accountCard }
                 folderSyncCard
+                MacCloudSyncSettingsCard()
                 if !isReviewingImport {
                     actionsCard
                     formatCard
@@ -691,6 +692,9 @@ struct DataSettingsView: View {
         let base = "\(symbol.market.displayName) · \(symbol.displayCode)"
         if let index = symbol.indexID {
             return "\(base) · \(index.displayName)"
+        }
+        if let board = symbol.sectorIndex {
+            return "\(SectorIndexID.exchangeName) · \(base) · \(board.displayName)"
         }
         if let name = item.entry.name?.trimmingCharacters(in: .whitespacesAndNewlines),
            !name.isEmpty, name != symbol.displayCode {

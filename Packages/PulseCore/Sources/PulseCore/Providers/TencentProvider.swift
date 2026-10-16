@@ -3,6 +3,8 @@ import Foundation
 /// Tencent quote snapshots (qt.gtimg.cn, unofficial API).
 /// Capabilities: batch quotes plus real-time A-share minute series and native
 /// daily/weekly/monthly history; other markets fall back to the next provider.
+/// The same snapshot also carries the Chinese reference name (field 1), which is
+/// what `.referenceData` exposes.
 /// The response is GBK-encoded text of the form `v_sh600519="1~<name>~600519~<price>~<prevClose>~<open>~...";`.
 /// The `hf_` channel (international futures, which is how Pulse reaches the
 /// precious metals) answers on the same endpoint in a different, comma-separated
@@ -19,7 +21,7 @@ public struct TencentProvider: QuoteProvider {
             id: "tencent",
             name: PulseLocalization.localizedString("provider.tencent"),
             markets: [.us, .hk, .sh, .sz, .metal],
-            capabilities: [.quotes, .search, .candles],
+            capabilities: [.quotes, .search, .candles, .referenceData],
             candleMarkets: [.sh, .sz],
             // Minute periods come from the minute endpoint, day/week/month from
             // the fqkline history endpoint.
@@ -331,6 +333,39 @@ public struct TencentProvider: QuoteProvider {
         return quotes
     }
 
+    // MARK: - Reference data
+
+    /// Chinese names come from the same snapshot endpoint as the quotes, so this
+    /// costs no extra request shape: whatever the quote batch already returns
+    /// names the instrument in zh-Hans. A code the endpoint does not answer for
+    /// is simply left out — a missing name is not a failure.
+    public func securityNames(for symbols: [SymbolID]) async throws -> [SecurityName] {
+        guard !symbols.isEmpty else { return [] }
+        let batchSize = descriptor.rateLimit?.batchSize ?? 60
+        var names: [SecurityName] = []
+        for chunk in symbols.chunked(into: batchSize) {
+            let mapping = Dictionary(uniqueKeysWithValues: chunk.compactMap { symbol in
+                Self.tencentSymbol(for: symbol).map { ($0, symbol) }
+            })
+            guard !mapping.isEmpty else { continue }
+            let list = mapping.keys.sorted().joined(separator: ",")
+            let url = URL(string: "https://qt.gtimg.cn/q=\(list)")!
+            let data = try await http.get(url, headers: ["Referer": "https://gu.qq.com/"])
+            guard let text = data.decodedGB18030() ?? String(data: data, encoding: .utf8) else {
+                // Name resolution is best-effort by design: `CompositeProvider`
+                // must still deliver prices when only the label lookup fails. The
+                // HTTP status was 200, so this is a data problem, not a source
+                // outage — `.clientError` keeps it structurally unable to trip the
+                // quote circuit, even for a caller that health-scores this method
+                // directly. A genuinely broken Tencent still trips on the quote
+                // path, which runs every tick.
+                throw ProviderError.clientError(status: 200, detail: "tencent: undecodable name response")
+            }
+            names += Self.parseSecurityNames(text: text, mapping: mapping)
+        }
+        return names
+    }
+
     // MARK: - Parsing
 
     /// Known field positions: 1 name, 3 last price, 4 previous close, 5 open, 30 timestamp, 31 change, 32 change %,
@@ -374,6 +409,39 @@ public struct TencentProvider: QuoteProvider {
                 currencyCode: symbol.market.currencyCode,
                 timestamp: timestamp
             ))
+        }
+        return result
+    }
+
+    /// The name channel of the equity payload: field 1, the same one `parseQuotes`
+    /// reads. Lines are `v_<wireSymbol>="...~<name>~...";`, exactly like the quote
+    /// body, so the `v_` prefix is dropped to recover the wire symbol. The `hf_`
+    /// international-futures channel is skipped here: its payload is a different
+    /// shape and its contract names are not equity reference data. An entry whose
+    /// name is empty, or whose wire symbol was not requested, is simply omitted.
+    ///
+    /// Only a name that is actually written in Han script is returned. For part
+    /// of the US board this endpoint echoes the Latin listing name — `usIBM`
+    /// answers `IBM`, `usMETA` answers `Meta Platforms` — and returning that as a
+    /// `zh-Hans` name would let it replace a stored English name while recording
+    /// Chinese provenance the source never supplied. A row this endpoint cannot
+    /// name in Chinese must keep the name it already has, so it is dropped here
+    /// and the caller's other sources stay in play.
+    static func parseSecurityNames(text: String, mapping: [String: SymbolID]) -> [SecurityName] {
+        var result: [SecurityName] = []
+        for line in text.split(separator: ";") {
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            let key = line[..<eq].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard key.hasPrefix("v_") else { continue }
+            let wireSymbol = String(key.dropFirst(2))
+            guard !wireSymbol.hasPrefix(internationalPrefix),
+                  let symbol = mapping[wireSymbol] else { continue }
+            let payload = line[line.index(after: eq)...].trimmingCharacters(in: CharacterSet(charactersIn: "\"\n\r "))
+            let f = payload.components(separatedBy: "~")
+            guard f.count > 1 else { continue }
+            let name = f[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard SecurityName.isChineseName(name) else { continue }
+            result.append(SecurityName(symbol: symbol, name: name, localeIdentifier: "zh-Hans"))
         }
         return result
     }

@@ -106,6 +106,19 @@ enum SelfTest {
             fflush(stdout)
             exit(passed ? 0 : 1)
         }
+        if CommandLine.arguments.contains("--us-name-preview-selftest") {
+            // Renders the production name surfaces, so it must run under the same
+            // isolated offline defaults path as the demo window. Refusing without
+            // the flag keeps it from ever touching the developer's real data.
+            guard CommandLine.arguments.contains("--main-window-demo") else {
+                print("PULSE_US_NAME_PREVIEW failed error=requires---main-window-demo")
+                fflush(stdout)
+                exit(1)
+            }
+            let passed = UsNamePreviewSelfTest.run()
+            fflush(stdout)
+            exit(passed ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--detail-market-selftest") {
             Task { @MainActor in
                 let passed = await DetailMarketDataSelfTest.run()
