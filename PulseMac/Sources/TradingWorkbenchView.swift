@@ -8,8 +8,8 @@ import PulseUI
 /// 设置，算出「今天该关注什么」，从不写入成交、持仓、计划或账本。四条刻意的
 /// 边界写在这里，因为每一条如果反过来做都会悄悄撒谎：
 ///
-/// 1. **视角（盘前/盘中/盘后）只改变侧重，不改变数据。** 它决定先给谁排序、
-///    哪一段更靠前，而不隐藏任务、不改计数、不算出第二套数字。
+/// 1. **阶段改变工作清单，不改变账本。** 盘前准备计划与资金，盘中跟进有效信号，
+///    盘后复盘实际成交。各阶段计数保持各自的真实单位，资金与持仓始终来自同一事实模型。
 /// 2. **市场范围就是一个真实的市场。** 币种不是市场：同一个 `USD` 覆盖美股与
 ///    贵金属/加密，所以范围用 `Market` 而不是 `currencyCode`。A 股是沪深两个
 ///    `Market` 的并集（交易所分开建模，界面合并呈现）。范围同时约束自选、历史
@@ -21,9 +21,8 @@ import PulseUI
 /// 4. **交易所日历只用于参考时钟。** 页面可以按各交易所时区显示「市场本地
 ///    日期」与时段，但那是报价与事件的参考，不是成交归属。
 ///
-/// 交易日**不是**节假日日历：`TradingCalendar` 目前只有周一到周五的规则，没有
-/// 春节、国庆、感恩节。所以界面只说「所选市场本地日期」，不说「交易日」——把
-/// 周中的休市日说成交易日就是编造一个系统并不知道的事实。
+/// 市场参考时钟使用 `TradingCalendar` 与有界的 `ExchangeCalendar`；超出已核验
+/// 年份回退到工作日规则。阶段是工作清单选择，不声称改变真实的开市状态。
 struct TradingWorkbenchView: View {
     @Environment(AppState.self) private var appState
     let onSelect: (SymbolID) -> Void
@@ -33,6 +32,7 @@ struct TradingWorkbenchView: View {
     var onShowPools: () -> Void = {}
 
     @State private var phase: WorkbenchPhase = .intraday
+    @State private var initialPhaseApplied = false
     @State private var scope: WorkbenchScope = .all
     @State private var selectedSymbol: SymbolID?
     @State private var showRisk = false
@@ -65,6 +65,7 @@ struct TradingWorkbenchView: View {
         self.onShowPools = onShowPools
         guard let initial else { return }
         _phase = State(initialValue: initial.phase)
+        _initialPhaseApplied = State(initialValue: true)
         _scope = State(initialValue: initial.scope)
         _selectedSymbol = State(initialValue: initial.selectedSymbol)
         _showCapitalDetail = State(initialValue: initial.showsCapitalDetail)
@@ -76,13 +77,17 @@ struct TradingWorkbenchView: View {
     /// separate from the scope filter so the capital summary can state what it
     /// deliberately narrowed.
     private var allItems: [WatchItem] { appState.watchlist.allItems }
+    private var marketContext: WorkbenchMarketContext {
+        WorkbenchMarketContext(items: allItems + appState.watchlist.tradeHistoryItems)
+    }
+    private var effectiveScope: WorkbenchScope { marketContext.resolvedScope(scope) }
 
     private var items: [WatchItem] {
-        allItems.filter { scope.contains($0.symbol.market) }
+        allItems.filter { effectiveScope.contains($0.symbol.market) }
     }
 
     private var historyItems: [WatchItem] {
-        appState.watchlist.tradeHistoryItems.filter { scope.contains($0.symbol.market) }
+        appState.watchlist.tradeHistoryItems.filter { effectiveScope.contains($0.symbol.market) }
     }
 
     // MARK: - Body
@@ -115,6 +120,13 @@ struct TradingWorkbenchView: View {
         .task {
             if !appState.isMainWindowDemo { await appState.tradingEvents.refresh(items: appState.watchlist.allItems) }
         }
+        .onAppear {
+            guard !initialPhaseApplied else { return }
+            phase = WorkbenchStagePresentation.suggestedPhase(markets: marketContext.clockMarkets(for: effectiveScope), at: .now)
+            initialPhaseApplied = true
+        }
+        .onChange(of: phase) { _, _ in selectedSymbol = nil }
+        .onChange(of: scope) { _, _ in selectedSymbol = nil }
     }
 
     private func content(now: Date) -> some View {
@@ -130,17 +142,21 @@ struct TradingWorkbenchView: View {
             cash: WorkbenchCashInput(appState.poolBudgets),
             sectorLimits: appState.sectorLimits.limits
         )
+        let stage = WorkbenchStagePresentation(board: board, phase: phase, items: items, historyItems: historyItems,
+            entries: appState.watchlist.tradePlanEntries, now: now,
+            name: { appState.watchlist.item(for: $0)?.resolvedDisplayName ?? $0.displayCode })
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header(now: now, board: board)
-                countBar(board)
+                stageHeader(stage)
+                countBar(board, stage: stage)
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: 14) {
-                        taskColumn(board).frame(maxWidth: .infinity, alignment: .top)
+                        taskColumn(board, stage: stage).frame(maxWidth: .infinity, alignment: .top)
                         summaryColumn(board).frame(width: 340, alignment: .top)
                     }
                     VStack(alignment: .leading, spacing: 14) {
-                        taskColumn(board)
+                        taskColumn(board, stage: stage)
                         summaryColumn(board)
                     }
                 }
@@ -181,16 +197,20 @@ struct TradingWorkbenchView: View {
             .font(.system(size: 20, weight: .semibold))
     }
 
+    @ViewBuilder
     private var scopePicker: some View {
-        Picker(PulseLocalization.localizedString("workbench.scope.title"), selection: $scope) {
-            ForEach(WorkbenchScope.allCases, id: \.self) { option in
-                Text(option.title).tag(option)
+        if marketContext.scopes.count > 1 {
+            Picker("资产市场", selection: Binding(get: { effectiveScope }, set: { scope = $0 })) {
+                ForEach(marketContext.scopes, id: \.self) { option in
+                    Text(option.title).tag(option)
+                }
             }
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
+            .help("按实际资产市场筛选，不代表不同的券商账户。")
+        } else {
+            Label(marketContext.label, systemImage: "chart.line.uptrend.xyaxis")
+                .font(.caption).foregroundStyle(.secondary)
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
-        .help(PulseLocalization.localizedString("workbench.scope.help"))
     }
 
     private var phasePicker: some View {
@@ -209,7 +229,7 @@ struct TradingWorkbenchView: View {
     /// button: a paragraph about the absence of a holiday calendar is useful
     /// once, not on every refresh.
     private func marketDayLine(now: Date, board: WorkbenchBoard) -> some View {
-        let markets = scope.markets
+        let markets = marketContext.clockMarkets(for: effectiveScope)
         let states = markets.map { TradingCalendar.state(of: $0, at: now) }
         let dayText = markets.map { market -> String in
             let day = TradingCalendar.tradingDay(of: market, at: now)
@@ -260,16 +280,39 @@ struct TradingWorkbenchView: View {
         }
     }
 
-    // MARK: - Counts
-    //
-    // Three different units, stated three times on purpose. They are never
-    // summed into one number: a symbol, a plan and a fill are not the same thing.
+    private func stageHeader(_ stage: WorkbenchStagePresentation) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(stage.title).font(.headline)
+            Text(stage.subtitle).font(.callout).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                switch phase {
+                case .preMarket:
+                    Button("检查计划", action: onShowPlans)
+                    Button("核对资金", action: onShowPools)
+                case .intraday:
+                    Button("跟进计划", action: onShowPlans)
+                    Button("查看实际成交", action: onShowJournal)
+                case .postMarket:
+                    Button("写成交复盘", action: onShowJournal)
+                    if stage.activePlanCount > 0 {
+                        Button("查看后续 \(stage.activePlanCount) 条计划", action: onShowPlans)
+                    }
+                }
+            }.controlSize(.small)
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+    }
 
-    private func countBar(_ board: WorkbenchBoard) -> some View {
+    // MARK: - Counts
+    // Stage-specific metrics keep their real units; they are never summed into
+    // a fictitious total of symbols, plans, events and recorded fills.
+
+    private func countBar(_ board: WorkbenchBoard, stage: WorkbenchStagePresentation) -> some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) { countChips(board); countSpacer(board) }
+            HStack(spacing: 10) { countChips(stage); countSpacer(board) }
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 10) { countChips(board) }
+                HStack(spacing: 10) { countChips(stage) }
                 backlogLink(board)
             }
         }
@@ -278,13 +321,10 @@ struct TradingWorkbenchView: View {
     }
 
     @ViewBuilder
-    private func countChips(_ board: WorkbenchBoard) -> some View {
-        countChip(PulseLocalization.localizedString("workbench.count.reachedSymbols", board.reachedSymbolCount),
-                  icon: "target", tint: board.reachedSymbolCount > 0 ? .orange : .secondary)
-        countChip(PulseLocalization.localizedString("workbench.count.plansToReview", board.plansToReviewCount),
-                  icon: "checklist", tint: board.plansToReviewCount > 0 ? .orange : .secondary)
-        countChip(PulseLocalization.localizedString("workbench.count.todayReviews", board.todayReviewCount),
-                  icon: "square.and.pencil", tint: board.todayReviewCount > 0 ? .orange : .secondary)
+    private func countChips(_ stage: WorkbenchStagePresentation) -> some View {
+        ForEach(stage.metrics) { metric in
+            countChip(metric.text, icon: metric.icon, tint: metric.value > 0 ? .primary : .secondary)
+        }
     }
 
     @ViewBuilder
@@ -316,10 +356,10 @@ struct TradingWorkbenchView: View {
 
     // MARK: - Task column
 
-    private func taskColumn(_ board: WorkbenchBoard) -> some View {
+    private func taskColumn(_ board: WorkbenchBoard, stage: WorkbenchStagePresentation) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Label(PulseLocalization.localizedString("workbench.tasks.title"), systemImage: "checklist")
+                Label(stage.taskTitle, systemImage: "checklist")
                     .font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 4)
                 Image(systemName: "questionmark.circle")
@@ -329,14 +369,16 @@ struct TradingWorkbenchView: View {
                 Button(PulseLocalization.localizedString("workbench.tasks.openPools"), action: onShowPools)
                     .font(.caption)
             }
-            if board.tasks.isEmpty {
-                singleLine(PulseLocalization.localizedString("workbench.tasks.empty"), icon: "checkmark.circle")
+            if stage.tasks.isEmpty {
+                singleLine(stage.emptyText, icon: "checkmark.circle")
             }
-            ForEach(board.tasks) { task in
-                taskRow(task)
+            ForEach(stage.tasks) { task in
+                taskRow(task, allowsPlanFill: stage.allowsPlanFillAction)
             }
-            ForEach(board.cashNotes) { note in
-                taskLink(note.title, detail: note.detail, action: onShowPools)
+            if stage.showsCashTasks {
+                ForEach(board.cashNotes) { note in
+                    taskLink(note.title, detail: note.detail, action: onShowPools)
+                }
             }
         }
         .padding(12)
@@ -345,7 +387,7 @@ struct TradingWorkbenchView: View {
         .overlay { RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.07)) }
     }
 
-    private func taskRow(_ task: WorkbenchTask) -> some View {
+    private func taskRow(_ task: WorkbenchTask, allowsPlanFill: Bool) -> some View {
         let isSelected = selectedSymbol == task.symbol
         return VStack(alignment: .leading, spacing: 6) {
             Button {
@@ -382,8 +424,10 @@ struct TradingWorkbenchView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             Button(PulseLocalization.localizedString("workbench.task.review")) { workflowEntry = entry.entry }
                                 .controlSize(.small)
-                            Button(PulseLocalization.localizedString("workbench.task.recordFill")) { executionEntry = entry.entry }
-                                .controlSize(.small)
+                            if allowsPlanFill {
+                                Button(PulseLocalization.localizedString("workbench.task.recordFill")) { executionEntry = entry.entry }
+                                    .controlSize(.small)
+                            }
                         }
                         .padding(.leading, 18)
                     }

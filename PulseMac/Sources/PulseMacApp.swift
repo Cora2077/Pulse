@@ -51,6 +51,9 @@ struct PulseMacApp: App {
         #else
         let isOfflinePreview = false
         #endif
+        #if DEBUG
+        LocalLedgerExport.runIfRequested()
+        #endif
         SelfTest.runIfRequested()
         if !isOfflinePreview { SoftwareUpdateController.shared.start() }
         let state = AppState()

@@ -123,14 +123,21 @@ struct TodayView: View {
     @Environment(IPhoneAppState.self) private var state
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.workbenchOpenSettings) private var openSettings
+    @Environment(\.workbenchOpenAccountSection) private var openAccountSection
     @Environment(\.workbenchPresentTradeEntry) private var presentTradeEntry
+    @Environment(\.workbenchNotice) private var showNotice
     @State private var phase: WorkbenchPhase = .intraday
+    @State private var initialPhaseApplied = false
     @State private var scope: WorkbenchScope = .all
     @State private var selectedSymbol: SymbolID?
     @State private var showCapitalDetail = false
     @State private var reviewTarget: ReviewTargetBox?
 
-    private var scopedItems: [WatchItem] { state.watchlist.allItems.filter { scope.contains($0.symbol.market) } }
+    private var marketContext: WorkbenchMarketContext {
+        WorkbenchMarketContext(items: state.watchlist.allItems + state.historyItems)
+    }
+    private var effectiveScope: WorkbenchScope { marketContext.resolvedScope(scope) }
+    private var scopedItems: [WatchItem] { state.watchlist.allItems.filter { effectiveScope.contains($0.symbol.market) } }
     private func makeBoard(now: Date) -> WorkbenchBoard {
         let items = scopedItems
         let settings = state.watchlist.brokerageSettings(for: state.accountID)
@@ -139,7 +146,7 @@ struct TodayView: View {
         cash.updatedAt = (settings?.cashBalances ?? [:]).mapValues(\.updatedAt)
         for limit in settings?.poolLimits ?? [] { cash.limits[limit.currency, default: [:]][limit.pool] = limit.amount }
         return WorkbenchBoard(now: now, phase: phase, items: items,
-            historyItems: state.historyItems.filter { scope.contains($0.symbol.market) },
+            historyItems: state.historyItems.filter { effectiveScope.contains($0.symbol.market) },
             entries: state.planEntries, events: state.tradingEvents.entries(for: items),
             quote: { state.quote($0) }, name: { state.displayName($0) },
             cash: cash, sectorLimits: settings?.sectorLimits ?? [:])
@@ -156,30 +163,49 @@ struct TodayView: View {
         .task(id: state.accountID) {
             if !state.isDemo { await state.tradingEvents.refresh(items: state.watchlist.allItems) }
         }
+        .onAppear {
+            guard !initialPhaseApplied else { return }
+            phase = WorkbenchStagePresentation.suggestedPhase(markets: marketContext.clockMarkets(for: effectiveScope), at: .now)
+            initialPhaseApplied = true
+        }
+        .onChange(of: phase) { _, _ in selectedSymbol = nil }
+        .onChange(of: scope) { _, _ in selectedSymbol = nil }
         .onChange(of: state.accountID) { _, _ in selectedSymbol = nil }
         .sheet(item: $reviewTarget) { target in
             ReviewEditorSheet(transaction: target.transaction, symbol: target.symbol, account: target.account)
         }
     }
     private func content(board: WorkbenchBoard, now: Date) -> some View {
-        ScrollView {
+        let stage = WorkbenchStagePresentation(board: board, phase: phase, items: scopedItems,
+            historyItems: state.historyItems.filter { effectiveScope.contains($0.symbol.market) },
+            entries: state.planEntries, now: now, name: { state.displayName($0) })
+        return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 WorkbenchHeader(title: text("workbench.title"))
                 ActiveAccountStrip(title: state.accountName(state.accountID))
-                VStack(spacing: 8) {
-                    Picker(text("workbench.scope.title"), selection: $scope) {
-                        ForEach(WorkbenchScope.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }.pickerStyle(.segmented).accessibilityIdentifier("today.scope")
+                VStack(alignment: .leading, spacing: 8) {
+                    if marketContext.scopes.count > 1 {
+                        Picker("资产市场", selection: Binding(get: { effectiveScope }, set: { scope = $0 })) {
+                            ForEach(marketContext.scopes, id: \.self) { Text($0.title).tag($0) }
+                        }.pickerStyle(.segmented).accessibilityIdentifier("today.scope")
+                    } else {
+                        Label(marketContext.label, systemImage: "chart.line.uptrend.xyaxis")
+                            .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("today.assetMarket")
+                    }
                     Picker(text("workbench.phase.title"), selection: $phase) {
                         ForEach(WorkbenchPhase.allCases, id: \.self) { Text($0.title).tag($0) }
                     }.pickerStyle(.segmented).accessibilityIdentifier("today.phase")
                 }
                 Text(marketLine(now: now, board: board)).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                counts(board)
-                taskColumn(board)
-                summaryColumn(board)
-                capitalSummary(board)
+                    .accessibilityIdentifier("today.marketClock")
+                stageFocus(stage)
+                counts(board, stage: stage)
+                if phase == .preMarket { capitalSummary(board) }
+                taskColumn(board, stage: stage)
+                if selectedSymbol != nil { summaryColumn(board) }
+                if phase != .preMarket { capitalSummary(board) }
                 riskSummary(board)
                 sectorSummary(board)
                 Button { openSettings() } label: {
@@ -193,13 +219,16 @@ struct TodayView: View {
         }
     }
     private func marketLine(now: Date, board: WorkbenchBoard) -> String {
-        let days = scope.markets.map { market -> String in
+        let markets = marketContext.clockMarkets(for: effectiveScope)
+        if let first = markets.first, markets.allSatisfy(\.isChinaA),
+           Set(markets.map { TradingCalendar.state(of: $0, at: now).rawValue }).count == 1 {
+            let day = TradingCalendar.tradingDay(of: first, at: now)
+            return "A 股 \(String(format: "%02d-%02d", day.month, day.day)) · \(sessionLabel(TradingCalendar.state(of: first, at: now))) · 北京时间"
+        }
+        return markets.map { market in
             let day = TradingCalendar.tradingDay(of: market, at: now)
-            return "\(market.displayName) \(String(format: "%02d-%02d", day.month, day.day))"
+            return "\(market.displayName) \(String(format: "%02d-%02d", day.month, day.day)) · \(sessionLabel(TradingCalendar.state(of: market, at: now)))"
         }.joined(separator: " · ")
-        let states = scope.markets.map { "\($0.displayName)：\(sessionLabel(TradingCalendar.state(of: $0, at: now)))" }.joined(separator: " · ")
-        return PulseLocalization.localizedString("workbench.meta.line", phase.title, days, states)
-            + (board.phaseNote.isEmpty ? "" : " · " + board.phaseNote)
     }
     private func sessionLabel(_ state: SessionState) -> String {
         let key: String
@@ -213,46 +242,84 @@ struct TodayView: View {
         }
         return text("workbench.session." + key)
     }
-    private func counts(_ board: WorkbenchBoard) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) { countLabels(board) }
-                VStack(alignment: .leading, spacing: 5) { countLabels(board) }
-            }
-            if let backlog = board.historyBacklog {
-                Button(PulseLocalization.localizedString("workbench.backlog.link", backlog.count)) {
-                    state.requestedAccountSection = "reviews"
-                    state.selectedTab = WorkbenchRoute.accountTab
-                }.font(.caption).foregroundStyle(WorkbenchTheme.blue)
+    private func stageFocus(_ stage: WorkbenchStagePresentation) -> some View {
+        WorkbenchCard(padding: 12) {
+            VStack(alignment: .leading, spacing: 9) {
+                Text(stage.title).font(.headline).accessibilityIdentifier("today.stage.title")
+                Text(stage.subtitle).font(.footnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 12) {
+                    switch phase {
+                    case .preMarket:
+                        Button("检查计划") { state.selectedTab = WorkbenchRoute.planTab }
+                            .accessibilityIdentifier("today.preparePlans")
+                        Button("核对资金") { openAccountSection(.holdings) }
+                            .accessibilityIdentifier("today.checkCash")
+                    case .intraday:
+                        Button("跟进计划") { state.selectedTab = WorkbenchRoute.planTab }
+                            .accessibilityIdentifier("today.followPlans")
+                        Button("查看实际成交") { openAccountSection(.flows) }
+                            .accessibilityIdentifier("today.actualTrades")
+                    case .postMarket:
+                        Button("写成交复盘") { openAccountSection(.reviews) }
+                            .accessibilityIdentifier("today.writeReviews")
+                        Button("核对流水") { openAccountSection(.flows) }
+                            .accessibilityIdentifier("today.checkTrades")
+                    }
+                }.font(.caption.weight(.medium)).buttonStyle(.bordered)
+                if phase == .postMarket, stage.activePlanCount > 0 {
+                    Button("查看后续 \(stage.activePlanCount) 条计划") { state.selectedTab = WorkbenchRoute.planTab }
+                        .font(.caption).accessibilityIdentifier("today.nextPlans")
+                }
             }
         }
     }
-    @ViewBuilder private func countLabels(_ board: WorkbenchBoard) -> some View {
-        Label(PulseLocalization.localizedString("workbench.count.reachedSymbols", board.reachedSymbolCount), systemImage: "target")
-            .foregroundStyle(board.reachedSymbolCount > 0 ? Color.orange : .secondary)
-        Label(PulseLocalization.localizedString("workbench.count.plansToReview", board.plansToReviewCount), systemImage: "checklist")
-            .foregroundStyle(board.plansToReviewCount > 0 ? Color.orange : .secondary)
-        Label(PulseLocalization.localizedString("workbench.count.todayReviews", board.todayReviewCount), systemImage: "square.and.pencil")
-            .foregroundStyle(board.todayReviewCount > 0 ? Color.orange : .secondary)
+    private func counts(_ board: WorkbenchBoard, stage: WorkbenchStagePresentation) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { countLabels(stage) }
+                VStack(alignment: .leading, spacing: 5) { countLabels(stage) }
+            }
+            if let backlog = board.historyBacklog {
+                Button(PulseLocalization.localizedString("workbench.backlog.link", backlog.count)) {
+                    openAccountSection(.reviews)
+                }
+                .font(.caption).foregroundStyle(WorkbenchTheme.blue)
+                .accessibilityIdentifier("today.reviewBacklog")
+            }
+        }
     }
-    private func taskColumn(_ board: WorkbenchBoard) -> some View {
-        WorkbenchSection(title: text("workbench.tasks.title")) {
+    @ViewBuilder private func countLabels(_ stage: WorkbenchStagePresentation) -> some View {
+        ForEach(stage.metrics) { metric in
+            Label(metric.text, systemImage: metric.icon)
+                .foregroundStyle(metric.value > 0 ? Color.primary : .secondary)
+                .accessibilityIdentifier("today.metric.\(metric.id)")
+        }
+    }
+    private func taskColumn(_ board: WorkbenchBoard, stage: WorkbenchStagePresentation) -> some View {
+        WorkbenchSection(title: stage.taskTitle) {
             WorkbenchCard(padding: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    if board.tasks.isEmpty { Text(text("workbench.tasks.empty")).font(.footnote).foregroundStyle(.secondary) }
-                    ForEach(board.tasks) { task in taskRow(task) }
-                    ForEach(board.cashNotes) { note in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(note.title).font(.footnote)
-                            Text(note.detail).font(.caption).foregroundStyle(.orange)
-                            Button("账户现金与持仓") { state.selectedTab = WorkbenchRoute.accountTab }.font(.caption)
+                    if stage.tasks.isEmpty {
+                        Text(stage.emptyText).font(.footnote).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("today.stage.empty")
+                    }
+                    ForEach(stage.tasks) { task in taskRow(task, allowsPlanFill: stage.allowsPlanFillAction) }
+                    if stage.showsCashTasks {
+                        ForEach(board.cashNotes) { note in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(note.title).font(.footnote)
+                                Text(note.detail).font(.caption).foregroundStyle(.orange)
+                                Button("账户现金与持仓") { openAccountSection(.holdings) }.font(.caption)
+                            }
                         }
                     }
                 }
             }
         }
     }
-    private func taskRow(_ task: WorkbenchTask) -> some View {
+    private func taskRow(_ task: WorkbenchTask, allowsPlanFill: Bool) -> some View {
         let selected = selectedSymbol == task.symbol
         return VStack(alignment: .leading, spacing: 7) {
             Button { selectedSymbol = task.symbol } label: {
@@ -273,13 +340,17 @@ struct TodayView: View {
                         Text(row.detail).font(.caption).foregroundStyle(.secondary)
                         HStack(spacing: 16) {
                             Button(text("workbench.task.review")) { openPlan(row.entry) }
-                            Button(text("workbench.task.recordFill")) { presentTradeEntry(.fromPlan(row.entry, backfill: row.entry.canBackfillFill)) }
+                            if allowsPlanFill {
+                                Button(text("workbench.task.recordFill")) { presentTradeEntry(.fromPlan(row.entry, backfill: row.entry.canBackfillFill)) }
+                                    .accessibilityIdentifier("today.recordFill.\(task.symbol.description).\(row.id.uuidString)")
+                            }
                         }.font(.caption.weight(.medium))
                     }.padding(.leading, 18)
                 }
                 if let count = task.reviewCount, let first = task.reviewTransactionIDs.first {
                     Button(PulseLocalization.localizedString("workbench.task.reviewFills", count)) { openReview(first, symbol: task.symbol) }
                         .font(.caption).padding(.leading, 18)
+                        .accessibilityIdentifier("today.reviewFill.\(task.symbol.description)")
                 }
                 if let checkpoint = task.checkpointID {
                     Button(text("workbench.task.reviewCheckpoint")) { openReview(checkpoint, symbol: task.symbol) }
@@ -411,7 +482,11 @@ struct TodayView: View {
         onOpenRoute?(WorkbenchRoute(destination: .plan(entry.plan.id, entry.symbol), tab: WorkbenchRoute.planTab))
     }
     private func openReview(_ id: UUID, symbol: SymbolID) {
-        guard let transaction = state.historyItems.first(where: { $0.symbol == symbol })?.transactions.first(where: { $0.id == id }) else { return }
+        guard let transaction = (state.watchlist.allItems + state.historyItems)
+            .first(where: { $0.symbol == symbol })?.transactions.first(where: { $0.id == id }) else {
+            showNotice("这笔成交已变更或移除，请刷新后重新核对；没有写入任何记录。")
+            return
+        }
         reviewTarget = ReviewTargetBox(transaction: transaction, symbol: symbol, account: state.accountID)
     }
 }

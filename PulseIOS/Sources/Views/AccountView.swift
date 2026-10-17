@@ -16,6 +16,8 @@ struct AccountView: View {
     @State private var section: AccountSection = .holdings
     @State private var pendingSwitch: BrokerageAccountID?
     @State private var isPresentingCashEditor = false
+    // Viewport state only: scrolling the chooser never switches the ledger.
+    @State private var visibleAccount: BrokerageAccountID?
 
     enum AccountSection: String, CaseIterable, Identifiable {
         case holdings, flows, reviews
@@ -134,9 +136,17 @@ struct AccountView: View {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(isSelected ? WorkbenchTheme.blue : .primary)
+                        .accessibilityIdentifier("account.choice.\(account.rawValue)")
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                        .id(account)
                     }
                 }
+                .scrollTargetLayout()
                 .padding(.vertical, 2)
+            }
+            .scrollPosition(id: $visibleAccount, anchor: .center)
+            .onChange(of: state.accountID, initial: true) { _, account in
+                visibleAccount = account
             }
         }
     }
@@ -175,6 +185,7 @@ struct AccountView: View {
             }
         }
         .pickerStyle(.segmented)
+        .accessibilityIdentifier("account.sections")
     }
 
     // MARK: Holdings
@@ -606,6 +617,7 @@ struct ReviewsSection: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("review.\(isPending ? "pending" : "completed").\(symbol.description).\(transaction.id.uuidString)")
     }
 }
 
@@ -686,8 +698,8 @@ struct ReviewEditorSheet: View {
                         }
                     }
 
-                    reviewField(title: "简短复盘", text: $retrospective, placeholder: "这笔做得怎么样")
-                    reviewField(title: "策略记录", text: $strategy, placeholder: "当时的想法")
+                    reviewField(title: "简短复盘", text: $retrospective, placeholder: "这笔做得怎么样", identifier: "review.retrospective")
+                    reviewField(title: "策略记录", text: $strategy, placeholder: "当时的想法", identifier: "review.strategy")
 
                     if let errorMessage {
                         Text(errorMessage)
@@ -710,24 +722,28 @@ struct ReviewEditorSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
+                        .accessibilityIdentifier("review.cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") { submit() }
                         .disabled(isSubmitting)
                         .fontWeight(.semibold)
+                        .accessibilityIdentifier("review.save")
                 }
             }
         }
         .workbenchError($errorMessage)
     }
 
-    private func reviewField(title: String, text: Binding<String>, placeholder: String) -> some View {
+    private func reviewField(title: String, text: Binding<String>, placeholder: String, identifier: String) -> some View {
         WorkbenchCard(padding: 12) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextField(placeholder, text: text, axis: .vertical)
+                    .accessibilityLabel(title)
+                    .accessibilityIdentifier(identifier)
                     .lineLimit(3...8)
                     .textFieldStyle(.plain)
                     .font(.subheadline)
@@ -735,21 +751,26 @@ struct ReviewEditorSheet: View {
         }
     }
 
+    /// The form owns only these three fields. Keep the undisplayed checkpoint
+    /// and use the shared normalization for both explicit clears and saves.
+    static func reviewForSaving(original: PositionTransactionReview?, followedPlan: Bool?,
+                                retrospective: String, strategy: String) throws -> PositionTransactionReview? {
+        var review = original ?? PositionTransactionReview()
+        review.followedPlan = followedPlan
+        review.retrospective = retrospective
+        review.strategy = strategy
+        return try review.normalizedForPersistence()
+    }
+
     private func submit() {
         isSubmitting = true
         defer { isSubmitting = false }
 
-        let trimmedRetrospective = retrospective.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedStrategy = strategy.trimmingCharacters(in: .whitespacesAndNewlines)
-        // This form owns only these three fields. Preserve the checkpoint
-        // fields it never presented, while still allowing explicit field clears.
-        var changedReview = transaction.review ?? PositionTransactionReview()
-        changedReview.followedPlan = followedPlan
-        changedReview.retrospective = trimmedRetrospective.isEmpty ? nil : trimmedRetrospective
-        changedReview.strategy = trimmedStrategy.isEmpty ? nil : trimmedStrategy
         let review: PositionTransactionReview?
-        do { review = try changedReview.normalizedForPersistence() }
-        catch { errorMessage = error.localizedDescription; return }
+        do {
+            review = try Self.reviewForSaving(original: transaction.review,
+                followedPlan: followedPlan, retrospective: retrospective, strategy: strategy)
+        } catch { errorMessage = error.localizedDescription; return }
 
         do {
             try state.saveReview(

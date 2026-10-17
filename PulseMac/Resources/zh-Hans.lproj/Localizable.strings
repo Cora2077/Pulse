@@ -640,12 +640,12 @@
 "workbench.scope.hongKong" = "港股";
 "workbench.scope.unitedStates" = "美股";
 "workbench.phase.title" = "今日视角";
-"workbench.phase.help" = "只改变今天的侧重顺序；不改变数据、计数或到价判断。";
+"workbench.phase.help" = "盘前准备计划与资金，盘中跟进有效信号，盘后复盘真实成交。阶段切换不改写账本，也不会自动生成成交。";
 "workbench.phase.preMarket" = "盘前";
 "workbench.phase.intraday" = "盘中";
 "workbench.phase.postMarket" = "盘后";
 "workbench.meta.line" = "%@侧重 · 市场本地日期 %@ · %@";
-"workbench.meta.zoneHelp" = "市场本地日期按各交易所时区：%@。\n时段按周一至周五的常规交易时间判断；未接入节假日日历，周中休市日仍会显示为交易时段。\n这只是报价与事件的参考时钟；成交的今天按本机记录日期。";
+"workbench.meta.zoneHelp" = "市场本地日期按各交易所时区：%@。\n时段使用交易所日历和常规交易时间；超出已核验年份的日期回退到工作日规则。\n这只是报价与事件的参考时钟；成交的今天按本机记录日期。";
 "workbench.meta.label" = "时段与日期的判断口径";
 "workbench.session.preMarket" = "盘前";
 "workbench.session.regular" = "交易时段";

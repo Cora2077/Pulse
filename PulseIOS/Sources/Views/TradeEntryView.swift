@@ -226,6 +226,7 @@ struct TradeEntryView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
+                        .accessibilityIdentifier("trade.cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") { showsPreview = true }

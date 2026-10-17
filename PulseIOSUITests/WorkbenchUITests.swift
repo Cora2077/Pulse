@@ -148,6 +148,179 @@ final class WorkbenchUITests: XCTestCase {
     }
 
     @MainActor
+    func testHistoryReviewShortcutSavesTheActualRecordAndClearsBacklog() {
+        let app = launchDemo()
+        // Revisit an already mounted account page in a different section: the
+        // shortcut must select Reviews, not merely change the active tab.
+        app.tabBars.buttons["账户"].tap()
+        let sections = app.segmentedControls["account.sections"]
+        XCTAssertTrue(sections.waitForExistence(timeout: 5))
+        sections.buttons["流水"].tap()
+        app.tabBars.buttons["今日"].tap()
+
+        let pending = openHistoryReviews(app)
+        let pendingID = pending.identifier
+        let completedID = pendingID.replacingOccurrences(of: "review.pending.", with: "review.completed.")
+        saveScreenshot(app, name: "history-review-shortcut")
+        pending.tap()
+        let field = retrospectiveField(app)
+        let text = "Waited for confirmation before buying."
+        field.tap(); field.typeText(text)
+        app.buttons["review.save"].tap()
+
+        let completed = app.buttons[completedID]
+        XCTAssertTrue(completed.waitForExistence(timeout: 8))
+        XCTAssertTrue(completed.label.contains(text), "必须展示同一笔成交实际保存的复盘")
+        XCTAssertFalse(app.buttons[pendingID].exists)
+        saveScreenshot(app, name: "history-review-saved")
+        app.tabBars.buttons["今日"].tap()
+        XCTAssertTrue(app.buttons["today.reviewBacklog"].waitForNonExistence(timeout: 8), "唯一历史成交完成复盘后，工作台不能仍显示待补齐")
+    }
+
+    @MainActor
+    func testDarkLargeHistoryReviewCancellationKeepsRecordPending() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--acceptance-demo", "--acceptance-large-dark"]
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["今日"].waitForExistence(timeout: 15))
+        let pending = openHistoryReviews(app)
+        let pendingID = pending.identifier
+        let completedID = pendingID.replacingOccurrences(of: "review.pending.", with: "review.completed.")
+        saveScreenshot(app, name: "dark-large-history-reviews")
+        pending.tap()
+        let field = retrospectiveField(app)
+        let cancelledText = "This draft must not be saved."
+        field.tap(); field.typeText(cancelledText)
+        saveScreenshot(app, name: "dark-large-history-review-editor")
+        app.buttons["review.cancel"].tap()
+
+        let unchanged = app.buttons[pendingID]
+        XCTAssertTrue(unchanged.waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons[completedID].exists)
+        unchanged.tap()
+        let reopened = retrospectiveField(app)
+        XCTAssertFalse((reopened.value as? String ?? "").contains(cancelledText))
+        app.buttons["review.cancel"].tap()
+        app.tabBars.buttons["今日"].tap()
+        XCTAssertTrue(app.buttons["today.reviewBacklog"].waitForExistence(timeout: 8))
+    }
+
+    @MainActor
+    func testAShareStagesChangeActualTasksAndActionsWithoutInventingForeignAccounts() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--acceptance-demo", "--acceptance-a-shares"]
+        app.launch()
+        XCTAssertTrue(app.segmentedControls["today.phase"].waitForExistence(timeout: 15))
+        let assets = app.staticTexts["today.assetMarket"]
+        XCTAssertTrue(assets.label.contains("A 股资产"))
+        XCTAssertFalse(app.segmentedControls["today.scope"].exists, "全球参考指数不等于港股/美股账户")
+        let clock = app.staticTexts["today.marketClock"].label
+        XCTAssertFalse(clock.contains("港股"))
+        XCTAssertFalse(clock.contains("美股"))
+
+        choosePhase("盘前", in: app)
+        XCTAssertEqual(app.staticTexts["today.stage.title"].label, "盘前准备")
+        XCTAssertTrue(app.staticTexts["today.metric.plans"].exists)
+        XCTAssertTrue(app.buttons["today.preparePlans"].exists)
+        saveScreenshot(app, name: "a-share-preparation")
+        let quiet = app.buttons["today.task.600000.SH"]
+        reveal(quiet, in: app)
+        quiet.tap()
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "today.recordFill.")).count, 0,
+            "准备清单不能把计划当成已成交")
+
+        choosePhase("盘中", in: app)
+        XCTAssertEqual(app.staticTexts["today.stage.title"].label, "盘中跟进")
+        XCTAssertTrue(app.staticTexts["today.metric.reached"].exists)
+        XCTAssertFalse(app.buttons["today.task.600000.SH"].exists, "未到价且无待核对条件的安静计划只属于准备清单")
+        XCTAssertFalse(app.buttons["today.writeReviews"].exists)
+        saveScreenshot(app, name: "a-share-intraday")
+        let follow = app.buttons["today.task.000001.SZ"]
+        reveal(follow, in: app)
+        follow.tap()
+        let fill = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "today.recordFill.000001.SZ.")).firstMatch
+        XCTAssertTrue(fill.waitForExistence(timeout: 5))
+        fill.tap()
+        let actualPrice = app.textFields["trade.price"]
+        XCTAssertTrue(actualPrice.waitForExistence(timeout: 5))
+        XCTAssertTrue(["", "必填"].contains(actualPrice.value as? String ?? ""))
+        app.buttons["trade.cancel"].tap()
+
+        choosePhase("盘后", in: app)
+        XCTAssertEqual(app.staticTexts["today.stage.title"].label, "盘后复盘")
+        XCTAssertTrue(app.staticTexts["today.metric.fills"].label.contains("1"))
+        XCTAssertTrue(app.staticTexts["today.metric.reviews"].label.contains("1"))
+        XCTAssertFalse(app.staticTexts["today.metric.reached"].exists)
+        XCTAssertFalse(app.buttons["today.task.600000.SH"].exists)
+        XCTAssertTrue(app.buttons["today.writeReviews"].exists)
+        saveScreenshot(app, name: "a-share-post-market")
+        reveal(app.buttons["today.task.000001.SZ"], in: app)
+        app.buttons["today.task.000001.SZ"].tap()
+        let review = app.buttons["today.reviewFill.000001.SZ"]
+        reveal(review, in: app)
+        review.tap()
+        XCTAssertTrue(app.buttons["review.save"].waitForExistence(timeout: 5))
+        app.buttons["review.cancel"].tap()
+    }
+
+    @MainActor
+    func testAShareStagesSupportAirDarkLargeText() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--acceptance-demo", "--acceptance-a-shares", "--acceptance-large-dark"]
+        app.launch()
+        XCTAssertTrue(app.segmentedControls["today.phase"].waitForExistence(timeout: 15))
+        for (phase, title) in [("盘前", "盘前准备"), ("盘中", "盘中跟进"), ("盘后", "盘后复盘")] {
+            choosePhase(phase, in: app)
+            XCTAssertEqual(app.staticTexts["today.stage.title"].label, title)
+            saveScreenshot(app, name: "air-dark-large-\(phase)")
+        }
+    }
+
+    @MainActor
+    private func choosePhase(_ phase: String, in app: XCUIApplication) {
+        let picker = app.segmentedControls["today.phase"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        for _ in 0..<8 where !picker.isHittable { app.swipeDown() }
+        XCTAssertTrue(picker.isHittable)
+        picker.buttons[phase].tap()
+    }
+
+    @MainActor
+    private func openHistoryReviews(_ app: XCUIApplication) -> XCUIElement {
+        let shortcut = app.buttons["today.reviewBacklog"]
+        reveal(shortcut, in: app)
+        shortcut.tap()
+        let pending = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "review.pending.005930.KS.")).firstMatch
+        reveal(pending, in: app)
+        XCTAssertTrue(app.tabBars.buttons["账户"].isSelected)
+        let activeAccount = app.buttons["account.choice.mengmeng"]
+        XCTAssertTrue(activeAccount.isSelected)
+        XCTAssertGreaterThanOrEqual(activeAccount.frame.minX, app.frame.minX, "当前账户不能被横向裁掉")
+        XCTAssertLessThanOrEqual(activeAccount.frame.maxX, app.frame.maxX, "大字下也必须看清当前记账账户")
+        return pending
+    }
+
+    @MainActor
+    private func retrospectiveField(_ app: XCUIApplication) -> XCUIElement {
+        // A multiline SwiftUI TextField is exposed as a text view on some OS
+        // versions. Match its explicit identity rather than its implementation.
+        let field = app.descendants(matching: .any).matching(identifier: "review.retrospective").firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.isHittable)
+        return field
+    }
+
+    @MainActor
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
+        XCTAssertTrue(element.waitForExistence(timeout: 8))
+        for _ in 0..<6 where !element.isHittable { app.swipeUp() }
+        XCTAssertTrue(element.isHittable)
+    }
+
+    @MainActor
     private func saveScreenshot(_ app: XCUIApplication, name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name

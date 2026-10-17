@@ -265,6 +265,10 @@ final class IPhoneAppState {
     }
 
     private func seedAcceptanceData() {
+        if CommandLine.arguments.contains("--acceptance-a-shares") {
+            seedAShareWorkbenchAcceptanceData()
+            return
+        }
         let samsung = SymbolID(market: .kr, code: "005930")
         let bank = SymbolID(market: .sh, code: "881155")
         let hynix = SymbolID(market: .kr, code: "000660")
@@ -296,6 +300,40 @@ final class IPhoneAppState {
                 previousClose: 49000, sourceID: "demo", timestamp: .now)])
         }
     }
+    /// Synthetic only, reached exclusively from the isolated demo initializer.
+    /// Quiet preparation plan, intraday condition, today's review, and global
+    /// reference indices exercise different work stages without real account data.
+    private func seedAShareWorkbenchAcceptanceData() {
+        let quiet = SymbolID(market: .sh, code: "600000")
+        let follow = SymbolID(market: .sz, code: "000001")
+        let now = Date.now
+        let today = Calendar.current.startOfDay(for: now)
+        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: today)!
+        let items = [
+            WatchItem(symbol: quiet, displayName: "准备计划（合成）", instrumentType: .equity,
+                transactions: [PositionTransaction(kind: .buy, price: 10, quantity: 100,
+                    date: yesterday, fundingSource: .own, brokerageAccountID: .mengmeng)],
+                plans: [TradePlan(kind: .buy, price: 9, quantity: 100, fundingSource: .own)]),
+            WatchItem(symbol: follow, displayName: "成交复盘（合成）", instrumentType: .equity,
+                transactions: [PositionTransaction(kind: .buy, price: 12, quantity: 100,
+                    date: today, fundingSource: .own, brokerageAccountID: .mengmeng)],
+                plans: [TradePlan(kind: .buy, price: 11, quantity: 100,
+                    conditions: [TradePlanCondition(title: "合成条件待核对", kind: .manual)], fundingSource: .own)]),
+            WatchItem(symbol: SymbolID(index: .hangSeng), displayName: "恒生指数", instrumentType: .index),
+            WatchItem(symbol: SymbolID(index: .sp500), displayName: "标普500指数", instrumentType: .index)
+        ]
+        let group = WatchlistGroup(name: "A 股合成验收", symbols: items.map(\.symbol))
+        _ = watchlist.applySyncSnapshot(WatchlistSyncSnapshot(items: [], groups: [], brokerageAccounts: [
+            BrokerageAccountPortfolio(accountID: .mengmeng, items: items, groups: [group]),
+            BrokerageAccountPortfolio(accountID: .financing)
+        ]))
+        watchlist.selectBrokerageAccount(.mengmeng)
+        market.apply(quotes: [
+            Quote(symbol: quiet, name: "准备计划（合成）", price: 10, previousClose: 9.8, sourceID: "demo", timestamp: now),
+            Quote(symbol: follow, name: "成交复盘（合成）", price: 12, previousClose: 11.8, sourceID: "demo", timestamp: now)
+        ])
+    }
+
     private static func demoCandles() -> [Candle] {
         (0..<80).map { index in
             let close = 1300 + Double(index) * 1.15 + sin(Double(index) * 0.6) * 18

@@ -106,6 +106,13 @@ public struct WorkbenchRootView: View {
             }
         }
         .environment(\.workbenchOpenRoute, push)
+        .environment(\.workbenchOpenAccountSection) { section in
+            // A cross-tab shortcut targets the account root, not a detail left
+            // on its navigation stack from an earlier visit.
+            accountPath = []
+            state.requestedAccountSection = section.rawValue
+            state.selectedTab = WorkbenchRoute.accountTab
+        }
         .environment(\.workbenchPresentTradeEntry) { tradeEntry = $0 }
         .environment(\.workbenchOpenSettings) { isPresentingSettings = true }
         .environment(\.workbenchNotice) { pendingURLNotice = $0 }
@@ -218,6 +225,9 @@ struct WorkbenchRoute: Hashable {
 private struct WorkbenchOpenRouteKey: EnvironmentKey {
     static let defaultValue: @MainActor (WorkbenchRoute) -> Void = { _ in }
 }
+private struct WorkbenchOpenAccountSectionKey: EnvironmentKey {
+    static let defaultValue: @MainActor (AccountView.AccountSection) -> Void = { _ in }
+}
 private struct WorkbenchPresentTradeEntryKey: EnvironmentKey {
     static let defaultValue: @MainActor (TradeEntryContext) -> Void = { _ in }
 }
@@ -232,6 +242,10 @@ extension EnvironmentValues {
     var workbenchOpenRoute: @MainActor (WorkbenchRoute) -> Void {
         get { self[WorkbenchOpenRouteKey.self] }
         set { self[WorkbenchOpenRouteKey.self] = newValue }
+    }
+    var workbenchOpenAccountSection: @MainActor (AccountView.AccountSection) -> Void {
+        get { self[WorkbenchOpenAccountSectionKey.self] }
+        set { self[WorkbenchOpenAccountSectionKey.self] = newValue }
     }
     var workbenchPresentTradeEntry: @MainActor (TradeEntryContext) -> Void {
         get { self[WorkbenchPresentTradeEntryKey.self] }
