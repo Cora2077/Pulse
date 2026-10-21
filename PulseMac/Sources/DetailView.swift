@@ -11,6 +11,7 @@ struct DetailView: View {
     @Binding var route: PopoverRoute
 
     @State private var period: CandlePeriod = .minute1
+    @State private var adjustment: CandleAdjustment = .forward
     @State private var candles: [Candle] = []
     /// What `candles` hold, and by the same token which request they answer for.
     /// A switch leaves the previous period's bars in place for a moment; they
@@ -36,8 +37,9 @@ struct DetailView: View {
     /// hosts the host's tools, so the controller stays in read-only browse mode.
     @State private var annotationController = ChartAnnotationController()
 
-    init(symbol: SymbolID, route: Binding<PopoverRoute>, initialPeriod: CandlePeriod = .minute1) {
+    init(symbol: SymbolID, route: Binding<PopoverRoute>, initialPeriod: CandlePeriod = .minute1, initialAdjustment: CandleAdjustment = .forward) {
         self.symbol = symbol
+        _adjustment = State(initialValue: initialAdjustment)
         _route = route
         _period = State(initialValue: initialPeriod)
         // Read-only browse: plan lines show, user drawings never enter the popover.
@@ -132,7 +134,7 @@ struct DetailView: View {
             }
             let loaded = await appState.detailMarketData.loadCandles(
                 symbol: request.symbol, period: request.period,
-                count: candleCount(for: request.period)
+                count: candleCount(for: request.period), adjustment: request.adjustment
             )
             if isFirstLoad {
                 // The first load starts while the push transition is still running,
@@ -155,8 +157,11 @@ struct DetailView: View {
 
     /// Symbol + period identify a chart load: the page is reused across symbols,
     /// so a reload owes itself to either changing.
+    private var supportsAdjustment: Bool { CandleAdjustment.supportsChart(symbol, period: period) }
+    private var chartAdjustment: CandleAdjustment { supportsAdjustment ? adjustment : .none }
+
     private var chartRequest: CandleCacheKey {
-        CandleCacheKey(symbol: symbol, period: period)
+        CandleCacheKey(symbol: symbol, period: period, adjustment: chartAdjustment)
     }
 
     private var quote: Quote? { appState.market.quote(for: symbol) }
@@ -558,7 +563,7 @@ struct DetailView: View {
                 appState: appState,
                 symbol: symbol,
                 period: period,
-                candles: sharedCandles
+                candles: sharedCandles, adjustment: chartAdjustment
             )
             let palette = ChangePalette(redUp: snapshot.redUp)
             let card = PulseShareCard(
@@ -834,14 +839,20 @@ struct DetailView: View {
     private var chartHeader: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
-                sectionHeaderText(PulseLocalization.localizedString("detail.section.trend"))
+                HStack(spacing: 4) {
+                    sectionHeaderText(PulseLocalization.localizedString("detail.section.trend"))
+                    if supportsAdjustment { ChartAdjustmentMenu(adjustment: $adjustment) }
+                }
                 Spacer(minLength: 0)
                 picker
-                    .frame(width: 260)
+                    .frame(width: supportsAdjustment ? 220 : 260)
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                sectionHeaderText(PulseLocalization.localizedString("detail.section.trend"))
+                HStack(spacing: 4) {
+                    sectionHeaderText(PulseLocalization.localizedString("detail.section.trend"))
+                    if supportsAdjustment { ChartAdjustmentMenu(adjustment: $adjustment) }
+                }
                 picker
             }
         }

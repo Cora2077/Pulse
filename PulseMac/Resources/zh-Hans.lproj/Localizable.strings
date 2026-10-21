@@ -1498,3 +1498,5 @@
 "plans.backfill.date" = "实际成交日期";
 "plans.unit.unknownCurrency" = "币种未知";
 "plan.executionAccount.budgetPending" = "还有 %d 个计划未选默认账户，暂不计入账户预算。";
+
+"main.tab.research" = "情报";

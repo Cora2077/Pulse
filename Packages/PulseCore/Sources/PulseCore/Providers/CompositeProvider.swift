@@ -137,8 +137,10 @@ public actor CompositeProvider: QuoteProvider {
         }
     }
 
-    private func cachedQuote(for symbol: SymbolID, maxAge: TimeInterval) -> Quote? {
-        guard let entry = quoteCache[symbol], entry.isFresh(maxAge: maxAge) else { return nil }
+    private func cachedQuote(for symbol: SymbolID, maximumCacheAge: TimeInterval?) -> Quote? {
+        guard let entry = quoteCache[symbol] else { return nil }
+        guard let maximumCacheAge, maximumCacheAge > 0 else { return nil }
+        guard entry.isFresh(maxAge: maximumCacheAge) else { return nil }
         return entry.value
     }
 
@@ -290,12 +292,36 @@ public actor CompositeProvider: QuoteProvider {
 
     // MARK: - QuoteProvider
 
+    /// Consumers of a snapshot (UI detail views, one-off reads) share the recent
+    /// cache. The refresh engine does not go through here: a scheduled round must
+    /// ask the sources again, see `refreshQuotes(for:)`.
     public func quotes(for symbols: [SymbolID]) async throws -> [Quote] {
+        try await fetchQuotes(for: symbols, maximumCacheAge: quoteCacheTTL)
+    }
+
+    /// A round that must reach the sources. A cached quote never answers it,
+    /// however recent: quoting cadence can be as short as one second, so a cache
+    /// window longer than that would hold every tick inside itself.
+    ///
+    /// Caching is not "skipped" so much as passed through — the refreshed quotes
+    /// are stored as they arrive, so an ordinary `quotes(for:)` right after still
+    /// shares the freshest answer.
+    public func refreshQuotes(for symbols: [SymbolID]) async throws -> [Quote] {
+        try await fetchQuotes(for: symbols, maximumCacheAge: nil)
+    }
+
+    /// The same round as `quotes(for:)`, but only entries no older than
+    /// `maximumCacheAge` seconds are reused; `nil` refetches everything.
+    public func quotes(for symbols: [SymbolID], maximumCacheAge: TimeInterval?) async throws -> [Quote] {
+        try await fetchQuotes(for: symbols, maximumCacheAge: maximumCacheAge)
+    }
+
+    private func fetchQuotes(for symbols: [SymbolID], maximumCacheAge: TimeInterval?) async throws -> [Quote] {
         guard !symbols.isEmpty else { return [] }
         var quotesBySymbol: [SymbolID: Quote] = [:]
         var missing: [SymbolID] = []
         for symbol in symbols {
-            if let cached = cachedQuote(for: symbol, maxAge: quoteCacheTTL) {
+            if let cached = cachedQuote(for: symbol, maximumCacheAge: maximumCacheAge) {
                 quotesBySymbol[symbol] = cached
             } else {
                 missing.append(symbol)
@@ -326,6 +352,7 @@ public actor CompositeProvider: QuoteProvider {
                 let provider = providerByID[id]!
                 try await waitForProviderBudget(provider)
                 let quotes = try await provider.quotes(for: group).map { $0.sourced(by: provider.descriptor) }
+                try Task.checkCancellation()
                 for quote in quotes {
                     if let actualDelay = quote.sourceDelay,
                        candidates(.quotes, market: quote.symbol.market, covering: quote.symbol).contains(where: {
@@ -343,6 +370,7 @@ public actor CompositeProvider: QuoteProvider {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                try Task.checkCancellation()
                 noteFailure(id, error)
                 lastError = error
             }
@@ -385,6 +413,7 @@ public actor CompositeProvider: QuoteProvider {
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
+                        try Task.checkCancellation()
                         noteFailure(fallbackID, error)
                         lastError = error
                     }
@@ -404,16 +433,31 @@ public actor CompositeProvider: QuoteProvider {
         for symbols: [SymbolID]
     ) async throws -> [Quote] {
         try await waitForProviderBudget(provider)
-        return try await provider.quotes(for: symbols).map { $0.sourced(by: provider.descriptor) }
+        let quotes = try await provider.quotes(for: symbols).map { $0.sourced(by: provider.descriptor) }
+        try Task.checkCancellation()
+        return quotes
     }
 
     public func candles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] {
+        try await candles(for: symbol, period: period, count: count, adjustment: .none)
+    }
+
+    public func candles(for symbol: SymbolID, period: CandlePeriod, count: Int, adjustment: CandleAdjustment) async throws -> [Candle] {
         guard count > 0 else { return [] }
-        let key = ProviderCandleCacheKey(symbol: symbol, period: period, count: count)
+        let key = ProviderCandleCacheKey(symbol: symbol, period: period, count: count, adjustment: adjustment)
         if let cached = cachedCandles(for: key, maxAge: candleCacheTTL) {
             return cached
         }
-        let candles = try await fetchCandles(for: symbol, period: period, count: count)
+        return try await refreshCandles(for: symbol, period: period, count: count, adjustment: adjustment)
+    }
+
+    /// Scheduled history refreshes and explicit retries must reach a source,
+    /// rather than replaying the composite's longer-lived read-through cache.
+    public func refreshCandles(for symbol: SymbolID, period: CandlePeriod, count: Int, adjustment: CandleAdjustment = .none) async throws -> [Candle] {
+        guard count > 0 else { return [] }
+        let key = ProviderCandleCacheKey(symbol: symbol, period: period, count: count, adjustment: adjustment)
+        let candles = try await fetchCandles(for: symbol, period: period, count: count, adjustment: adjustment)
+        try Task.checkCancellation()
         candleCache[key] = CacheEntry(value: candles)
         return candles
     }
@@ -935,7 +979,7 @@ public actor CompositeProvider: QuoteProvider {
         }
     }
 
-    private func fetchCandles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] {
+    private func fetchCandles(for symbol: SymbolID, period: CandlePeriod, count: Int, adjustment: CandleAdjustment) async throws -> [Candle] {
         // `covers` is what keeps a nonexistent exchange symbol off an exchange
         // source it would only fail on — and a board off every source but its own.
         let enabled = providers.filter {
@@ -947,12 +991,18 @@ public actor CompositeProvider: QuoteProvider {
         let healthy = enabled.filter { isHealthy($0.descriptor.id) }
         guard !healthy.isEmpty else { throw ProviderError.rateLimited }  // All in cooldown; recovers automatically shortly
 
+        // Health is checked above so a market with every source cooling says so;
+        // among healthy sources the quote priority decides, the same order
+        // quotes route by (Longbridge, then Fuyao, then everything else). Without
+        // it a board's daily history fell through the market's generic sources to
+        // Ths (registered last) instead of reaching Fuyao first.
         var lastError: (any Error) = ProviderError.symbolNotFound(symbol)
         var singleBarHistory: [Candle]?
-        for provider in healthy {
+        for provider in orderedByQuotePriority(healthy, market: symbol.market) {
             do {
                 try await waitForProviderBudget(provider)
-                let result = try await provider.candles(for: symbol, period: period, count: count)
+                let result = try await provider.candles(for: symbol, period: period, count: count, adjustment: adjustment)
+                try Task.checkCancellation()
                 // Some index endpoints return HTTP 200 and only today's snapshot
                 // for a multi-year request. Try the next source before accepting it.
                 // Keep a genuine newly listed instrument's sole bar if no source
@@ -963,6 +1013,7 @@ public actor CompositeProvider: QuoteProvider {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                try Task.checkCancellation()
                 noteFailure(provider.descriptor.id, error)
                 lastError = error
             }
@@ -985,4 +1036,5 @@ private struct ProviderCandleCacheKey: Hashable {
     var symbol: SymbolID
     var period: CandlePeriod
     var count: Int
+    var adjustment: CandleAdjustment
 }

@@ -31,6 +31,9 @@ public final class WatchlistStore {
     /// Initial loading, local selection changes, and remote snapshot application
     /// do not invoke this hook.
     @ObservationIgnored public var onLocalSyncChange: ((WatchlistSyncSnapshot) -> Void)?
+    /// Independent read-only observer for locally persisted ledger changes.
+    /// Does not run on remote application, selection or initial loading.
+    @ObservationIgnored public var onLocalLedgerChange: ((WatchlistSyncSnapshot) -> Void)?
 
     public init(defaults: UserDefaults = .standard, defaultGroupName: String? = nil) {
         self.defaults = defaults
@@ -3837,7 +3840,10 @@ public final class WatchlistStore {
                 activeAccountID: activeBrokerageAccountID, selectedGroupIDs: accountGroupSelections) else { return }
             guard defaults.data(forKey: accountStorageKey) != data else { return }
             defaults.set(data, forKey: accountStorageKey)
-            if syncRelevant { onLocalSyncChange?(snapshot) }
+            if syncRelevant {
+                onLocalLedgerChange?(snapshot)
+                onLocalSyncChange?(snapshot)
+            }
             return
         }
         let snapshot = Snapshot(
@@ -3850,7 +3856,9 @@ public final class WatchlistStore {
         guard defaults.data(forKey: storageKey) != data else { return }
         defaults.set(data, forKey: storageKey)
         if syncRelevant {
-            onLocalSyncChange?(syncSnapshot())
+            let fullSnapshot = syncSnapshot()
+            onLocalLedgerChange?(fullSnapshot)
+            onLocalSyncChange?(fullSnapshot)
         }
     }
 

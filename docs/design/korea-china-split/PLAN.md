@@ -1,6 +1,8 @@
 # 跟踪分区 · 中韩行情同轴方案
 
 状态：**已实现**（macOS 端；iOS 端无分时小图，故不接入）。
+
+**2026-10-21 修复说明**：旧实现存在顶部刻度与行内绘图区不一致、每行独立计算范围及午休连线问题。当前实现以分组唯一 `IntradaySharedAxis` 驱动刻度和所有支持市场的曲线，刻度扣除价格列，主窗口侧栏也已接入。下文为原始设计过程，当前实现与验证以[修复验收](../../verification/time-axis-sync-2026-10-21.md)为准。
 预览图：[korea-china-tracking-preview.png](./korea-china-tracking-preview.png)（832x1466 @2x）
 渲染脚本：[render-tracking-preview.swift](./render-tracking-preview.swift)
 

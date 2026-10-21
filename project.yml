@@ -81,6 +81,11 @@ targets:
           - $(PRODUCT_BUNDLE_IDENTIFIER)-spks
           - $(PRODUCT_BUNDLE_IDENTIFIER)-spki
     postBuildScripts:
+      - name: Embed Stable Local Credential Broker
+        shell: /bin/bash
+        basedOnDependencyAnalysis: false
+        script: |
+          "$SRCROOT/scripts/build-credential-broker.sh"
       - name: Embed Longbridge SDK Plugin
         shell: /bin/bash
         basedOnDependencyAnalysis: false

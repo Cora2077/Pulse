@@ -155,13 +155,18 @@ public struct TencentProvider: QuoteProvider {
     }
 
     public func candles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] {
+        try await candles(for: symbol, period: period, count: count, adjustment: .none)
+    }
+
+    public func candles(for symbol: SymbolID, period: CandlePeriod, count: Int, adjustment: CandleAdjustment) async throws -> [Candle] {
+        guard adjustment == .none || !period.isIntraday else { throw ProviderError.unsupported(.candles) }
         guard symbol.market.isChinaA else {
             throw ProviderError.unsupported(.candles)
         }
         if period.isIntraday {
             return try await minuteCandles(for: symbol, period: period, count: count)
         }
-        return try await historicalCandles(for: symbol, period: period, count: count)
+        return try await historicalCandles(for: symbol, period: period, count: count, adjustment: adjustment)
     }
 
     private func minuteCandles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] {
@@ -198,10 +203,9 @@ public struct TencentProvider: QuoteProvider {
     /// Native daily/weekly/monthly history for the China A markets
     /// (`web.ifzq.gtimg.cn/appstock/app/fqkline/get`).
     ///
-    /// The final query field is the adjustment mode: left empty it returns
-    /// unadjusted ("不复权") prices, which is what the rest of Pulse's OHLC
-    /// semantics assume. Only the A-share markets are served here.
-    private func historicalCandles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] {
+    /// The final query field selects actual prices (empty) or forward adjustment
+    /// (`qfq`). Accounting and non-chart callers retain actual prices by default.
+    private func historicalCandles(for symbol: SymbolID, period: CandlePeriod, count: Int, adjustment: CandleAdjustment) async throws -> [Candle] {
         // A non-positive count is a caller mistake, not a source failure: answer
         // it without spending a request.
         guard count > 0 else { return [] }
@@ -213,14 +217,14 @@ public struct TencentProvider: QuoteProvider {
         let clamped = min(count, Self.historyMaxCount)
         var components = URLComponents(string: "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get")!
         components.queryItems = [
-            .init(name: "param", value: "\(wireSymbol),\(interval),,,\(clamped),"),
+            .init(name: "param", value: "\(wireSymbol),\(interval),,,\(clamped),\(adjustment == .forward ? "qfq" : "")"),
         ]
         let data = try await http.get(components.url!, headers: ["Referer": "https://gu.qq.com/"])
         let candles = try Self.parseHistoricalCandles(
             data,
             symbol: symbol,
             wireSymbol: wireSymbol,
-            period: period
+            period: period, adjustment: adjustment
         )
         // The endpoint can include today's provisional bar in addition to lmt.
         return Array(candles.suffix(clamped))
@@ -251,7 +255,8 @@ public struct TencentProvider: QuoteProvider {
         _ data: Data,
         symbol: SymbolID,
         wireSymbol: String,
-        period: CandlePeriod
+        period: CandlePeriod,
+        adjustment: CandleAdjustment = .none
     ) throws -> [Candle] {
         guard let interval = historyInterval(for: period) else {
             throw ProviderError.unsupported(.candles)
@@ -265,7 +270,10 @@ public struct TencentProvider: QuoteProvider {
         guard response.code == 0 else {
             throw ProviderError.badResponse("tencent history: code \(response.code)")
         }
-        guard let rows = response.data?[wireSymbol]?.series?[interval] else {
+        let series = response.data?[wireSymbol]?.series
+        // Fail closed if the requested basis is absent. An unadjusted series
+        // must never masquerade as a successful forward-adjusted fallback.
+        guard let rows = series?[(adjustment == .forward ? "qfq" : "") + interval] else {
             throw ProviderError.symbolNotFound(symbol)
         }
 

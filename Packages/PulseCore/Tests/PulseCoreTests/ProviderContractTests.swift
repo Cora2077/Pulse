@@ -564,34 +564,72 @@ struct ProviderContractTests {
 
     // MARK: - Fuyao (BYOK; additionally needs FUYAO_API_KEY)
 
-    static var fuyaoKey: String? {
-        ProcessInfo.processInfo.environment["FUYAO_API_KEY"]
-    }
+    @Suite("Fuyao HTTP (live)", .serialized)
+    struct Fuyao {
+        static var fuyaoKey: String? {
+            ProcessInfo.processInfo.environment["FUYAO_API_KEY"]
+        }
 
-    @Test("Fuyao: batch quotes", .enabled(if: fuyaoKey != nil))
-    func fuyaoQuotes() async throws {
-        let symbols = [SymbolID(market: .sh, code: "600519"), SymbolID(market: .sz, code: "000001")]
-        let quotes = try await FuyaoProvider(apiKey: Self.fuyaoKey).quotes(for: symbols)
-        #expect(quotes.count == symbols.count)
-        for quote in quotes {
-            Self.assertQuoteContract(quote)
-            #expect(quote.currencyCode == "CNY")
+        // Match the app: one actor owns the entire Key request budget.
+        static let liveProvider = FuyaoProvider(apiKey: fuyaoKey)
+
+        @Test("Fuyao: batch quotes", .enabled(if: fuyaoKey != nil))
+        func fuyaoQuotes() async throws {
+            let symbols = [SymbolID(market: .sh, code: "600519"), SymbolID(market: .sz, code: "000001")]
+            let quotes = try await Self.liveProvider.quotes(for: symbols)
+            #expect(quotes.count == symbols.count)
+            for quote in quotes {
+                ProviderContractTests.assertQuoteContract(quote)
+                #expect(quote.currencyCode == "CNY")
+            }
+        }
+
+        @Test("Fuyao: daily candles", .enabled(if: fuyaoKey != nil))
+        func fuyaoCandles() async throws {
+            let candles = try await Self.liveProvider.candles(
+                for: SymbolID(market: .sh, code: "600519"), period: .day, count: 60)
+            ProviderContractTests.assertCandleContract(candles)
+            #expect(candles.count <= 60)
+        }
+
+        @Test("Fuyao: search resolves Chinese names", .enabled(if: fuyaoKey != nil))
+        func fuyaoSearch() async throws {
+            let results = try await Self.liveProvider.search("平安银行")
+            #expect(results.contains { $0.symbol == SymbolID(market: .sz, code: "000001") })
+        }
+
+        @Test("Fuyao: mixed stocks, ETF, exchange indices and THS board", .enabled(if: fuyaoKey != nil))
+        func fuyaoMixedQuotes() async throws {
+            let symbols = [
+                SymbolID(market: .sh, code: "600519"),
+                SymbolID(market: .sz, code: "000001"),
+                SymbolID(market: .sh, code: "510300"),
+                SymbolID(index: .shanghaiComposite),
+                SymbolID(market: .sh, code: "000688"),
+                SymbolID(sectorIndex: SectorIndexID(code: "881155", name: "银行")),
+            ]
+            let quotes = try await Self.liveProvider.quotes(for: symbols)
+            #expect(Set(quotes.map(\.symbol)) == Set(symbols))
+            for quote in quotes {
+                ProviderContractTests.assertQuoteContract(quote)
+                #expect(quote.timestamp > Date.now.addingTimeInterval(-7 * 86_400))
+            }
+        }
+
+        @Test("Fuyao: index and board daily history", .enabled(if: fuyaoKey != nil))
+        func fuyaoIndexCandles() async throws {
+            let provider = Self.liveProvider
+            for symbol in [
+                SymbolID(market: .sh, code: "000688"),
+                SymbolID(sectorIndex: SectorIndexID(code: "881155", name: "银行")),
+            ] {
+                let bars = try await provider.candles(for: symbol, period: .day, count: 30)
+                ProviderContractTests.assertCandleContract(bars)
+                #expect(bars.count > 1 && bars.count <= 30)
+            }
         }
     }
 
-    @Test("Fuyao: daily candles", .enabled(if: fuyaoKey != nil))
-    func fuyaoCandles() async throws {
-        let candles = try await FuyaoProvider(apiKey: Self.fuyaoKey).candles(
-            for: SymbolID(market: .sh, code: "600519"), period: .day, count: 60)
-        Self.assertCandleContract(candles)
-        #expect(candles.count <= 60)
-    }
-
-    @Test("Fuyao: search resolves Chinese names", .enabled(if: fuyaoKey != nil))
-    func fuyaoSearch() async throws {
-        let results = try await FuyaoProvider(apiKey: Self.fuyaoKey).search("平安银行")
-        #expect(results.contains { $0.symbol == SymbolID(market: .sz, code: "000001") })
-    }
 }
 
 /// Source delay and refresh cadence are different promises, and conflating them

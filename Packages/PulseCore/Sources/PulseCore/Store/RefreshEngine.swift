@@ -1,228 +1,300 @@
 import Foundation
 import Observation
 
-/// Refresh scheduling: a trading-session-aware polling loop.
-/// Providers handle HOW to fetch data; this handles WHEN. Each data source polls at its own
-/// cadence (user override → descriptor suggestion → 15s default): the scheduler ticks on a
-/// short base interval, groups the watchlist by preferred provider, and polls exactly the
-/// groups whose cadence has elapsed. Sparklines refresh on their own low-frequency track.
+/// Quotes run independently per source. Reference names and sparklines have
+/// separate low-frequency tasks, so a slow chart cannot delay a fast quote.
 @MainActor
 @Observable
 public final class RefreshEngine {
-    /// Polling interval when all markets are closed (waiting for the open / next day)
     public var idleInterval: TimeInterval = 300
-
-    /// Refresh interval for sparklines (intraday close series)
-    public var sparklineInterval: TimeInterval = 300
-
+    public var sparklineInterval: TimeInterval = 30
     public private(set) var isRunning = false
 
-    /// UI-driven write hold. The popover's drag-to-reorder is an AppKit drag session and,
-    /// like a tracking NSMenu, it cannot survive its host rows being re-rendered under it.
-    /// While held the scheduler keeps ticking but applies nothing to the stores; skipped
-    /// work re-runs on the first tick after release (base tick keeps that under 5s).
-    @ObservationIgnored public var writesHeld = false
+    @ObservationIgnored public var writesHeld = false {
+        didSet {
+            guard oldValue != writesHeld else { return }
+            writeEpoch &+= 1
+            if !writesHeld { wake() }
+        }
+    }
 
     @ObservationIgnored private let provider: CompositeProvider
     @ObservationIgnored private let store: MarketStore
     @ObservationIgnored private let watchlist: WatchlistStore
+    @ObservationIgnored private let now: () -> Date
+    @ObservationIgnored private let sleep: (Duration) async throws -> Void
     @ObservationIgnored private var loopTask: Task<Void, Never>?
-    @ObservationIgnored private var lastSparklineAt: [SymbolID: Date] = [:]
+    @ObservationIgnored private var sleepTask: Task<Void, Never>?
+    @ObservationIgnored private var generation: UInt = 0
+    @ObservationIgnored private var writeEpoch: UInt = 0
+
+    private struct Work {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+    @ObservationIgnored private var quoteTasks: [String: Work] = [:]
+    @ObservationIgnored private var nameTask: Work?
+    @ObservationIgnored private var sparklineTask: Work?
     @ObservationIgnored private var lastPollAt: [String: Date] = [:]
+    @ObservationIgnored private var forcedSymbols: Set<SymbolID> = []
+    @ObservationIgnored private var lastSparklineAt: [SymbolID: Date] = [:]
     @ObservationIgnored private var lastNameRefreshAt: Date = .distantPast
     @ObservationIgnored private var pollOverrides: [String: TimeInterval]
-    @ObservationIgnored private lazy var suggestedIntervals: [String: TimeInterval] = {
-        Dictionary(uniqueKeysWithValues: provider.registeredDescriptors.compactMap { descriptor in
+    @ObservationIgnored private lazy var suggestedIntervals = Dictionary(
+        uniqueKeysWithValues: provider.registeredDescriptors.compactMap { descriptor in
             descriptor.suggestedPollInterval.map { (descriptor.id, $0) }
-        })
-    }()
-
-    private static let fallbackPollInterval: TimeInterval = 15
+        }
+    )
     private static let nameRefreshInterval: TimeInterval = 15 * 60
-    /// Scheduler resolution while any covered market trades; also the fastest selectable cadence
-    private static let baseTick: TimeInterval = 5
 
-    public init(provider: CompositeProvider, store: MarketStore, watchlist: WatchlistStore,
-                pollOverrides: [String: TimeInterval] = [:]) {
+    public convenience init(provider: CompositeProvider, store: MarketStore, watchlist: WatchlistStore,
+                            pollOverrides: [String: TimeInterval] = [:]) {
+        self.init(provider: provider, store: store, watchlist: watchlist,
+                  pollOverrides: pollOverrides, now: Date.init,
+                  sleep: { try await Task.sleep(for: $0) })
+    }
+
+    /// Clock injection keeps scheduler tests independent of wall time and sessions.
+    init(provider: CompositeProvider, store: MarketStore, watchlist: WatchlistStore,
+         pollOverrides: [String: TimeInterval], now: @escaping () -> Date,
+         sleep: @escaping (Duration) async throws -> Void) {
         self.provider = provider
         self.store = store
         self.watchlist = watchlist
         self.pollOverrides = pollOverrides
+        self.now = now
+        self.sleep = sleep
     }
 
-    /// Effective quote cadence for one source: user override → descriptor suggestion → default.
     public func pollInterval(for providerID: String) -> TimeInterval {
-        pollOverrides[providerID] ?? suggestedIntervals[providerID] ?? Self.fallbackPollInterval
+        let override = pollOverrides[providerID]
+        let configured = override.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            ?? suggestedIntervals[providerID] ?? 15
+        return configured.isFinite && configured > 0 ? max(1, configured) : 15
     }
 
     public func setPollOverride(_ interval: TimeInterval?, for providerID: String) {
-        pollOverrides[providerID] = interval
-        lastPollAt[providerID] = nil // apply the new cadence right away
-        poke()
+        pollOverrides[providerID] = interval.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        lastPollAt[providerID] = nil
+        wake()
     }
 
     public func start() {
         guard loopTask == nil else { return }
+        // Explicit start/poke/provider changes must work after the close too.
+        // Session gates apply again after this one requested round.
+        forcedSymbols.formUnion(watchlist.quoteSymbols)
         isRunning = true
+        let epoch = generation
         loopTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self else { return }
-                await self.tick()
-                let markets = Set(self.watchlist.quoteSymbols.map(\.market))
-                // Wake at scheduler resolution while trading; slow down off-hours (the
-                // per-symbol worth-refreshing filter keeps off-hour ticks request-free).
-                let interval = TradingCalendar.anyActive(markets) ? Self.baseTick : 60
-                try? await Task.sleep(for: .seconds(interval))
+                guard let self, self.generation == epoch else { return }
+                let delay = await self.scheduleDueWork(generation: epoch)
+                guard !Task.isCancelled, self.generation == epoch else { return }
+                let sleeper = Task<Void, Never> {
+                    do { try await self.sleep(.seconds(delay)) } catch { }
+                }
+                self.sleepTask = sleeper
+                await sleeper.value
             }
         }
     }
 
     public func stop() {
+        generation &+= 1
         loopTask?.cancel()
         loopTask = nil
+        sleepTask?.cancel()
+        sleepTask = nil
+        for work in quoteTasks.values { work.task.cancel() }
+        quoteTasks.removeAll()
+        nameTask?.task.cancel()
+        nameTask = nil
+        sparklineTask?.task.cancel()
+        sparklineTask = nil
         isRunning = false
     }
 
-    /// Triggers a refresh round immediately (called after adding a watchlist item or changing settings)
     public func poke() {
-        guard loopTask != nil else { return }
-        loopTask?.cancel()
-        loopTask = nil
-        lastPollAt = [:] // a poke means "refresh everything now", regardless of cadence
+        guard isRunning else { return }
+        stop()
+        lastPollAt.removeAll()
+        lastSparklineAt.removeAll()
         lastNameRefreshAt = .distantPast
         start()
     }
 
-    private func tick() async {
-        guard !writesHeld else { return }
-        let symbols = watchlist.quoteSymbols
-        guard !symbols.isEmpty else { return }
+    /// Wake the deadline sleep without invalidating in-flight work.
+    public func wake() { sleepTask?.cancel() }
 
+    private func scheduleDueWork(generation epoch: UInt) async -> TimeInterval {
+        let symbols = watchlist.quoteSymbols
+        guard !symbols.isEmpty, !writesHeld else { return 60 }
         let routing = await provider.quoteRouting(for: symbols)
-        let overnightByProvider = Dictionary(uniqueKeysWithValues: provider.registeredDescriptors.map {
+        guard !Task.isCancelled, generation == epoch, !writesHeld else { return 60 }
+        let at = now()
+        let active = TradingCalendar.anyActive(Set(symbols.map(\.market)), at: at)
+        let overnight = Dictionary(uniqueKeysWithValues: provider.registeredDescriptors.map {
             ($0.id, $0.overnightMarkets)
         })
+        var nextDelay: TimeInterval = 60
         for (providerID, group) in routing {
-            let last = lastPollAt[providerID] ?? .distantPast
-            guard Date.now.timeIntervalSince(last) >= pollInterval(for: providerID) else { continue }
-
-            let quoteSymbols = symbolsWorthRefreshing(group, overnightMarkets: overnightByProvider[providerID] ?? [])
-            guard !quoteSymbols.isEmpty else { continue }
-            lastPollAt[providerID] = .now
-            do {
-                let quotes = try await provider.quotes(for: quoteSymbols)
-                guard !writesHeld else {
-                    // A hold began while this fetch was in flight. Drop the round and
-                    // clear the stamp so the provider re-polls right after release.
-                    lastPollAt[providerID] = nil
-                    return
-                }
-                store.apply(quotes: quotes)
-                applyQuoteNameUpgrades(quotes)
-            } catch {
-                guard !writesHeld else { return }
-                store.reportError(String(describing: error))
+            guard quoteTasks[providerID] == nil else { continue }
+            let requested = symbolsWorthRefreshing(group, overnightMarkets: overnight[providerID] ?? [], at: at)
+            guard !requested.isEmpty else { continue }
+            let cadence = pollInterval(for: providerID)
+            let remaining = cadence - at.timeIntervalSince(lastPollAt[providerID] ?? .distantPast)
+            if remaining <= 0 {
+                startQuotes(for: requested, providerID: providerID, at: at)
+            } else if active {
+                nextDelay = min(nextDelay, remaining)
             }
         }
+        if nameTask == nil, at.timeIntervalSince(lastNameRefreshAt) >= Self.nameRefreshInterval {
+            startNames(for: symbols, at: at)
+        }
+        if sparklineTask == nil {
+            startSparklines(for: symbols, at: at)
+            if sparklineTask == nil {
+                for symbol in symbols where shouldRefreshSparkline(symbol, at: at) {
+                    let remaining = sparklineInterval - at.timeIntervalSince(lastSparklineAt[symbol] ?? .distantPast)
+                    nextDelay = min(nextDelay, max(0.05, remaining))
+                }
+            }
+        }
+        return max(0.05, nextDelay)
+    }
 
-        await refreshDisplayNamesIfDue(symbols: symbols)
-        await refreshSparklinesIfDue(symbols: symbols)
+    private func startQuotes(for symbols: [SymbolID], providerID: String, at: Date) {
+        let id = UUID(), epoch = generation, writes = writeEpoch
+        lastPollAt[providerID] = at
+        forcedSymbols.subtract(symbols)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.quoteTasks[providerID]?.id == id {
+                    self.quoteTasks[providerID] = nil
+                    self.wake()
+                }
+            }
+            do {
+                let quotes = try await self.provider.refreshQuotes(for: symbols)
+                try Task.checkCancellation()
+                guard self.generation == epoch else { return }
+                guard !self.writesHeld, self.writeEpoch == writes else {
+                    self.lastPollAt[providerID] = nil
+                    self.forcedSymbols.formUnion(symbols)
+                    return
+                }
+                self.store.apply(quotes: quotes)
+                self.applyQuoteNameUpgrades(quotes)
+            } catch {
+                guard !Task.isCancelled, self.generation == epoch else { return }
+                guard !self.writesHeld, self.writeEpoch == writes else {
+                    self.lastPollAt[providerID] = nil
+                    self.forcedSymbols.formUnion(symbols)
+                    return
+                }
+                self.store.reportError(String(describing: error))
+            }
+        }
+        quoteTasks[providerID] = Work(id: id, task: task)
     }
 
     private func applyQuoteNameUpgrades(_ quotes: [Quote]) {
         for quote in quotes {
-            guard let name = quote.name,
-                  let providerID = quote.sourceID,
-                  let source = provider.displayNameSource(
-                    for: providerID,
-                    market: quote.symbol.market,
-                    name: name
-                  ) else {
-                continue
+            guard let name = quote.name, let providerID = quote.sourceID,
+                  let source = provider.displayNameSource(for: providerID, market: quote.symbol.market, name: name)
+            else { continue }
+            watchlist.upgradeDisplayName(for: quote.symbol, to: name, source: source)
+        }
+    }
+
+    private func startNames(for symbols: [SymbolID], at: Date) {
+        let id = UUID(), epoch = generation, writes = writeEpoch
+        lastNameRefreshAt = at
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.nameTask?.id == id { self.nameTask = nil; self.wake() } }
+            guard let names = try? await self.provider.preferredSecurityNames(for: symbols),
+                  !Task.isCancelled, self.generation == epoch else { return }
+            guard !self.writesHeld, self.writeEpoch == writes else {
+                self.lastNameRefreshAt = .distantPast
+                return
             }
-            watchlist.upgradeDisplayName(
-                for: quote.symbol,
-                to: name,
-                source: source
-            )
+            for candidate in names {
+                self.watchlist.upgradeDisplayName(for: candidate.symbol, to: candidate.name,
+                    source: candidate.source, allowSameProviderRefresh: true)
+            }
         }
+        nameTask = Work(id: id, task: task)
     }
 
-    private func refreshDisplayNamesIfDue(symbols: [SymbolID]) async {
-        guard Date.now.timeIntervalSince(lastNameRefreshAt) >= Self.nameRefreshInterval else {
-            return
-        }
-        lastNameRefreshAt = .now
-        guard let names = try? await provider.preferredSecurityNames(for: symbols) else { return }
-        guard !writesHeld else {
-            lastNameRefreshAt = .distantPast // retry on the first tick after release
-            return
-        }
-        for candidate in names {
-            watchlist.upgradeDisplayName(
-                for: candidate.symbol,
-                to: candidate.name,
-                source: candidate.source,
-                allowSameProviderRefresh: true
-            )
-        }
-    }
-
-    private func symbolsWorthRefreshing(_ symbols: [SymbolID], overnightMarkets: Set<Market>) -> [SymbolID] {
-        let now = Date.now
-        return symbols.filter { symbol in
+    private func symbolsWorthRefreshing(_ symbols: [SymbolID], overnightMarkets: Set<Market>, at: Date) -> [SymbolID] {
+        symbols.filter { symbol in
+            if forcedSymbols.contains(symbol) { return true }
             if store.quote(for: symbol) == nil { return true }
-            if TradingCalendar.isActive(symbol.market, at: now) { return true }
-            // Overnight polls only against sources that actually quote the session
-            if overnightMarkets.contains(symbol.market),
-               TradingCalendar.state(of: symbol.market, at: now) == .overnight { return true }
-            return TradingCalendar.isActive(symbol.market, at: now.addingTimeInterval(-35 * 60))
+            if TradingCalendar.isActive(symbol.market, at: at) { return true }
+            if overnightMarkets.contains(symbol.market), TradingCalendar.state(of: symbol.market, at: at) == .overnight {
+                return true
+            }
+            return TradingCalendar.isActive(symbol.market, at: at.addingTimeInterval(-35 * 60))
         }
     }
 
-    private func refreshSparklinesIfDue(symbols: [SymbolID]) async {
-        var fetched = 0
-        for symbol in symbols {
-            guard !writesHeld else { return }
-            let last = lastSparklineAt[symbol] ?? .distantPast
-            // A closed market's sparkline doesn't change; skip fetching if we already have data
-            let active = TradingCalendar.isActive(symbol.market)
-            let hasData = !(store.sparklines[symbol]?.isEmpty ?? true)
-            guard Date.now.timeIntervalSince(last) >= sparklineInterval, active || !hasData else { continue }
+    private func shouldRefreshSparkline(_ symbol: SymbolID, at: Date) -> Bool {
+        TradingCalendar.isActive(symbol.market, at: at)
+            || TradingCalendar.isActive(symbol.market, at: at.addingTimeInterval(-35 * 60))
+            || (store.sparklines[symbol]?.isEmpty ?? true)
+    }
 
-            // Record the time regardless of success: symbols a source lacks (e.g. A-share indices missing from Yahoo) shouldn't be retried over and over
-            lastSparklineAt[symbol] = .now
-            let count = IntradayTrendSnapshot.recommendedCandleCount(for: symbol.market)
-            if let candles = try? await provider.candles(for: symbol, period: .minute1, count: count) {
-                guard !writesHeld else {
-                    lastSparklineAt[symbol] = nil // re-fetch promptly after release
+    private func startSparklines(for symbols: [SymbolID], at: Date) {
+        let due = symbols.filter { symbol in
+            return at.timeIntervalSince(lastSparklineAt[symbol] ?? .distantPast) >= sparklineInterval
+                && shouldRefreshSparkline(symbol, at: at)
+        }.enumerated().sorted { lhs, rhs in
+            let left = lastSparklineAt[lhs.element] ?? .distantPast
+            let right = lastSparklineAt[rhs.element] ?? .distantPast
+            return left == right ? lhs.offset < rhs.offset : left < right
+        }.map(\.element)
+        guard !due.isEmpty else { return }
+        let id = UUID(), epoch = generation, writes = writeEpoch
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.sparklineTask?.id == id { self.sparklineTask = nil; self.wake() } }
+            let batch = Array(due.prefix(6))
+            for (index, symbol) in batch.enumerated() {
+                guard !Task.isCancelled, self.generation == epoch,
+                      !self.writesHeld, self.writeEpoch == writes else { return }
+                self.lastSparklineAt[symbol] = self.now()
+                let count = IntradayTrendSnapshot.recommendedCandleCount(for: symbol.market)
+                let candles = try? await self.provider.refreshCandles(for: symbol, period: .minute1, count: count)
+                guard !Task.isCancelled, self.generation == epoch else { return }
+                guard !self.writesHeld, self.writeEpoch == writes else {
+                    self.lastSparklineAt[symbol] = nil
                     return
                 }
-                applyIntradayTrend(candles, for: symbol)
-                // The cache keeps the full fetch (US bars include pre/post sessions);
-                // every consumer runs it through IntradayTrendSnapshot for its own view.
-                store.cache(
-                    candles: candles.sorted { $0.time < $1.time },
-                    for: CandleCacheKey(symbol: symbol, period: .minute1)
-                )
+                if let candles {
+                    self.applyIntradayTrend(candles, for: symbol)
+                    self.store.cache(candles: candles.sorted { $0.time < $1.time },
+                                     for: CandleCacheKey(symbol: symbol, period: .minute1))
+                }
+                if index < batch.count - 1 { try? await Task.sleep(for: .milliseconds(350)) }
             }
-            // Fetch one at a time with a gap in between to avoid a request burst against a single source (which would trigger rate limiting)
-            fetched += 1
-            if fetched >= 6 { break }
-            try? await Task.sleep(for: .milliseconds(350))
         }
+        sparklineTask = Work(id: id, task: task)
     }
 
     // MARK: - On-demand detail chart loading (called when the popover opens a detail view)
 
-    public func loadCandles(for symbol: SymbolID, period: CandlePeriod, count: Int = 120) async -> [Candle] {
-        let key = CandleCacheKey(symbol: symbol, period: period)
+    public func loadCandles(for symbol: SymbolID, period: CandlePeriod, count: Int = 120, adjustment: CandleAdjustment = .none) async -> [Candle] {
+        let key = CandleCacheKey(symbol: symbol, period: period, adjustment: adjustment)
         let maxAge: TimeInterval = period.isIntraday ? 60 : 600
         if let cached = store.cachedCandles(for: key, maxAge: maxAge) {
             return synchronizeIntradayTrend(cached, for: symbol, period: period)
         }
         do {
-            let candles = try await provider.candles(for: symbol, period: period, count: count)
+            let candles = try await provider.candles(for: symbol, period: period, count: count, adjustment: adjustment)
             let synchronized = synchronizeIntradayTrend(candles, for: symbol, period: period)
             store.cache(candles: synchronized, for: key)
             return synchronized

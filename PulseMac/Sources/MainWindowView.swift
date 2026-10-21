@@ -508,7 +508,9 @@ struct MainWindowView: View {
         case .some(.providerList(let kind)):
             ProviderListView(kind: kind, route: routeBinding)
         case .some(.providerDetail(let id)):
-            if let descriptor = appState.providerDescriptors.first(where: { $0.id == id }) {
+            if id == FuyaoProvider.providerID {
+                FuyaoSetupView(route: routeBinding)
+            } else if let descriptor = appState.providerDescriptors.first(where: { $0.id == id }) {
                 ProviderDetailView(descriptor: descriptor, route: routeBinding)
             } else {
                 emptyDetail

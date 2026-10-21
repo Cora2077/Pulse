@@ -158,6 +158,21 @@ enum DetailMarketDataSelfTest {
         }
     }
 
+    private actor FastProvider: QuoteProvider {
+        nonisolated let descriptor = ProviderDescriptor(
+            id: "detail-fast-selftest", name: "Fast detail self-test", markets: [.us],
+            capabilities: [.quotes], suggestedPollInterval: 1
+        )
+        private(set) var starts: [ContinuousClock.Instant] = []
+
+        func search(_ query: String) async throws -> [SymbolInfo] { [] }
+        func candles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle] { [] }
+        func quotes(for symbols: [SymbolID]) async throws -> [Quote] {
+            starts.append(.now)
+            return symbols.map { Quote(symbol: $0, price: Double(100 + starts.count), previousClose: 100) }
+        }
+    }
+
     static func run() async -> Bool {
         let suite = "app.pulse.mac.detail-market-selftest"
         guard let defaults = UserDefaults(suiteName: suite) else {
@@ -178,14 +193,43 @@ enum DetailMarketDataSelfTest {
         if !(await verifyIndependentCandleKeys(defaults: defaults, deadline: deadline)) {
             failures.append("independent-candle-keys")
         }
+        if !(await verifyFastDetailPolling(defaults: defaults)) {
+            failures.append("source-cadence-without-stale-cache")
+        }
 
-        let passed = 3 - failures.count
+        let passed = 4 - failures.count
         if failures.isEmpty {
-            print("PULSE_DETAIL_MARKET_SELFTEST PASS 3/3: shared quote interest/poll cancellation; shared candle request survives one consumer cancellation; independent candle keys keep their own results")
+            print("PULSE_DETAIL_MARKET_SELFTEST PASS 4/4: subscription cancellation; shared and independent candle requests; one-second detail polling reaches source through consumer cache")
         } else {
-            print("PULSE_DETAIL_MARKET_SELFTEST FAIL \(passed)/3: \(failures.joined(separator: ","))")
+            print("PULSE_DETAIL_MARKET_SELFTEST FAIL \(passed)/4: \(failures.joined(separator: ","))")
         }
         return failures.isEmpty
+    }
+
+    private static func verifyFastDetailPolling(defaults: UserDefaults) async -> Bool {
+        let symbol = SymbolID(market: .us, code: "FAST")
+        let source = FastProvider()
+        let composite = CompositeProvider(providers: [source]) // default 12-second consumer cache
+        let market = MarketStore()
+        let watchlist = WatchlistStore(defaults: defaults, defaultGroupName: "Fast detail")
+        var received: [Double] = []
+        let controller = DetailMarketDataController(
+            provider: composite,
+            engine: RefreshEngine(provider: composite, store: market, watchlist: watchlist),
+            market: market, watchlist: watchlist,
+            onQuote: { received.append($0.price) }, onInterestsChanged: { _ in }
+        )
+        let task = Task { await controller.run(symbol: symbol) }
+        let completed = await wait(until: ContinuousClock.now.advanced(by: .seconds(3)), condition: {
+            received.count >= 2
+        })
+        task.cancel()
+        await task.value
+        let starts = await source.starts
+        guard completed, received.prefix(2).elementsEqual([101, 102]), starts.count >= 2 else { return false }
+        let interval = starts[0].duration(to: starts[1])
+        print("PULSE_DETAIL_FAST_POLL_INTERVAL \(interval)")
+        return interval >= .milliseconds(900) && interval < .seconds(2)
     }
 
     private static func verifySubscriptionLifecycle(

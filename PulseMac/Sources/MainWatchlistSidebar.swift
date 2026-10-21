@@ -164,6 +164,12 @@ struct MainWatchlistSidebar: View {
                         .padding(.horizontal, 9).padding(.vertical, 5)
                         .background(selectedGroupID == group.id ? Color.accentColor.opacity(0.17) : .clear, in: Capsule())
                         .foregroundStyle(selectedGroupID == group.id ? Color.accentColor : Color.secondary)
+                        .contextMenu {
+                            Button(PulseLocalization.localizedString(appState.sharedWatchlist.isChinaAligned(group.id)
+                                ? "watchlist.group.timeAxis.off" : "watchlist.group.timeAxis.on")) {
+                                appState.sharedWatchlist.setChinaAligned(!appState.sharedWatchlist.isChinaAligned(group.id), for: group.id)
+                            }
+                        }
                 }
             }
             .padding(.horizontal, 10)
@@ -291,10 +297,22 @@ struct MainWatchlistSidebar: View {
         } else if groupItems.isEmpty {
             emptyState(filter == .all ? "main.empty.watchlist" : "main.empty.filter", symbol: "line.3.horizontal.decrease.circle")
         } else {
+            let items = groupItems
+            let axis = appState.sharedWatchlist.isChinaAligned(currentGroup?.id)
+                && items.contains(where: { IntradaySharedAxis.supports($0.symbol.market) })
+                ? IntradaySharedAxis(markets: (currentGroup?.symbols ?? []).map(\.market), referenceDate: .now)
+                : nil
             ScrollView {
                 LazyVStack(spacing: 1) {
-                    ForEach(groupItems) { item in
-                        MainWatchRow(symbol: item.symbol, name: item.resolvedDisplayName, selected: selectedSymbol == item.symbol) {
+                    if let axis {
+                        Text("北京时间 · 时间轴同步")
+                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8).padding(.bottom, 3)
+                        IntradayAxisRuler(axis: axis).padding(.horizontal, 8)
+                    }
+                    ForEach(items) { item in
+                        MainWatchRow(symbol: item.symbol, name: item.resolvedDisplayName, selected: selectedSymbol == item.symbol, sharedAxis: axis) {
                             // A watchlist row means 盯盘: it opens the instrument
                             // itself and drops any global page, so the sidebar
                             // cannot keep showing a page the user has left.
@@ -403,6 +421,7 @@ private struct MainWatchRow: View {
     let symbol: SymbolID
     let name: String
     let selected: Bool
+    var sharedAxis: IntradaySharedAxis? = nil
     let action: () -> Void
 
     private var quote: Quote? { appState.market.quote(for: symbol) }
@@ -410,21 +429,31 @@ private struct MainWatchRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    Text(symbol.displayCode).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+            VStack(spacing: 4) {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                        HStack(spacing: 4) {
+                            Text(symbol.displayCode).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+                            if sharedAxis != nil && !IntradaySharedAxis.supports(symbol.market) {
+                                Text("独立时段").font(.system(size: 8)).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Spacer(minLength: 1)
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text(quote.map { PriceFormatter.price($0.price, market: symbol.market) } ?? "—")
+                            .font(.system(size: 11, weight: .medium).monospacedDigit()).foregroundStyle(.primary)
+                        Text(quote.map { PriceFormatter.percent($0.changePercent) } ?? "—")
+                            .font(.system(size: 10).monospacedDigit()).foregroundStyle(tint)
+                    }
+                    if sharedAxis == nil || !IntradaySharedAxis.supports(symbol.market) {
+                        sparkline.frame(width: 48, height: 25)
+                    }
                 }
-                Spacer(minLength: 1)
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text(quote.map { PriceFormatter.price($0.price, market: symbol.market) } ?? "—")
-                        .font(.system(size: 11, weight: .medium).monospacedDigit()).foregroundStyle(.primary)
-                    Text(quote.map { PriceFormatter.percent($0.changePercent) } ?? "—")
-                        .font(.system(size: 10).monospacedDigit()).foregroundStyle(tint)
+                if sharedAxis != nil && IntradaySharedAxis.supports(symbol.market) {
+                    sparkline.frame(height: 30)
                 }
-                IntradaySparklineView(candles: appState.market.sparklines[symbol] ?? [],
-                                      previousClose: quote?.previousClose, market: symbol.market, tint: tint)
-                    .frame(width: 48, height: 25)
             }
             .padding(.horizontal, 8).padding(.vertical, 7)
             .contentShape(RoundedRectangle(cornerRadius: 7))
@@ -432,6 +461,11 @@ private struct MainWatchRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
+    private var sparkline: some View {
+        IntradaySparklineView(candles: appState.market.sparklines[symbol] ?? [],
+            previousClose: quote?.previousClose, market: symbol.market, tint: tint, sharedAxis: sharedAxis, liveQuote: quote)
     }
 }
 

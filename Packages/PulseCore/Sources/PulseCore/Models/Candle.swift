@@ -76,3 +76,13 @@ public enum CandlePeriod: String, Codable, Sendable, CaseIterable, Hashable {
         }
     }
 }
+
+/// Historical chart price basis. Quotes, fills and portfolio accounting remain actual prices.
+public enum CandleAdjustment: String, Codable, Sendable, Hashable, CaseIterable {
+    case none
+    case forward
+
+    public static func supportsChart(_ symbol: SymbolID, period: CandlePeriod) -> Bool {
+        symbol.market.isChinaA && symbol.indexID == nil && symbol.sectorIndex == nil && !period.isIntraday
+    }
+}

@@ -48,6 +48,29 @@ enum SelfTest {
     @MainActor
     static func runIfRequested() {
         #if DEBUG
+        if CommandLine.arguments.contains("--time-axis-selftest") {
+            let passed = TimeAxisSelfTest.run()
+            fflush(stdout)
+            exit(passed ? 0 : 1)
+        }
+        #endif
+        if CommandLine.arguments.contains("--research-live-selftest") {
+            Task { @MainActor in
+                let passed = await FuyaoResearchAcceptance.runLive()
+                fflush(stdout)
+                exit(passed ? 0 : 1)
+            }
+            return
+        }
+        if CommandLine.arguments.contains("--research-selftest") {
+            Task { @MainActor in
+                let passed = await FuyaoResearchSelfTest.run()
+                fflush(stdout)
+                exit(passed ? 0 : 1)
+            }
+            return
+        }
+        #if DEBUG
         if CommandLine.arguments.contains("--review-boundary-selftest") {
             guard CommandLine.arguments.contains("--main-window-demo") else {
                 print("PULSE_REVIEW_BOUNDARY_SELFTEST failed: isolated demo required")

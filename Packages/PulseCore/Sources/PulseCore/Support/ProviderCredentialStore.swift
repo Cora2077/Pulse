@@ -23,6 +23,19 @@ public enum ProviderCredentialStore {
     }
 
     public static func load(providerID: String) -> [String: String]? {
+        #if os(macOS)
+        // Background reads must never launch SecurityAgent, even if a caller
+        // changed the process-wide policy. Query-only UI flags do not cover
+        // legacy login-Keychain items on macOS.
+        SecKeychainSetUserInteractionAllowed(false)
+        if LocalCredentialBroker.executable != nil, providerID == "fuyao" {
+            let (status, data) = LocalCredentialBroker.request("load", providerID: providerID)
+            if status == errSecSuccess, let data {
+                return try? JSONDecoder().decode([String: String].self, from: data)
+            }
+            // Preserve existing approved installations; failed legacy reads stay silent.
+        }
+        #endif
         var query = baseQuery(providerID: providerID)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -34,6 +47,14 @@ public enum ProviderCredentialStore {
 
     public static func save(_ credentials: [String: String], providerID: String) throws {
         let data = try JSONEncoder().encode(credentials)
+        #if os(macOS)
+        SecKeychainSetUserInteractionAllowed(false)
+        if LocalCredentialBroker.executable != nil, providerID == "fuyao" {
+            let (status, _) = LocalCredentialBroker.request("save", providerID: providerID, data: data)
+            guard status == errSecSuccess else { throw KeychainFailure(status: status) }
+            return
+        }
+        #endif
         let query = baseQuery(providerID: providerID)
         let attributes: [String: Any] = [kSecValueData as String: data]
         let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
@@ -49,6 +70,12 @@ public enum ProviderCredentialStore {
     }
 
     public static func clear(providerID: String) {
+        #if os(macOS)
+        SecKeychainSetUserInteractionAllowed(false)
+        if LocalCredentialBroker.executable != nil, providerID == "fuyao" {
+            _ = LocalCredentialBroker.request("clear", providerID: providerID)
+        }
+        #endif
         SecItemDelete(baseQuery(providerID: providerID) as CFDictionary)
     }
 

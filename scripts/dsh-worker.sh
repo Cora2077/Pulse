@@ -20,10 +20,18 @@ fi
 
 worker_patch=$(mktemp -t pulse-dsh-worker)
 trap 'rm -f "$worker_patch"' EXIT HUP INT TERM
-case "${PULSE_DSH_WORKER:-step}" in
+case "${PULSE_DSH_WORKER:-flash}" in
   step|flash)
-    worker_model=step-5-preview
-    worker_model_name=Step-5-Preview
+    case "${PULSE_DSH_WORKER:-flash}" in
+      flash)
+        worker_model=deepseek-v4.1-flash
+        worker_model_name=Deepseek-V4.1-Flash
+        ;;
+      step)
+        worker_model=step-5-preview
+        worker_model_name=Step-5-Preview
+        ;;
+    esac
     worker_context=500000
     worker_max_tokens=64000
     if [ ! -f "$workbuddy_plugin" ]; then
@@ -86,7 +94,7 @@ cat > "$worker_patch" <<'EOF'
 EOF
     ;;
   *)
-    echo 'Unsupported worker; choose step or kimi (flash is a compatibility alias for step).' >&2
+    echo 'Unsupported worker; choose flash, step, or kimi.' >&2
     exit 2
     ;;
 esac
@@ -115,7 +123,6 @@ cat >> "$worker_patch" <<'EOF'
 EOF
 fi
 # The live WorkBuddy catalog replaces the startup limits above. The human
-# requested Step-5-Preview for routine workers on 2026-10-16; the former `flash`
-# selector remains an alias, so old commands do not silently consume DS quota.
+# restored DeepSeek 4.1 Flash for routine workers on 2026-10-20.
 # Keep the selected model's default reasoning effort.
 DSH_PERMISSION_MODE="$worker_mode" "$dsh_bin" headless --patch "$worker_patch" "$@" -

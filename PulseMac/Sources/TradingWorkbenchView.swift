@@ -41,6 +41,9 @@ struct TradingWorkbenchView: View {
     @State private var executionEntry: TradePlanEntry?
     @State private var workflowEntry: TradePlanEntry?
     @State private var verificationPortion: PositionPoolsView.VerificationDraft?
+    @State private var showsFuyaoBoards = false
+    @State private var showsFuyaoHoldings = false
+    @State private var showsFuyaoSentiment = false
 
     /// Test seam: lets a DEBUG render harness open the workbench in a known
     /// phase with a known market scope and selection. Production never passes it,
@@ -98,6 +101,9 @@ struct TradingWorkbenchView: View {
         }
         .sheet(isPresented: $showRisk) { TradeRiskCalculatorView(initialSymbol: nil) }
         .sheet(isPresented: $showSectors) { SectorExposureView() }
+        .sheet(isPresented: $showsFuyaoBoards) { FuyaoBoardsView(onSelect: onSelect) }
+        .sheet(isPresented: $showsFuyaoHoldings) { FuyaoPortfolioLookThroughView() }
+        .sheet(isPresented: $showsFuyaoSentiment) { FuyaoSentimentView(onSelect: onSelect) }
         .sheet(item: $executionEntry) { entry in
             PlanExecutionSheet(entry: entry, account: appState.watchlist.activeBrokerageAccountID,
                                onClose: { executionEntry = nil })
@@ -148,6 +154,9 @@ struct TradingWorkbenchView: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header(now: now, board: board)
+                if appState.fuyaoResearchAvailable && (effectiveScope.contains(.sh) || effectiveScope.contains(.sz)) {
+                    FuyaoSentimentCard { showsFuyaoSentiment = true }
+                }
                 stageHeader(stage)
                 countBar(board, stage: stage)
                 ViewThatFits(in: .horizontal) {
@@ -189,6 +198,11 @@ struct TradingWorkbenchView: View {
                 }
             }
             marketDayLine(now: now, board: board)
+            HStack(spacing: 10) {
+                Button { showsFuyaoBoards = true } label: { Label("板块强弱", systemImage: "square.grid.3x3") }
+                Button { showsFuyaoHoldings = true } label: { Label("ETF 穿透", systemImage: "square.stack.3d.up") }
+                Button { showsFuyaoSentiment = true } label: { Label("市场情绪", systemImage: "waveform.path.ecg") }
+            }.controlSize(.small)
         }
     }
 

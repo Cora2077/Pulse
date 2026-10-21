@@ -1,233 +1,181 @@
 import SwiftUI
 import PulseCore
 
-/// Lightweight Canvas rendering of the same canonical trading-session geometry used by
-/// `IntradayChartView`. It is suitable for dense list rows and off-screen share images.
-///
-/// With `includesExtendedHours` (US only) the pre/post-market wings render in the same
-/// muted gray as the detail chart, separated by hairlines at the 9:30 / 16:00 boundaries —
-/// without an x-axis those two cues are all that distinguishes the sessions.
+/// Shared by Canvas and coordinate/segment regression checks. A nil shared axis
+/// retains trading-minute compression and the US extended-hours wings.
+struct IntradaySparklineGeometry {
+    struct Point: Equatable {
+        let time: Date
+        let price: Double
+    }
+    struct Segment {
+        let kind: IntradaySessionKind
+        let points: [Point]
+    }
+    let session: IntradayTradingSession
+    let axis: IntradaySharedAxis?
+    /// Unmodified provider bars. Quote samples never become fabricated OHLC/volume.
+    let candles: [Candle]
+    let points: [Point]
+    let quotePoint: Point?
+
+    init(candles: [Candle], market: Market, includesExtendedHours: Bool = false,
+         sharedAxis: IntradaySharedAxis? = nil, liveQuote: Quote? = nil, now: Date = .now) {
+        let trend = IntradayTrendSnapshot(candles: candles, market: market, includesExtendedHours: includesExtendedHours)
+        let quote = liveQuote.flatMap { quote -> Quote? in
+            guard quote.symbol.market == market, quote.price.isFinite, quote.price > 0,
+                  quote.timestamp.timeIntervalSince(now) <= 60,
+                  quote.marketState == nil || quote.marketState == .regular else { return nil }
+            let frame = IntradayTradingSession(market: market, referenceDate: quote.timestamp)
+            let atBoundary = quote.timestamp == frame.morningEnd || quote.timestamp == frame.close
+            let regular = TradingCalendar.state(of: market, at: quote.timestamp) == .regular
+                || (atBoundary && TradingCalendar.state(of: market, at: quote.timestamp.addingTimeInterval(-1)) == .regular)
+            return regular && frame.contains(quote.timestamp) ? quote : nil
+        }
+        // A new trading day's quote must not be joined onto yesterday's curve.
+        let frame = quote.map { $0.timestamp > trend.session.close
+            ? IntradayTradingSession(market: market, referenceDate: $0.timestamp, includesExtendedHours: includesExtendedHours)
+            : trend.session } ?? trend.session
+        session = frame
+        let axis = IntradaySharedAxis.supports(market) ? sharedAxis : nil
+        self.axis = axis
+        self.candles = trend.candles.filter { candle in
+            guard frame.contains(candle.time) else { return false }
+            if let axis, axis.fraction(for: candle.time) == nil { return false }
+            if axis != nil, let morning = frame.morningEnd, let afternoon = frame.afternoonStart,
+               candle.time > morning && candle.time < afternoon { return false }
+            return true
+        }
+        var samples = self.candles.map { Point(time: $0.time, price: $0.close) }
+        var quotePoint: Point?
+        if let quote, frame.contains(quote.timestamp),
+           quote.timestamp >= (samples.last?.time ?? frame.open),
+           axis == nil || axis?.fraction(for: quote.timestamp) != nil {
+            let sample = Point(time: quote.timestamp, price: quote.price)
+            if samples.last?.time == sample.time { samples.removeLast() }
+            samples.append(sample)
+            quotePoint = sample
+        }
+        points = samples
+        self.quotePoint = quotePoint
+    }
+
+    func xFraction(for date: Date) -> Double? {
+        if let axis { return axis.fraction(for: date) }
+        let span = session.axisUpperBound - session.axisLowerBound
+        guard span > 0 else { return nil }
+        return (session.minuteOffset(for: date) - session.axisLowerBound) / span
+    }
+
+    var segments: [Segment] {
+        guard let first = points.first else { return [] }
+        var result: [Segment] = []
+        var current = [first]
+        var currentKind = session.sessionKind(for: first.time)
+        for candle in points.dropFirst() {
+            let previous = current.last!
+            let kind = session.sessionKind(for: candle.time)
+            let gap = axis == nil
+                ? session.minuteOffset(for: candle.time) - session.minuteOffset(for: previous.time)
+                : candle.time.timeIntervalSince(previous.time) / 60
+            let crossesLunch: Bool
+            if axis != nil, let morning = session.morningEnd, let afternoon = session.afternoonStart {
+                crossesLunch = previous.time <= morning && candle.time >= afternoon
+            } else { crossesLunch = false }
+            if crossesLunch || gap > 20 {
+                result.append(Segment(kind: currentKind, points: current))
+                current = [candle]; currentKind = kind
+            } else if kind != currentKind {
+                result.append(Segment(kind: currentKind, points: current))
+                current = [previous, candle]; currentKind = kind
+            } else { current.append(candle) }
+        }
+        result.append(Segment(kind: currentKind, points: current))
+        return result
+    }
+}
+
+/// Lightweight Canvas chart. A synchronized group must pass one sharedAxis to
+/// all rows and its ruler. Unsupported markets keep their independent session.
 public struct IntradaySparklineView: View {
     let candles: [Candle]
     let previousClose: Double?
     let market: Market
     let tint: Color
     let includesExtendedHours: Bool
-    /// The market whose clock this line is positioned against. Nil (the default)
-    /// draws the line on its own exchange's session, which is what every existing
-    /// caller wants.
-    ///
-    /// Pass a reference market to place this line on someone else's axis: the
-    /// session's boundaries are re-read in the reference zone, so a Korean bar
-    /// stamped 15:12 Seoul and a Chinese bar stamped 14:12 Beijing both land on
-    /// the same fraction of the plot width. The bars themselves are untouched —
-    /// only the x-axis they are measured against moves.
-    let referenceMarket: Market?
+    let sharedAxis: IntradaySharedAxis?
+    let liveQuote: Quote?
 
-    public init(
-        candles: [Candle],
-        previousClose: Double? = nil,
-        market: Market,
-        tint: Color,
-        includesExtendedHours: Bool = false,
-        referenceMarket: Market? = nil
-    ) {
-        self.candles = candles
-        self.previousClose = previousClose
-        self.market = market
-        self.tint = tint
-        self.includesExtendedHours = includesExtendedHours
-        self.referenceMarket = referenceMarket
-    }
-
-    private static let wingTint = Color.secondary.opacity(0.75)
-
-    /// The session a line is drawn against: its own, or `referenceMarket`'s clock
-    /// when one is given.
-    ///
-    /// Static and separate from `body` because this is the one decision that has
-    /// to be right — every x position in the plot is derived from it — and it
-    /// needs to be testable without rendering a Canvas. `nonisolated` because it
-    /// touches no view state, only the session it is handed.
-    nonisolated static func plotSession(
-        of session: IntradayTradingSession,
-        referenceMarket: Market?
-    ) -> IntradayTradingSession {
-        guard let referenceMarket, referenceMarket != session.market else { return session }
-        return session.projected(to: referenceMarket)
-    }
-
-    /// The clock window this row is plotted against, shared by every row in an
-    /// aligned group.
-    ///
-    /// Without a reference market the window is the session's own bounds, which
-    /// is exactly the axis the unaligned rows have always used — a row drawn on
-    /// its own session is unchanged.
-    nonisolated static func axisBounds(
-        of session: IntradayTradingSession,
-        referenceMarket: Market?
-    ) -> (start: Double, end: Double) {
-        guard let referenceMarket else {
-            let lower = minuteOfDay(session.preOpen ?? session.open, in: session.market.timeZone)
-            let upper = minuteOfDay(session.postClose ?? session.close, in: session.market.timeZone)
-            return (lower, upper)
+    public init(candles: [Candle], previousClose: Double? = nil, market: Market, tint: Color,
+                includesExtendedHours: Bool = false, referenceMarket: Market? = nil,
+                sharedAxis: IntradaySharedAxis? = nil, liveQuote: Quote? = nil) {
+        self.candles = candles; self.previousClose = previousClose
+        self.market = market; self.tint = tint; self.includesExtendedHours = includesExtendedHours
+        self.liveQuote = liveQuote
+        // Compatibility for older single-reference callers. The app passes its
+        // actual group axis, keeping filters and missing data from changing it.
+        self.sharedAxis = sharedAxis ?? referenceMarket.flatMap {
+            IntradaySharedAxis(markets: [.sh, .sz, .kr, .kq, .hk, .jp], referenceDate: candles.last?.time ?? .now, reference: $0)
         }
-        return IntradayTradingSession.axisBounds(
-            for: [session], reference: referenceMarket
-        )
-    }
-
-    /// Minutes past midnight in the zone the window is read in.
-    private nonisolated static func minuteOfDay(_ date: Date, in zone: TimeZone) -> Double {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = zone
-        let components = calendar.dateComponents([.hour, .minute, .second], from: date)
-        return Double(components.hour ?? 0) * 60
-            + Double(components.minute ?? 0)
-            + Double(components.second ?? 0) / 60
     }
 
     public var body: some View {
-        let trend = IntradayTrendSnapshot(
-            candles: candles,
-            market: market,
-            includesExtendedHours: includesExtendedHours
-        )
-        // Session used for two things: the axis the row is drawn against, and the
-        // gap/segment splitting that decides where the line breaks. With a
-        // reference market the row is measured against a shared clock window, so
-        // two sessions of different lengths place the same instant at the same x.
-        let session = Self.plotSession(
-            of: trend.session, referenceMarket: referenceMarket
-        )
-        let bounds = Self.axisBounds(of: trend.session, referenceMarket: referenceMarket)
+        let geometry = IntradaySparklineGeometry(candles: candles, market: market,
+            includesExtendedHours: includesExtendedHours, sharedAxis: sharedAxis, liveQuote: liveQuote)
         Canvas { context, size in
-            guard trend.candles.count > 1 else { return }
-            let domain = yDomain(for: trend.candles)
-            let axisSpan = session.axisUpperBound - session.axisLowerBound
-
-            func xPosition(forMinute minute: Double) -> CGFloat {
-                size.width * CGFloat((minute - session.axisLowerBound) / axisSpan)
+            context.clip(to: Path(CGRect(origin: .zero, size: size)))
+            if let lunch = geometry.axis?.lunchFractions {
+                context.fill(Path(CGRect(x: size.width * lunch.lowerBound, y: 0,
+                    width: size.width * (lunch.upperBound - lunch.lowerBound), height: size.height)),
+                    with: .color(.orange.opacity(0.13)))
             }
-
-            /// x by absolute clock in the window's zone, which is the only reading
-            /// that lines two rows up. Falls back to the session's own offset when
-            /// a bar sits outside the window, so a stray bar still draws at the
-            /// edge rather than vanishing.
-            func xPosition(for candle: Candle) -> CGFloat {
-                if let fraction = session.axisFraction(
-                    for: candle.time, reference: session.market, bounds: bounds
-                ) {
-                    return size.width * CGFloat(fraction)
-                }
-                return xPosition(forMinute: session.minuteOffset(for: candle.time))
+            guard !geometry.points.isEmpty else { return }
+            let domain = yDomain(for: geometry.points)
+            func point(for candle: IntradaySparklineGeometry.Point) -> CGPoint {
+                CGPoint(x: size.width * (geometry.xFraction(for: candle.time) ?? 0),
+                    y: size.height * (1 - (candle.price - domain.lowerBound) / (domain.upperBound - domain.lowerBound)))
             }
-
-            func point(for candle: Candle) -> CGPoint {
-                let x = xPosition(for: candle)
-                let y = 1 - (candle.close - domain.lowerBound) / (domain.upperBound - domain.lowerBound)
-                return CGPoint(x: x, y: size.height * CGFloat(y))
-            }
-
-            // Session separators on the 9:30 / 16:00 boundaries, standing in for the
-            // detail chart's boundary gridlines.
-            if session.includesExtendedHours {
-                for minute in [0, session.totalMinutes] {
-                    let x = xPosition(forMinute: minute)
+            let session = geometry.session
+            if geometry.axis == nil, session.includesExtendedHours {
+                for minute in [0.0, session.totalMinutes] {
+                    let x = size.width * (minute - session.axisLowerBound) / (session.axisUpperBound - session.axisLowerBound)
                     var rule = Path()
-                    rule.move(to: CGPoint(x: x, y: 0))
-                    rule.addLine(to: CGPoint(x: x, y: size.height))
-                    context.stroke(
-                        rule,
-                        with: .color(.secondary.opacity(0.18)),
-                        style: StrokeStyle(lineWidth: 0.5)
-                    )
+                    rule.move(to: CGPoint(x: x, y: 0)); rule.addLine(to: CGPoint(x: x, y: size.height))
+                    context.stroke(rule, with: .color(.secondary.opacity(0.18)), lineWidth: 0.5)
                 }
             }
-
-            for segment in lineSegments(trend.candles, session: session) {
-                let color = segment.kind == .regular ? tint : Self.wingTint
+            for segment in geometry.segments {
+                let color = segment.kind == .regular ? tint : Color.secondary.opacity(0.75)
                 var line = Path()
-                line.move(to: point(for: segment.candles[0]))
-                for candle in segment.candles.dropFirst() {
-                    line.addLine(to: point(for: candle))
-                }
-
+                line.move(to: point(for: segment.points[0]))
+                for candle in segment.points.dropFirst() { line.addLine(to: point(for: candle)) }
                 var area = line
-                area.addLine(to: CGPoint(x: point(for: segment.candles.last!).x, y: size.height))
-                area.addLine(to: CGPoint(x: point(for: segment.candles[0]).x, y: size.height))
+                area.addLine(to: CGPoint(x: point(for: segment.points.last!).x, y: size.height))
+                area.addLine(to: CGPoint(x: point(for: segment.points[0]).x, y: size.height))
                 area.closeSubpath()
-                context.fill(area, with: .linearGradient(
-                    Gradient(colors: [color.opacity(0.16), color.opacity(0.01)]),
-                    startPoint: .zero,
-                    endPoint: CGPoint(x: 0, y: size.height)
-                ))
-                context.stroke(
-                    line,
-                    with: .color(color),
-                    style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round)
-                )
+                context.fill(area, with: .linearGradient(Gradient(colors: [color.opacity(0.16), color.opacity(0.01)]),
+                    startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
+                context.stroke(line, with: .color(color), style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
             }
-
+            if let sample = geometry.quotePoint {
+                let endpoint = point(for: sample)
+                context.fill(Path(ellipseIn: CGRect(x: endpoint.x - 1.5, y: endpoint.y - 1.5, width: 3, height: 3)), with: .color(tint))
+            }
             if let previousClose {
-                let normalizedY = 1 - (previousClose - domain.lowerBound) / (domain.upperBound - domain.lowerBound)
-                let y = size.height * CGFloat(normalizedY)
+                let y = size.height * (1 - (previousClose - domain.lowerBound) / (domain.upperBound - domain.lowerBound))
                 var rule = Path()
-                rule.move(to: CGPoint(x: 0, y: y))
-                rule.addLine(to: CGPoint(x: size.width, y: y))
-                context.stroke(
-                    rule,
-                    with: .color(.secondary.opacity(0.35)),
-                    style: StrokeStyle(lineWidth: 0.5, dash: [2, 2])
-                )
+                rule.move(to: CGPoint(x: 0, y: y)); rule.addLine(to: CGPoint(x: size.width, y: y))
+                context.stroke(rule, with: .color(.secondary.opacity(0.35)), style: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
             }
         }
     }
 
-    private func yDomain(for candles: [Candle]) -> ClosedRange<Double> {
-        let closes = candles.map(\.close)
+    private func yDomain(for candles: [IntradaySparklineGeometry.Point]) -> ClosedRange<Double> {
+        let closes = candles.map(\.price)
         let baseline = previousClose ?? closes.first ?? 0
-        var lo = min(closes.min() ?? baseline, baseline)
-        var hi = max(closes.max() ?? baseline, baseline)
-        let pad = max((hi - lo) * 0.1, hi * 0.001, 0.0001)
-        lo -= pad
-        hi += pad
-        return lo...hi
-    }
-
-    private struct Segment {
-        let kind: IntradaySessionKind
-        let candles: [Candle]
-    }
-
-    /// Gaps are measured in trading minutes: the collapsed lunch break spans ~0 trading
-    /// minutes and stays continuous, while genuine data holes still break the line.
-    /// Segments also split at session boundaries so the wings render gray; the boundary
-    /// candle repeats in both segments to keep the line itself continuous.
-    private func lineSegments(_ candles: [Candle], session: IntradayTradingSession) -> [Segment] {
-        guard let first = candles.first else { return [] }
-        let breakMinutes: Double = 20
-        var segments: [Segment] = []
-        var current = [first]
-        var currentKind = session.sessionKind(for: first.time)
-        for candle in candles.dropFirst() {
-            let kind = session.sessionKind(for: candle.time)
-            let previous = current.last
-            let gap = previous.map {
-                session.minuteOffset(for: candle.time) - session.minuteOffset(for: $0.time)
-            } ?? 0
-            if kind != currentKind {
-                segments.append(Segment(kind: currentKind, candles: current))
-                current = (gap <= breakMinutes ? previous.map { [$0] } ?? [] : []) + [candle]
-                currentKind = kind
-            } else if gap > breakMinutes {
-                segments.append(Segment(kind: currentKind, candles: current))
-                current = [candle]
-            } else {
-                current.append(candle)
-            }
-        }
-        segments.append(Segment(kind: currentKind, candles: current))
-        return segments
+        var low = min(closes.min() ?? baseline, baseline), high = max(closes.max() ?? baseline, baseline)
+        let padding = max((high - low) * 0.1, high * 0.001, 0.0001)
+        low -= padding; high += padding
+        return low...high
     }
 }

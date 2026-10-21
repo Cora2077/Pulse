@@ -3,101 +3,99 @@ import Testing
 import PulseCore
 @testable import PulseUI
 
-/// The shared-axis contract for list rows. These tests cover the decision that
-/// places a row on someone else's clock, which is the only way a Korean row and
-/// a Chinese row can be read against each other.
 struct IntradaySparklineSessionTests {
-    private func session(_ market: Market, on day: Int = 19) throws -> IntradayTradingSession {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = market.timeZone
-        let date = try #require(calendar.date(from: DateComponents(year: 2026, month: 8, day: day)))
-        return IntradayTradingSession(market: market, referenceDate: date)
+    private func time(_ hour: Int, _ minute: Int = 0, market: Market = .sh) -> Date {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = market.timeZone
+        return calendar.date(from: DateComponents(year: 2026, month: 10, day: 21, hour: hour, minute: minute))!
+    }
+    private func bars(_ times: [Date]) -> [Candle] {
+        times.enumerated().map { .init(time: $0.element, open: 100, high: 102, low: 99, close: 100 + Double($0.offset), volume: 100) }
+    }
+    private func axis(_ markets: [Market]) throws -> IntradaySharedAxis {
+        try #require(IntradaySharedAxis(markets: markets, referenceDate: time(10)))
     }
 
-    /// With no reference market the row keeps its own exchange's session, which
-    /// is what every caller outside the aligned groups relies on. A nil default
-    /// that accidentally projected would shift every existing row.
-    @Test("No reference market keeps the session on its own exchange's clock")
-    func noReferenceKeepsOwnSession() throws {
-        let seoul = try session(.kr)
-        #expect(IntradaySparklineView.plotSession(of: seoul, referenceMarket: nil) == seoul)
+    @Test("The actual renderer places Chinese and Korean opening points on the group ruler")
+    func groupOpeningCoordinates() throws {
+        let shared = try axis([.sh, .kr])
+        let china = IntradaySparklineGeometry(candles: bars([time(9, 30), time(10)]), market: .sh, sharedAxis: shared)
+        let korea = IntradaySparklineGeometry(candles: bars([time(8), time(10)]), market: .kr, sharedAxis: shared)
+        #expect(abs((china.xFraction(for: time(9, 30)) ?? -1) - 90.0 / 420) < 0.000001)
+        #expect(korea.xFraction(for: time(8)) == 0)
+        #expect(china.xFraction(for: time(10)) == korea.xFraction(for: time(10)))
+        #expect(china.xFraction(for: time(10)) == shared.fraction(for: time(10)))
     }
 
-    /// Naming the row's own market is the same as naming none: the projection is
-    /// skipped rather than round-tripped through a calendar that could move a
-    /// boundary by a second.
-    @Test("The row's own market as reference is still the identity")
-    func ownMarketAsReferenceIsIdentity() throws {
-        let shanghai = try session(.sh)
-        #expect(IntradaySparklineView.plotSession(of: shanghai, referenceMarket: .sh) == shanghai)
+    @Test("Hong Kong widens one shared frame for all rows, including rows with no data")
+    func hongKongUnionAndMissingData() throws {
+        let shared = try axis([.sh, .kr, .hk])
+        let china = IntradaySparklineGeometry(candles: bars([time(9, 30), time(10)]), market: .sh, sharedAxis: shared)
+        let korea = IntradaySparklineGeometry(candles: [], market: .kr, sharedAxis: shared)
+        #expect(shared.startMinute == 480); #expect(shared.endMinute == 960)
+        #expect(china.xFraction(for: time(14, 12)) == korea.xFraction(for: time(14, 12)))
+        #expect(china.xFraction(for: time(14, 12)) == shared.fraction(for: time(14, 12)))
+        #expect(korea.candles.isEmpty)
     }
 
-    /// The whole point of the feature: a Korean row and a Chinese row must place
-    /// the same instant at the same x.
-    ///
-    /// The equality is on the axis *fraction*, which is what becomes an x
-    /// coordinate. Seoul's 390-minute axis and Shanghai's 240-minute one have
-    /// different lengths, so the same instant sits at a different fraction of
-    /// each session — and at a different `minuteOffset`. Only a shared clock
-    /// window fixes both rows to absolute Beijing time, which is what
-    /// `axisBounds` + `axisFraction` provide.
-    ///
-    /// This test exists because `projected(to:)` alone looks like it should work
-    /// and does not: it re-reads a session's boundaries but leaves the row still
-    /// measuring from its own open, so the two rows stayed 53px apart at 348px
-    /// wide. Asserting the fraction catches that; asserting the offset does not.
-    @Test("A Korean row and a Chinese row place the same instant at the same x")
-    func koreanRowSharesChineseX() throws {
-        let seoul = try session(.kr)
-        let shanghai = try session(.sh)
-
-        var beijingCalendar = Calendar(identifier: .gregorian)
-        beijingCalendar.timeZone = Market.sh.timeZone
-        // 14:12 in Beijing is 15:12 in Seoul: one instant, two local readings.
-        let bar = try #require(
-            beijingCalendar.date(from: DateComponents(year: 2026, month: 8, day: 19, hour: 14, minute: 12))
-        )
-
-        let koreanPlotted = IntradaySparklineView.plotSession(of: seoul, referenceMarket: .sh)
-        let chinesePlotted = IntradaySparklineView.plotSession(of: shanghai, referenceMarket: .sh)
-
-        // Both rows are drawn against the same Beijing clock window.
-        let bounds = IntradayTradingSession.axisBounds(
-            for: [seoul, shanghai], reference: .sh
-        )
-        let koreanX = koreanPlotted.axisFraction(for: bar, reference: .sh, bounds: bounds)
-        let chineseX = chinesePlotted.axisFraction(for: bar, reference: .sh, bounds: bounds)
-
-        #expect(koreanX != nil)
-        #expect(chineseX != nil)
-        #expect(abs((koreanX ?? -1) - (chineseX ?? -2)) < 0.001)
-
-        // The window has to cover both sessions' Beijing readings, or one of the
-        // two rows would be clipped at an edge.
-        #expect(bounds.start <= 8 * 60)      // Seoul 09:00 KST = 08:00 CST
-        #expect(bounds.end >= 15 * 60)       // Shanghai 15:00 close
-        #expect(bounds.start < 8 * 60 + 60)  // and no wider than the union needs
+    @Test("Synchronized China breaks across lunch while Korea remains continuous")
+    func lunchSegments() throws {
+        let shared = try axis([.sh, .kr])
+        let china = IntradaySparklineGeometry(candles: bars([time(11, 29), time(11, 30), time(12), time(13), time(13, 1)]), market: .sh, sharedAxis: shared)
+        let korea = IntradaySparklineGeometry(candles: bars((0...90).map { time(11, 30).addingTimeInterval(Double($0) * 60) }), market: .kr, sharedAxis: shared)
+        #expect(china.segments.count == 2)
+        #expect(china.candles.count == 4)
+        #expect(china.segments[0].points.last?.time == time(11, 30))
+        #expect(china.segments[1].points.first?.time == time(13))
+        #expect(korea.segments.count == 1)
+        let lunch = try #require(shared.lunchFractions)
+        #expect(lunch.lowerBound == china.xFraction(for: time(11, 30)))
+        #expect(lunch.upperBound == korea.xFraction(for: time(13)))
     }
 
-    /// Seoul trades straight through Shanghai's lunch break, so a projected
-    /// Korean axis must still have no break. Inventing one would draw a gap in a
-    /// line that never stopped trading.
-    @Test("A projected Korean session keeps trading through the Chinese lunch")
-    func projectedKoreanSessionHasNoLunch() throws {
-        let projected = IntradaySparklineView.plotSession(of: try session(.kr), referenceMarket: .sh)
-        #expect(projected.morningEnd == nil)
-        #expect(projected.afternoonStart == nil)
-        #expect(projected.totalMinutes == 390)
+    @Test("Synchronization off retains lunch compression, rather than changing the old chart")
+    func independentChinaUsesTradingMinutes() {
+        let chart = IntradaySparklineGeometry(candles: bars([time(11, 30), time(13), time(13, 1)]), market: .sh)
+        #expect(chart.xFraction(for: time(11, 30)) == 0.5)
+        #expect(chart.xFraction(for: time(13)) == 0.5)
+        #expect(chart.segments.count == 1)
+        #expect(chart.axis == nil)
     }
 
-    /// The A-share row is the axis every other row is measured against, so its
-    /// own lunch boundaries have to survive untouched.
-    @Test("The A-share row's lunch boundaries survive the projection")
-    func chineseLunchBoundariesSurvive() throws {
-        let shanghai = try session(.sh)
-        let projected = IntradaySparklineView.plotSession(of: shanghai, referenceMarket: .sh)
-        #expect(projected.morningEnd == shanghai.morningEnd)
-        #expect(projected.afternoonStart == shanghai.afternoonStart)
-        #expect(projected.totalMinutes == 240)
+    @Test("Out of bounds data is omitted instead of falling back to an unrelated axis")
+    func noFallbackAtEdges() throws {
+        let shared = try axis([.sh, .kr])
+        let geometry = IntradaySparklineGeometry(candles: bars([time(9, 30), time(10)]), market: .sh, sharedAxis: shared)
+        #expect(geometry.xFraction(for: time(7, 59)) == nil)
+        #expect(geometry.xFraction(for: time(15, 1)) == nil)
+    }
+
+    @Test("Unsupported US rows keep independent regular and extended sessions")
+    func usWingsRemainIndependent() throws {
+        let shared = try axis([.sh, .kr])
+        let chart = IntradaySparklineGeometry(candles: bars([time(4, market: .us), time(20, market: .us)]), market: .us, includesExtendedHours: true, sharedAxis: shared)
+        #expect(chart.axis == nil)
+        #expect(abs((chart.xFraction(for: time(9, 30, market: .us)) ?? -1) - 0.15) < 0.000001)
+        #expect(abs((chart.xFraction(for: time(16, market: .us)) ?? -1) - 0.85) < 0.000001)
+        #expect(chart.xFraction(for: time(4, market: .us)) == 0)
+        #expect(chart.xFraction(for: time(20, market: .us)) == 1)
+    }
+
+    @Test("Narrow ruler labels do not collide or change tick positions")
+    func rulerDensity() throws {
+        let shared = try axis([.sh, .kr])
+        for width in [80.0, 100, 160, 260, 348] {
+            let ticks = IntradayAxisRuler.visibleTicks(axis: shared, width: width)
+            #expect(ticks.contains(570)); #expect(ticks.last == shared.endMinute)
+            let positions = ticks.map { min(max(width * (shared.fraction(minute: $0) ?? 0), 13), width - 13) }
+            for (a, b) in zip(positions, positions.dropFirst()) { #expect(b - a >= 28) }
+        }
+        #expect(IntradayAxisRuler.visibleTicks(axis: shared, width: 348).contains(570))
+        #expect(IntradayAxisRuler.visibleTicks(axis: shared, width: 40) == [570])
+        #expect(!shared.tickMinutes.contains(540)) // No 09:00 tick masquerading as 09:30.
+    }
+
+    @Test("Unsupported-only groups do not create a misleading Asian clock")
+    func unsupportedGroup() {
+        #expect(IntradaySharedAxis(markets: [.us, .crypto, .metal], referenceDate: time(10)) == nil)
     }
 }

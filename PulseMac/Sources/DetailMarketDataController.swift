@@ -14,6 +14,7 @@ final class DetailMarketDataController {
         var symbol: SymbolID
         var period: CandlePeriod
         var count: Int
+        var adjustment: CandleAdjustment
     }
 
     private struct CandleRequest {
@@ -74,21 +75,21 @@ final class DetailMarketDataController {
 
     /// Coalesces identical requests. The unstructured shared task is not
     /// cancelled when one detail view leaves while another still awaits it.
-    public func loadCandles(symbol: SymbolID, period: CandlePeriod, count: Int) async -> [Candle] {
+    public func loadCandles(symbol: SymbolID, period: CandlePeriod, count: Int, adjustment: CandleAdjustment = .none) async -> [Candle] {
         if isDemo {
             return market.cachedCandles(
-                for: CandleCacheKey(symbol: symbol, period: period),
+                for: CandleCacheKey(symbol: symbol, period: period, adjustment: adjustment),
                 maxAge: .infinity
             ) ?? []
         }
-        let key = CandleRequestKey(symbol: symbol, period: period, count: count)
+        let key = CandleRequestKey(symbol: symbol, period: period, count: count, adjustment: adjustment)
         if let request = candleRequests[key] {
             return await request.task.value
         }
 
         let id = UUID()
         let task = Task { [engine] in
-            await engine.loadCandles(for: symbol, period: period, count: count)
+            await engine.loadCandles(for: symbol, period: period, count: count, adjustment: adjustment)
         }
         candleRequests[key] = CandleRequest(id: id, task: task)
         let candles = await task.value
@@ -113,14 +114,20 @@ final class DetailMarketDataController {
         )
 
         // The engine owns polling for watchlist members. Detail-only symbols
-        // (including group-less active items) get this 15 second fallback; the
-        // task rechecks membership so adding one hands polling to the engine.
+        // follow their preferred source's cadence as well; adding a symbol to
+        // the watchlist hands polling back to the engine.
         subscription.pollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, self.subscriptions[symbol]?.id == id else { return }
-                if !self.watchlist.symbols.contains(symbol),
-                   let quotes = try? await self.provider.quotes(for: [symbol]),
+                let startedAt = ContinuousClock.now
+                let routing = await self.provider.quoteRouting(for: [symbol])
+                let interval = routing.keys.first.map { self.engine.pollInterval(for: $0) } ?? 15
+                guard !Task.isCancelled else { return }
+                if !self.engine.writesHeld,
+                   !self.watchlist.symbols.contains(symbol),
+                   let quotes = try? await self.provider.refreshQuotes(for: [symbol]),
                    !Task.isCancelled,
+                   !self.engine.writesHeld,
                    self.subscriptions[symbol]?.id == id,
                    !self.watchlist.symbols.contains(symbol) {
                     for quote in quotes where quote.symbol == symbol {
@@ -128,7 +135,9 @@ final class DetailMarketDataController {
                     }
                 }
                 do {
-                    try await Task.sleep(for: .seconds(15))
+                    let elapsed = startedAt.duration(to: .now)
+                    let remaining = Duration.seconds(interval) - elapsed
+                    try await Task.sleep(for: max(.milliseconds(100), remaining))
                 } catch {
                     return
                 }

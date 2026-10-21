@@ -1324,6 +1324,7 @@ struct PlanWorkflowDetailView: View {
                 planSection(plan)
                 conditionSection(plan)
                 linkedTradesSection(plan)
+                FuyaoCapturedContextView(key: .init(account: account, symbol: symbol, kind: .plan, recordID: plan.id))
                 historySection(plan)
                 if let errorMessage {
                     Text(errorMessage)

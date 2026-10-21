@@ -103,7 +103,7 @@ struct ProviderFactsCard: View {
                     get: { Int(appState.pollInterval(for: descriptor.id)) },
                     set: { appState.setPollInterval(TimeInterval($0), for: descriptor.id) }
                 )) {
-                    ForEach([5, 15, 30, 60], id: \.self) { seconds in
+                    ForEach(pollIntervals, id: \.self) { seconds in
                         Text(PulseLocalization.localizedString("duration.seconds", seconds)).tag(seconds)
                     }
                 }
@@ -124,6 +124,10 @@ struct ProviderFactsCard: View {
             }
         }
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private var pollIntervals: [Int] {
+        descriptor.id == FuyaoProvider.providerID ? [1, 2, 5, 15, 30, 60] : [5, 15, 30, 60]
     }
 
     @ViewBuilder

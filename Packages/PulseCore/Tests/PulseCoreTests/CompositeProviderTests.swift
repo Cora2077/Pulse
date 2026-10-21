@@ -22,6 +22,9 @@ struct MockProvider: QuoteProvider {
     var referenceNames: [SecurityName] = []
     var referenceError: ProviderError?
     var omittedQuoteCodes: Set<String> = []
+    var coversBoards = false
+
+    func covers(_ symbol: SymbolID) -> Bool { symbol.sectorIndex == nil || coversBoards }
 
     var descriptor: ProviderDescriptor {
         var capabilities: Set<Capability> = [.search, .quotes, .candles]

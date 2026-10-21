@@ -29,6 +29,7 @@ final class AppState {
     let sectorLimits: SectorLimitSettings
     let poolBudgets: PoolBudgetSettings
     let tradingEvents: TradingEventsController
+    let marketContexts: FuyaoContextStore
     var pendingPlanAlertTarget: BrokerageAlertTarget?
     var pendingPoolPlanID: UUID?
     var pendingJournalTransactionID: UUID?
@@ -53,6 +54,13 @@ final class AppState {
     @ObservationIgnored let binance: BinanceProvider
     @ObservationIgnored let longbridge: LongbridgeProvider
     @ObservationIgnored let fuyao: FuyaoProvider
+    @ObservationIgnored lazy var research = FuyaoResearchController(
+        provider: fuyao,
+        available: { [weak self] in self?.fuyaoResearchAvailable == true }
+    )
+    var fuyaoResearchAvailable: Bool {
+        !isOfflinePreview && fuyaoConfigured && isProviderEnabled(FuyaoProvider.providerID)
+    }
     @ObservationIgnored let longbridgeOAuth: LongbridgeOAuthAuthenticator
     @ObservationIgnored private(set) var agentCommands: AgentWatchlistCommands?
     private(set) var agentServer: MCPAgentServer?
@@ -183,6 +191,7 @@ final class AppState {
         self.sectorLimits = sectorLimits
         self.poolBudgets = PoolBudgetSettings(defaults: storeDefaults, accountID: watchlist.activeBrokerageAccountID)
         self.tradingEvents = TradingEventsController(defaults: storeDefaults)
+        self.marketContexts = FuyaoContextStore(defaults: storeDefaults)
         self.binance = binance
         self.longbridge = longbridge
         self.fuyao = fuyao
@@ -260,6 +269,13 @@ final class AppState {
         if !isOfflinePreview { startRotation() }
         if !isOfflinePreview { startMenuBarClock() }
         observeMenuTracking()
+        marketContexts.initialize(snapshot: watchlist.syncSnapshot(), enabled: fuyaoResearchAvailable)
+        watchlist.onLocalLedgerChange = { [weak self] snapshot in
+            guard let self else { return }
+            self.marketContexts.observe(snapshot) { key, date in
+                self.research.captureContext(for: key, at: date)
+            }
+        }
         // Image-rendering self-tests must not touch the Keychain (the MCP token
         // lives there), so they run without the agent endpoint entirely.
         if !CommandLine.arguments.contains("--share-selftest") && !isOfflinePreview {
@@ -349,6 +365,7 @@ final class AppState {
             settings.disabledProviderIDs.insert(id)
         }
         applyProviderAvailability()
+        if id == FuyaoProvider.providerID { research.reset() }
         if enabled, id == BinanceProvider.providerID {
             Task { try? await binance.refreshSymbolCatalogIfNeeded() }
         }
@@ -383,6 +400,7 @@ final class AppState {
     }
 
     private func applyProviderAvailability() {
+        marketContexts.availabilityChanged(snapshot: watchlist.syncSnapshot(), enabled: fuyaoResearchAvailable)
         let ids = effectiveDisabledIDs()
         Task {
             await provider.setDisabled(ids)
@@ -455,6 +473,7 @@ final class AppState {
     /// rolled back so a previously working configuration is never destroyed by a failed edit.
     func saveFuyaoAPIKey(_ key: String) async throws {
         guard !isOfflinePreview else { throw CancellationError() }
+        research.reset()
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         await fuyao.updateAPIKey(trimmed)
         do {
@@ -470,6 +489,7 @@ final class AppState {
     }
 
     func clearFuyaoAPIKey() {
+        research.reset()
         guard !isOfflinePreview else { return }
         ProviderCredentialStore.clear(providerID: FuyaoProvider.providerID)
         fuyaoConfigured = false

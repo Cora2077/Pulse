@@ -1327,19 +1327,17 @@ struct WatchlistView: View {
         // One switch decides the whole group: every row on this list either shares
         // the reference clock or keeps its own, never a mix, or two rows would
         // claim the same x means different things.
-        let referenceMarket: Market? = appState.sharedWatchlist.isChinaAligned(
-            appState.sharedWatchlist.selectedGroupID
-        ) ? .sh : nil
+        let sharedAxis = appState.sharedWatchlist.isChinaAligned(appState.sharedWatchlist.selectedGroupID)
+            && items.contains(where: { IntradaySharedAxis.supports($0.symbol.market) })
+            ? IntradaySharedAxis(markets: (appState.sharedWatchlist.selectedGroup?.symbols ?? []).map(\.market), referenceDate: date)
+            : nil
         return ScrollView {
             LazyVStack(spacing: 0) {
-                if referenceMarket != nil {
-                    WatchAxisStrip(
-                        sessions: items.map {
-                            IntradayTradingSession(market: $0.symbol.market, referenceDate: date)
-                        },
-                        reference: .sh,
-                        titleColumnWidth: titleColumnWidth
-                    )
+                if let sharedAxis {
+                    IntradayAxisRuler(axis: sharedAxis)
+                        .padding(.leading, 8 + titleColumnWidth + 8)
+                        .padding(.trailing, 8 + metricColumnWidth + 8 + (isReordering ? 32 : 0))
+                        .help("北京时间；阴影为 A 股午休，韩国仍连续交易")
                 }
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     let isDragging = reorderDrag?.originIndex == index
@@ -1349,7 +1347,7 @@ struct WatchlistView: View {
                         metricColumnWidth: metricColumnWidth,
                         isPinned: appState.sharedWatchlist.isPinned(item.symbol),
                         isReordering: isReordering,
-                        referenceMarket: referenceMarket
+                        sharedAxis: sharedAxis
                     ) {
                         route = .detail(item.symbol)
                     }
@@ -1930,77 +1928,6 @@ struct SearchResultRow: View {
     }
 }
 
-/// The clock ruler above an aligned group's rows.
-///
-/// Drawing it once per group rather than once per row is the whole reason the
-/// rows can stay 30pt tall: at row size a six-tick axis is illegible, and six
-/// copies of it would cost more height than the list can spare. The strip is
-/// laid out on the same title column width as the rows, so its ticks sit above
-/// the plot they describe.
-private struct WatchAxisStrip: View {
-    let sessions: [IntradayTradingSession]
-    let reference: Market
-    /// The row's title column. The strip is indented by the same amount so its
-    /// ticks land above the sparklines rather than above the names.
-    let titleColumnWidth: CGFloat
-
-    private var bounds: (start: Double, end: Double) {
-        IntradayTradingSession.axisBounds(for: sessions, reference: reference)
-    }
-
-    var body: some View {
-        let bounds = bounds
-        // A window that collapsed to a point would divide by zero below.
-        let span = max(bounds.end - bounds.start, 1)
-        let ticks: [(Double, String)] = [
-            (9 * 60, "09:30"),
-            (11 * 60 + 30, "11:30"),
-            (13 * 60, "13:00"),
-            (15 * 60, "15:00"),
-        ]
-
-        GeometryReader { geometry in
-            let plotWidth = geometry.size.width
-            let lunchStart = (11 * 60 + 30 - bounds.start) / span
-            let lunchEnd = (13 * 60 - bounds.start) / span
-
-            ZStack(alignment: .topLeading) {
-                // The lunch band: China is shut, Korea is still trading. This is
-                // the stretch the shared axis exists to make visible.
-                Rectangle()
-                    .fill(Color.orange.opacity(0.13))
-                    .frame(width: max(plotWidth * (lunchEnd - lunchStart), 0))
-                    .offset(x: plotWidth * lunchStart, y: 0)
-
-                ForEach(ticks, id: \.1) { tick in
-                    let fraction = (tick.0 - bounds.start) / span
-                    let x = plotWidth * fraction
-                    VStack(spacing: 1) {
-                        Rectangle()
-                            .fill(Color.secondary.opacity(0.35))
-                            .frame(width: 0.5, height: 3)
-                        Text(tick.1)
-                            .font(.system(size: 8, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                    }
-                    // Edge ticks would otherwise hang their label outside the
-                    // strip, where it reads as belonging to the row beneath.
-                    .frame(width: 34)
-                    .offset(x: min(max(x - 17, 0), max(plotWidth - 34, 0)), y: 0)
-                }
-            }
-        }
-        .frame(height: 14)
-        // Row content sits at 8pt inside the row, and the plot starts one title
-        // column plus the row's own spacing further in. Matching both keeps a
-        // tick directly above the instant it names.
-        .padding(.leading, 8 + titleColumnWidth + 8)
-        .padding(.trailing, 8)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-}
-
 struct WatchRow: View {
     @Environment(AppState.self) private var appState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -2012,7 +1939,7 @@ struct WatchRow: View {
     /// The clock this row's sparkline is positioned against. Nil keeps the row on
     /// its own exchange's session, which is the behaviour every group had before
     /// the shared axis existed.
-    var referenceMarket: Market?
+    var sharedAxis: IntradaySharedAxis?
     let onOpen: () -> Void
     @State private var hovering = false
 
@@ -2079,7 +2006,8 @@ struct WatchRow: View {
                     market: item.symbol.market,
                     tint: color,
                     includesExtendedHours: false,
-                    referenceMarket: referenceMarket
+                    sharedAxis: sharedAxis,
+                    liveQuote: quote
                 )
                 .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30)
             }

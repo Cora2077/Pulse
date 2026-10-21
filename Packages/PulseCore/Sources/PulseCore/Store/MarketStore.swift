@@ -4,10 +4,12 @@ import Observation
 public struct CandleCacheKey: Hashable, Sendable {
     public var symbol: SymbolID
     public var period: CandlePeriod
+    public var adjustment: CandleAdjustment
 
-    public init(symbol: SymbolID, period: CandlePeriod) {
+    public init(symbol: SymbolID, period: CandlePeriod, adjustment: CandleAdjustment = .none) {
         self.symbol = symbol
         self.period = period
+        self.adjustment = adjustment
     }
 }
 

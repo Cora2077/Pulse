@@ -45,19 +45,16 @@ struct FuyaoParserTests {
     }
     """.utf8)
 
+    static func scope(_ thscodes: String, group: FuyaoProvider.Scope.Group = .shares) -> FuyaoProvider.Scope {
+        FuyaoProvider.Scope(group: group, codes: thscodes.split(separator: ",").map(String.init))
+    }
+
     @Test("Parses a snapshot batch and drops priceless rows")
     func parseSnapshot() throws {
-        let moutai = SymbolID(market: .sh, code: "600519")
-        let pingan = SymbolID(market: .sz, code: "000001")
-        let quotes = try FuyaoProvider.parseQuotes(
-            data: Self.snapshotFixture,
-            mapping: ["600519.SH": moutai, "000001.SZ": pingan]
-        )
-        #expect(quotes.count == 1)
+        let rows = try FuyaoProvider.parseSnapshot(data: Self.snapshotFixture)
+        #expect(rows.count == 1)
 
-        let quote = try #require(quotes.first)
-        #expect(quote.symbol == moutai)
-        #expect(quote.name == nil)  // snapshots carry no names; search/other sources do
+        let quote = try #require(rows["600519.SH"])
         #expect(quote.price == 1277.8)
         #expect(quote.previousClose == 1256)
         #expect(quote.open == 1252.08)
@@ -65,8 +62,54 @@ struct FuyaoParserTests {
         #expect(quote.low == 1250.21)
         #expect(quote.volume == 3_098_875)
         #expect(quote.turnover == 3_937_375_200)
-        #expect(quote.currencyCode == "CNY")
-        #expect(quote.timestamp == Date(timeIntervalSince1970: 1_784_275_991))
+        // The identity and the batch time are joined by the caller, not guessed here.
+        let timestamp = try FuyaoProvider.batchTimestamp(data: Self.snapshotFixture, scope: Self.scope("600519.SH"))
+        #expect(timestamp == Date(timeIntervalSince1970: 1_784_275_991))
+    }
+
+    @Test("A batch without a usable timestamp is refused, never stamped now")
+    func missingTimestamp() throws {
+        let scope = Self.scope("600519.SH")
+        for timestamp in ["null", "0", "-1", ""] {
+            let fixture = Data("""
+            {"code":0,"message":"success","data":{"timestamp":\(timestamp),"item":[
+              {"thscode":"600519.SH","last_price":1277.8,"prev_price":1256}
+            ]}}
+            """.utf8)
+            #expect(throws: ProviderError.self) {
+                _ = try FuyaoProvider.batchTimestamp(data: fixture, scope: scope)
+            }
+        }
+        let withoutField = Data("""
+        {"code":0,"message":"success","data":{"item":[{"thscode":"600519.SH","last_price":1277.8,"prev_price":1256}]}}
+        """.utf8)
+        #expect(throws: ProviderError.self) {
+            _ = try FuyaoProvider.batchTimestamp(data: withoutField, scope: scope)
+        }
+        #expect(FuyaoProvider.batchTimestamp(.nan) == nil)
+        #expect(FuyaoProvider.batchTimestamp(.infinity) == nil)
+        #expect(FuyaoProvider.batchTimestamp(0) == nil)
+    }
+
+    @Test("Non-finite price and volume never become a quote")
+    func nonFiniteSnapshotValues() throws {
+        // JSON has no NaN or infinity literal; 1e999 overflows the decoder, and a
+        // row it cannot decode fails the envelope rather than yielding a quote.
+        let fixture = Data("""
+        {"code":0,"message":"success","data":{"timestamp":1784275991000,"item":[
+          {"thscode":"600519.SH","last_price":1e999,"prev_price":1256,"volume":1e999}
+        ]}}
+        """.utf8)
+        #expect(throws: (any Error).self) {
+            _ = try FuyaoProvider.parseSnapshot(data: fixture)
+        }
+        // The same row without a previous close is simply not a quote.
+        let halfRow = Data("""
+        {"code":0,"message":"success","data":{"timestamp":1784275991000,"item":[
+          {"thscode":"600519.SH","last_price":1277.8,"prev_price":0,"volume":-5}
+        ]}}
+        """.utf8)
+        #expect(try FuyaoProvider.parseSnapshot(data: halfRow).isEmpty)
     }
 
     @Test("Parses daily bars in ascending time order")
@@ -152,9 +195,9 @@ struct FuyaoParserTests {
         #expect(results.count == 2)
         #expect(results[0].symbol == SymbolID(market: .sh, code: "601318"))
         #expect(results[0].name == "中国平安")
-        #expect(results[0].type == .equity)
+        #expect(results[0].info.type == .equity)
         #expect(results[1].symbol == SymbolID(market: .sh, code: "510300"))
-        #expect(results[1].type == .etf)
+        #expect(results[1].info.type == .etf)
     }
 
     @Test("Maps business error codes onto circuit-safe ProviderErrors")
@@ -172,6 +215,12 @@ struct FuyaoParserTests {
         #expect(!error(code: 2001).shouldTripCircuit)
         #expect(!error(code: 2003).shouldTripCircuit)
         #expect(!error(code: 3001).shouldTripCircuit)
+        // 2004 says this key's plan cannot use the endpoint: a request problem, not
+        // a source outage, and it must not cost the user every A-share quote.
+        #expect(!error(code: 2004).shouldTripCircuit)
+        if case .clientError(status: 403, _) = error(code: 2004) {} else {
+            Issue.record("2004 should map to clientError(403)")
+        }
     }
 
     @Test("Business error inside an HTTP 200 body surfaces as a thrown ProviderError")
@@ -180,18 +229,32 @@ struct FuyaoParserTests {
         {"code":2003,"message":"Invalid or revoked API key","request_id":"d23e","data":null}
         """.utf8)
         #expect(throws: ProviderError.self) {
-            _ = try FuyaoProvider.parseQuotes(data: fixture, mapping: [:])
+            _ = try FuyaoProvider.parseSnapshot(data: fixture)
         }
     }
 
-    @Test("Maps only exchange-listed A-share identities to thscodes")
+    @Test("Maps only exchange-listed A-share identities, indices and boards to thscodes")
     func symbolMapping() {
         #expect(FuyaoProvider.thscode(for: SymbolID(market: .sh, code: "600519")) == "600519.SH")
         #expect(FuyaoProvider.thscode(for: SymbolID(market: .sz, code: "000001")) == "000001.SZ")
+        #expect(FuyaoProvider.thscode(for: SymbolID(market: .sh, code: "510300")) == "510300.SH")
+        #expect(FuyaoProvider.thscode(for: SymbolID(market: .sz, code: "159915")) == "159915.SZ")
+        #expect(FuyaoProvider.thscode(for: SymbolID(market: .sz, code: "160105")) == "160105.SZ")
         #expect(FuyaoProvider.thscode(for: SymbolID(market: .hk, code: "700")) == nil)
         #expect(FuyaoProvider.thscode(for: SymbolID(market: .us, code: "AAPL")) == nil)
-        // Indices ride semantic identities and the separate index endpoints.
-        #expect(FuyaoProvider.thscode(for: SymbolID(index: .shanghaiComposite)) == nil)
+        // Metadata, rather than a code prefix, decides unknown instruments' types.
+        #expect(FuyaoProvider.thscode(for: SymbolID(market: .sh, code: "000300")) == "000300.SH")
+        #expect(FuyaoProvider.thscode(for: SymbolID(market: .sh, code: "000688")) == "000688.SH")
+        #expect(FuyaoProvider.thscode(for: SymbolID(market: .sz, code: "510300")) == "510300.SZ")
+        // Indices ride semantic identities on the index endpoints.
+        #expect(FuyaoProvider.thscode(for: SymbolID(index: .shanghaiComposite)) == "000001.SH")
+        #expect(FuyaoProvider.thscode(for: SymbolID(index: .shenzhenComponent)) == "399001.SZ")
+        #expect(FuyaoProvider.thscode(for: SymbolID(index: .chiNext)) == "399006.SZ")
+        #expect(FuyaoProvider.thscode(for: SymbolID(index: .hangSeng)) == nil)
+        #expect(FuyaoProvider.thscode(for: SymbolID(index: .sp500)) == nil)
         #expect(FuyaoProvider.thscode(for: SymbolID(metal: .goldSpot)) == nil)
+        let board = SectorIndexID(code: "881155", name: "银行")
+        #expect(FuyaoProvider.thscode(for: SymbolID(sectorIndex: board)) == "881155.TI")
+        #expect(FuyaoProvider.thscode(for: SymbolID(market: .us, code: "88ABCD")) == nil)
     }
 }

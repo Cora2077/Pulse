@@ -571,6 +571,9 @@ struct TradeJournalView: View {
                         }
                     }
 
+                    FuyaoCapturedContextView(key: .init(account: entry.accountID, symbol: entry.item.symbol,
+                        kind: .fill, recordID: entry.transaction.id))
+
                     if let context = planContext {
                         VStack(alignment: .leading, spacing: 5) {
                             HStack(spacing: 6) {

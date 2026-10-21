@@ -47,6 +47,7 @@ struct DetailShareSnapshot {
         redUp: Bool,
         updatedAtText: String,
         includesExtendedHours: Bool = false,
+        adjustment: CandleAdjustment = .none,
         capturedAt: Date = .now
     ) {
         self.symbol = symbol
@@ -59,7 +60,9 @@ struct DetailShareSnapshot {
         changeValue = quote?.change
         previousClose = quote?.previousClose
         self.period = period
-        periodName = period.displayName
+        periodName = CandleAdjustment.supportsChart(symbol, period: period)
+            ? period.displayName + " · " + (adjustment == .forward ? "前复权" : "不复权")
+            : period.displayName
         self.includesExtendedHours = includesExtendedHours
         trendCandles = period == .minute1
             ? IntradayTrendSnapshot(
@@ -104,7 +107,7 @@ struct DetailShareSnapshot {
     }
 
     @MainActor
-    init(appState: AppState, symbol: SymbolID, period: CandlePeriod, candles: [Candle]) {
+    init(appState: AppState, symbol: SymbolID, period: CandlePeriod, candles: [Candle], adjustment: CandleAdjustment = .none) {
         let quote = appState.market.quote(for: symbol)
         self.init(
             symbol: symbol,
@@ -117,7 +120,8 @@ struct DetailShareSnapshot {
                 "refresh.updatedAt",
                 Date.now.formatted(date: .omitted, time: .shortened)
             ),
-            includesExtendedHours: appState.showsExtendedHours(for: symbol)
+            includesExtendedHours: appState.showsExtendedHours(for: symbol),
+            adjustment: adjustment
         )
     }
 

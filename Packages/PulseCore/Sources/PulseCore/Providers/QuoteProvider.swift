@@ -49,6 +49,9 @@ public protocol QuoteProvider: Sendable {
     /// Candles / intraday data; returns the most recent `count` bars in ascending time order
     func candles(for symbol: SymbolID, period: CandlePeriod, count: Int) async throws -> [Candle]
 
+    /// An explicit price basis must never silently fall back to a different one.
+    func candles(for symbol: SymbolID, period: CandlePeriod, count: Int, adjustment: CandleAdjustment) async throws -> [Candle]
+
     /// Real-time streaming (optional capability)
     func quoteStream(for symbols: [SymbolID]) -> AsyncThrowingStream<Quote, any Error>?
 
@@ -72,6 +75,11 @@ public protocol QuoteProvider: Sendable {
 }
 
 public extension QuoteProvider {
+    func candles(for symbol: SymbolID, period: CandlePeriod, count: Int, adjustment: CandleAdjustment) async throws -> [Candle] {
+        guard adjustment == .none else { throw ProviderError.unsupported(.candles) }
+        return try await candles(for: symbol, period: period, count: count)
+    }
+
     func securityNames(for symbols: [SymbolID]) async throws -> [SecurityName] {
         throw ProviderError.unsupported(.referenceData)
     }

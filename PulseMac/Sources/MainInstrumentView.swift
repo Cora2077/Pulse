@@ -25,6 +25,7 @@ struct MainInstrumentView: View {
     @State private var planActionError: String?
     @State private var pendingTabReturn: MainInstrumentTab?
     @State private var chartMode: MainChartMode = .intraday
+    @State private var adjustment: CandleAdjustment = .forward
     @State private var candles: [Candle] = []
     @State private var candlesKey: CandleCacheKey?
     @State private var isLoadingCandles = false
@@ -58,8 +59,9 @@ struct MainInstrumentView: View {
     @AppStorage("pulse.chart.movingAverages.v2") private var movingAverageMask = MovingAveragePeriod.allMask
     @AppStorage("pulse.chart.macd.v1") private var showsMACD = false
 
-    init(symbol: SymbolID, initialShowsPlans: Bool = false, initialShowsTransactions: Bool = false, initialPeriod: CandlePeriod? = nil) {
+    init(symbol: SymbolID, initialShowsPlans: Bool = false, initialShowsTransactions: Bool = false, initialPeriod: CandlePeriod? = nil, initialAdjustment: CandleAdjustment = .forward) {
         self.symbol = symbol
+        _adjustment = State(initialValue: initialAdjustment)
         _selectedTab = State(initialValue: initialShowsTransactions ? .transactions : initialShowsPlans ? .plans : .position)
         _chartMode = State(initialValue: MainChartMode.allCases.first { $0.period == initialPeriod } ?? .intraday)
         _route = State(initialValue: .detail(symbol))
@@ -111,8 +113,11 @@ struct MainInstrumentView: View {
         default: true
         }
     }
+    private var supportsAdjustment: Bool { CandleAdjustment.supportsChart(symbol, period: chartMode.period) }
+    private var chartAdjustment: CandleAdjustment { supportsAdjustment ? adjustment : .none }
+
     private var chartRequest: CandleCacheKey {
-        CandleCacheKey(symbol: symbol, period: chartMode.period)
+        CandleCacheKey(symbol: symbol, period: chartMode.period, adjustment: chartAdjustment)
     }
     private var isDashboardVisible: Bool {
         if case .detail(let routedSymbol) = route { return routedSymbol == symbol }
@@ -156,9 +161,18 @@ struct MainInstrumentView: View {
             guard isWindowActiveVisible else { return }
             await appState.detailMarketData.run(symbol: symbol)
         }
+        .task(id: "research-\(symbol.description)-\(isWindowActiveVisible)-\(appState.fuyaoResearchAvailable)-\(appState.research.generation)") {
+            guard isWindowActiveVisible, appState.fuyaoResearchAvailable,
+                  symbol.market == .sh || symbol.market == .sz else { return }
+            do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+            await appState.research.loadIntelligence(symbol)
+            guard !Task.isCancelled else { return }
+            await appState.research.sentiment.load()
+        }
         .task(id: ChartRefreshKey(
             symbol: symbol,
             mode: chartMode,
+            adjustment: chartAdjustment,
             active: isWindowActiveVisible && isDashboardVisible,
             generation: mainRefreshGeneration
         )) {
@@ -235,6 +249,10 @@ struct MainInstrumentView: View {
         .onChange(of: editingDrawing?.id) { _, id in
             if id == nil { frozenAccount = appState.watchlist.activeBrokerageAccountID }
         }
+        .onChange(of: adjustment) { _, _ in
+            annotationController.tool = .browse
+            annotationController.resetTransientState()
+        }
         .onChange(of: chartMode) { _, _ in
             annotationController.resetTransientState()
             editingDrawing = nil
@@ -284,7 +302,10 @@ struct MainInstrumentView: View {
             VStack(spacing: 0) {
                 quoteHeader
                     .frame(height: 76)
-                periodPicker
+                HStack(spacing: 8) {
+                    periodPicker
+                    if supportsAdjustment { ChartAdjustmentMenu(adjustment: $adjustment) }
+                }
                     .frame(height: 32)
                     .padding(.horizontal, 16)
                 annotationToolbar
@@ -550,7 +571,9 @@ struct MainInstrumentView: View {
                 .contentShape(RoundedRectangle(cornerRadius: 5))
         }
         .buttonStyle(.plain)
-        .help(PulseLocalization.localizedString(key))
+        .disabled(tool == .trend && chartAdjustment == .forward)
+        .help(tool == .trend && chartAdjustment == .forward
+            ? "趋势画线使用历史实际价格，请切换不复权。" : PulseLocalization.localizedString(key))
         .accessibilityLabel(PulseLocalization.localizedString(key))
         .accessibilityAddTraits(annotationController.tool == tool ? .isSelected : [])
     }
@@ -775,7 +798,9 @@ struct MainInstrumentView: View {
     private var chartAnnotations: ChartAnnotationConfiguration {
         ChartAnnotationConfiguration(
             controller: annotationController,
-            drawings: (item?.drawings ?? []).filter { !$0.isDeleted },
+            drawings: (item?.drawings ?? []).filter {
+                !$0.isDeleted && (chartAdjustment == .none || $0.scope == .all)
+            },
             plans: chartPlanEntries.map(\.chartPlan),
             currentPrice: annotationReferencePrice,
             scope: chartDrawingScope,
@@ -1052,6 +1077,8 @@ struct MainInstrumentView: View {
             plansTab
         case .thesis:
             thesisTab
+        case .research:
+            FuyaoIntelligenceView(symbol: symbol)
         }
     }
 
@@ -1725,7 +1752,7 @@ struct MainInstrumentView: View {
         let loaded = await appState.detailMarketData.loadCandles(
             symbol: request.symbol,
             period: request.period,
-            count: candleCount(for: request.period)
+            count: candleCount(for: request.period), adjustment: request.adjustment
         )
         guard !Task.isCancelled,
               token == chartRequestToken,
@@ -1794,6 +1821,7 @@ private enum MainInstrumentTab: CaseIterable {
     case transactions
     case plans
     case thesis
+    case research
 
     var titleKey: String {
         switch self {
@@ -1801,6 +1829,7 @@ private enum MainInstrumentTab: CaseIterable {
         case .transactions: "main.tab.transactions"
         case .plans: "main.tab.plans"
         case .thesis: "main.tab.thesis"
+        case .research: "main.tab.research"
         }
     }
 
@@ -1810,6 +1839,7 @@ private enum MainInstrumentTab: CaseIterable {
         case .transactions: "list.bullet.rectangle"
         case .plans: "target"
         case .thesis: "text.alignleft"
+        case .research: "newspaper"
         }
     }
 }
@@ -1866,6 +1896,7 @@ private struct QuoteRunKey: Hashable {
 private struct ChartRefreshKey: Hashable {
     var symbol: SymbolID
     var mode: MainChartMode
+    var adjustment: CandleAdjustment
     var active: Bool
     var generation: Int
 }
