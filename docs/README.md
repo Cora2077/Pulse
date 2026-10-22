@@ -19,6 +19,8 @@
 | [提醒、复盘、分布与备份](design/workflows.md) | 到价提醒、交易复盘、按币种的仓位分布、本地备份与恢复边界 |
 | [待开发功能](roadmap.md) | 已明确要做但尚未动手的功能；已完成项指向对应设计文档 |
 | [扶摇功能实施清单](design/fuyao-feature-plan.md) | 个股情报、板块强弱、ETF 穿透、情绪、财报与复盘背景的逐项状态 |
+| [扶摇 API 最佳实践与下一轮设计](design/fuyao-api-practices-and-next-wave.md) | 13 条接口纪律、22 条已接入路径盘点、7 项新功能设计（除权口径、龙虎榜、竞价、财务指标、基金业绩、交易日历、打新）与请求预算 |
+| [扶摇端点契约摘要](design/fuyao-endpoint-contracts-2026-10-22.md) | 50 节逐端点摘录（49 个端点/端点组 + 跨端点共性坑）：参数、单位、窗口限制与 null 语义；标注客户端专用 6 项、敬请期待 3 项 |
 
 ## 审计与验证记录
 
@@ -28,6 +30,13 @@
 | [账户归属审计报告](audits/ownership-audit.md) | 重构前的缺陷复现（R1–R4）、模型与展示问题（D1–D3）、验证范围与重构交付状态 |
 | [扶摇行情与一秒刷新验收](verification/fuyao-fast-refresh-2026-10-20.md) | 行情类型路由、复权与时间戳、独立刷新调度、真实接口及原生验证 |
 | [扶摇研究功能验收](verification/fuyao-features-2026-10-21.md) | 六项功能的数据口径、Core/原生/真实接口验证与交付边界 |
+| [除权事件与计划口径验收](verification/fuyao-corporate-actions-2026-10-22.md) | P0-1 的口径决定、命中规则、10 项单测/33 项原生自测/17 项真实接口与渲染检查 |
+| [龙虎榜与严重异动验收](verification/fuyao-capital-flow-2026-10-22.md) | P0-2 的实测约束如何落进代码、区间与身份口径、14 项单测/46 项原生自测/20 项真实接口 |
+| [前复权日K无数据修复](verification/forward-candle-fix-2026-10-22.md) | 腾讯对从未除权标的只返回未复权序列的契约、回退条件的精确边界，以及失败态与空态的文案分流 |
+| [财务五类指标验收](verification/fuyao-financial-indicators-2026-10-22.md) | P1-4 的单位目录表设计（% / 倍 / 次）、`index_id` 非封闭枚举的实测、12 项单测与真实接口验证 |
+| [基金业绩与回撤验收](verification/fuyao-fund-performance-2026-10-22.md) | P1-5 的三端点单位差异、`.convertFromSnakeCase` 导致自建 CodingKey 失效的修正、失败隔离与自适应表格 |
+| [交易日历校准验收](verification/fuyao-trading-days-2026-10-22.md) | P2-6 的覆盖边界（区间外为未知而非休市）、真实比对结果（243 日、0 差异）与只提示不写回的差异检测 |
+| [打新日历验收](verification/fuyao-ipo-2026-10-22.md) | P2-7 的两个代码（申购/交易）分离、未定值处理、北交所无身份的展示、六查询失败隔离 |
 
 审计用的探针代码保留在 [audit/](../audit/)，`audit/ownership-2026-10-12/` 是 2026-10-12 那一轮的证据，不属于持续回归测试目标。改动相关逻辑时应补充断言正确行为的新回归测试，而不是复用这些探针。
 
