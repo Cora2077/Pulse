@@ -15,6 +15,8 @@ struct FuyaoFinancialsView: View {
             .task(id: "\(symbol.description)-\(expanded)-\(appState.fuyaoResearchAvailable)-\(appState.research.generation)") {
                 guard expanded, appState.fuyaoResearchAvailable else { return }
                 await appState.research.financials.load(symbol)
+                // 指标的报告期由利润表推导，所以必须在报表落地之后再拉。
+                await appState.research.financials.loadIndicators(symbol)
             }
     }
 }
@@ -38,6 +40,9 @@ struct FuyaoFinancialsContent: View {
                     Text(batch.dataTime.map { "估值数据 " + ResearchFormat.time($0) } ?? "来源未提供估值时间")
                         .font(.caption2).foregroundStyle(.secondary)
                 } else { Text("来源暂无该股票的估值快照").font(.caption).foregroundStyle(.secondary) }
+            }
+            if !state.indicators.isEmpty {
+                FuyaoIndicatorSection(indicators: state.indicators, loading: state.loading)
             }
             ForEach(FuyaoStatementKind.allCases, id: \.self) { kind in
                 if let series = state.statements[kind] {
@@ -91,5 +96,101 @@ struct FuyaoFinancialsContent: View {
         guard let value else { return "—" }
         guard let currency, !currency.isEmpty else { return String(format: "%.2f（币种未知）", value) }
         return PriceFormatter.money(value, currencyCode: currency)
+    }
+}
+
+/// 「关键财务指标」小节。
+///
+/// 只展示目录里有标题与单位的指标；上游返回但契约未定义单位的 id 被隐藏
+/// （例如 `fixed_asset_invest_expansion_ratio`）——把一个百分数当倍数印出来
+/// 比少一行更糟。
+///
+/// 每行给出最新一期值、上一期值与变化方向。变化只做减法与比较，不评价好坏：
+/// 资产负债率上升既可能是扩张也可能是风险，这里不做判断。
+struct FuyaoIndicatorSection: View {
+    /// 按报告期降序，`indicators[0]` 是最新一期。
+    let indicators: [FuyaoIndicatorSet]
+    var loading = false
+
+    private var latest: FuyaoIndicatorSet? { indicators.first }
+    private var previous: FuyaoIndicatorSet? { indicators.dropFirst().first }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Divider()
+            HStack(spacing: 8) {
+                Text("关键财务指标").font(.system(size: 12, weight: .semibold))
+                Spacer()
+                if loading { ProgressView().controlSize(.small) }
+                if let latest {
+                    Text(latest.reportTitle).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            if let latest {
+                ForEach(latest.nonEmptyGroups) { group in
+                    groupRows(group, latest: latest, previous: previous)
+                }
+                footnote
+            } else {
+                Text("来源暂无可用的指标数据。").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func groupRows(_ group: FuyaoIndicatorGroup, latest: FuyaoIndicatorSet, previous: FuyaoIndicatorSet?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(group.ability.title).font(.caption2).foregroundStyle(.secondary).padding(.top, 3)
+            ForEach(group.displayable) { row in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(row.definition?.title ?? row.indexID)
+                        .font(.caption).lineLimit(1)
+                    Spacer(minLength: 6)
+                    // 上一期值与其变化方向；缺失时留空，不显示 0 或"— 变化"。
+                    if let previousValue = previous?.value(of: row.indexID), let current = row.value,
+                       let definition = row.definition {
+                        Text(changeText(current: current, previous: previousValue, unit: definition.unit))
+                            .font(.system(size: 10)).monospacedDigit()
+                            .foregroundStyle(changeColor(current: current, previous: previousValue))
+                            .frame(width: 74, alignment: .trailing)
+                    } else {
+                        Color.clear.frame(width: 74, height: 1)
+                    }
+                    Text(row.displayText ?? "—")
+                        .font(.system(size: 12, weight: .medium)).monospacedDigit()
+                        .frame(width: 78, alignment: .trailing)
+                }
+            }
+        }
+    }
+
+    /// 变化量：百分数指标用"百分点"，其他用自身单位。没有上一期就是空。
+    private func changeText(current: Double, previous: Double, unit: FuyaoIndicatorUnit) -> String {
+        let delta = current - previous
+        guard delta.isFinite else { return "" }
+        let sign = delta > 0 ? "+" : (delta < 0 ? "−" : "±")
+        let magnitude = abs(delta)
+        let text = FuyaoIndicatorCatalog.trimmed(magnitude, digits: 2)
+        // 百分数指标的变化单位是"百分点"，与指标本身的 % 不是一回事：
+        // 从 15% 到 15.19% 是 +0.19 个百分点，不是 +0.19%。
+        return switch unit {
+        case .percent: "\(sign)\(text) 点"
+        case .multiple: "\(sign)\(text)"
+        case .times: "\(sign)\(text)次"
+        }
+    }
+
+    /// 只用方向着色，不暗示好坏：有些指标升是好事，有些不是。
+    private func changeColor(current: Double, previous: Double) -> AnyShapeStyle {
+        let delta = current - previous
+        if delta > 0 { return AnyShapeStyle(.secondary) }
+        if delta < 0 { return AnyShapeStyle(.secondary) }
+        return AnyShapeStyle(.tertiary)
+    }
+
+    private var footnote: some View {
+        Text("指标单位按契约：带 % 的为百分数值（上游已乘 100，此处不再换算），周转率按次，其余为倍数。变化列只表示与上一期的差（百分数指标的单位是百分点），不判断方向好坏；上游未定义单位的指标不展示。")
+            .font(.caption2).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }

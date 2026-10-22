@@ -8,9 +8,13 @@ final class FuyaoFinancialsController {
     struct State {
         var statements: [FuyaoStatementKind: FuyaoTimed<[FuyaoFinancialPeriod]>] = [:]
         var valuation: FuyaoTimed<FuyaoValuation?>?
+        /// 五类财务指标，按报告期降序（最新在前）。每个报告期是一次单独请求。
+        var indicators: [FuyaoIndicatorSet] = []
         var errors: [String: String] = [:]
         var loading = false
         var attemptedAt: Date?
+        /// 已尝试过的报告期，避免每次进页面重复拉同一批。
+        var attemptedReports: Set<String> = []
     }
     private(set) var states: [SymbolID: State] = [:]
     @ObservationIgnored private let provider: FuyaoProvider
@@ -18,6 +22,12 @@ final class FuyaoFinancialsController {
     @ObservationIgnored private var epoch = 0
     @ObservationIgnored private var tasks: [SymbolID: Task<Void, Never>] = [:]
     init(provider: FuyaoProvider, available: @escaping () -> Bool) { self.provider = provider; self.available = available }
+    /// 指标每个报告期一次请求，单码端点不能批取。上限压在 4 期：
+    /// 更早的期次对"看趋势"没有增量，却会按几何级数消耗请求预算。
+    static let indicatorReportLimit = 4
+    /// 指标缓存 24 小时：财报按季更新，一天一次足够。
+    static let indicatorTTL: TimeInterval = 24 * 60 * 60
+
     func reset() { epoch += 1; tasks.values.forEach { $0.cancel() }; tasks = [:]; states = [:] }
     private func valid(_ value: Int) -> Bool { value == epoch && available() && !Task.isCancelled }
     func load(_ symbol: SymbolID, force: Bool = false) async {
@@ -50,5 +60,45 @@ final class FuyaoFinancialsController {
             }
         }
         tasks[symbol] = task; await task.value
+    }
+}
+
+extension FuyaoFinancialsController {
+    /// 为已有报表的最新若干报告期补齐五类指标。
+    ///
+    /// 报告期**从利润表推导**，不自行推算"今天是几月所以该有中报"：上游某期
+    /// 没披露时，推算出来的期次只会换来一个空结果。认不出的期次标签直接跳过。
+    func loadIndicators(_ symbol: SymbolID, force: Bool = false) async {
+        guard available() else { return }
+        guard let state = states[symbol] else { return }
+        guard let income = state.statements[.income]?.value, !income.isEmpty else { return }
+        let reports: [String] = income
+            .compactMap { FuyaoIndicatorCatalog.report(fiscalYear: $0.fiscalYear, fiscalPeriod: $0.fiscalPeriod) }
+            .prefix(Self.indicatorReportLimit)
+            .map { $0 }
+        let pending = reports.filter { force || !state.attemptedReports.contains($0) }
+        guard !pending.isEmpty else { return }
+        let captured = epoch
+        states[symbol]?.attemptedReports.formUnion(pending)
+        for report in pending {
+            do {
+                let set = try await provider.financialIndicators(for: symbol, report: report)
+                guard valid(captured) else { return }
+                // 同一报告期只保留一份；按报告期降序插入。
+                var rows = states[symbol]?.indicators ?? []
+                rows.removeAll { $0.report == set.report }
+                rows.append(set)
+                rows.sort { $0.report > $1.report }
+                states[symbol]?.indicators = rows
+            } catch is CancellationError {
+                return
+            } catch {
+                guard valid(captured) else { return }
+                let message = FuyaoResearchController.message(error)
+                states[symbol]?.errors["指标 \(report)"] = message
+                // 限流后停止后续期次，不再制造请求风暴。
+                if case ProviderError.rateLimited = error { return }
+            }
+        }
     }
 }
