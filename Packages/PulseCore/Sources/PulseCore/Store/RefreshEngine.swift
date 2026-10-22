@@ -187,6 +187,7 @@ public final class RefreshEngine {
                     return
                 }
                 self.store.apply(quotes: quotes)
+                self.store.clearError()
                 self.applyQuoteNameUpgrades(quotes)
             } catch {
                 guard !Task.isCancelled, self.generation == epoch else { return }
@@ -297,6 +298,10 @@ public final class RefreshEngine {
             let candles = try await provider.candles(for: symbol, period: period, count: count, adjustment: adjustment)
             let synchronized = synchronizeIntradayTrend(candles, for: symbol, period: period)
             store.cache(candles: synchronized, for: key)
+            // The error describes the last attempt, so a successful one retires it.
+            // Leaving it in place would make every later empty answer read as a
+            // failure, long after the source recovered.
+            store.clearError()
             return synchronized
         } catch is CancellationError {
             let cached = store.cachedCandles(for: key, maxAge: .infinity) ?? []
