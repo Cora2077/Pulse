@@ -18,6 +18,8 @@ struct FuyaoSingleFundView: View {
             if let report = controller.reports[symbol] { FuyaoFundDisclosureContent(report: report) }
             else if !controller.loading.contains(symbol) { Text("来源尚未返回可用的股票持仓披露。").font(.caption).foregroundStyle(.secondary) }
             if let error = controller.errors[symbol] { Text(error).font(.caption).foregroundStyle(.secondary) }
+            Divider()
+            FuyaoFundPerformanceView(symbol: symbol)
         }.task(id: "\(symbol.description)-\(appState.research.generation)") {
             await controller.load(symbol)
         }
