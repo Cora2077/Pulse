@@ -31,6 +31,8 @@
 "chart.low" = "低";
 "chart.noData" = "暂无数据";
 "chart.noPeriodData" = "当前数据源没有该标的的%@数据";
+"chart.loadFailed" = "暂时无法加载%@数据";
+"chart.loadFailedHint" = "可能是网络或数据源暂时不可用，稍后会自动重试。";
 "chart.open" = "开";
 "chart.volume" = "量";
 

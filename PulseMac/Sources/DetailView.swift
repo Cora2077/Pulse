@@ -1044,10 +1044,24 @@ struct DetailView: View {
                     // The load for what is on screen came back with nothing.
                     // Anything else — a switch still settling, a request in
                     // flight — is not yet an answer and must not claim to be one.
+                    //
+                    // "Nothing came back" is not the same as "the source has no
+                    // data for this symbol": a rate-limited or briefly unavailable
+                    // source also answers empty. Reporting both as a verdict about
+                    // the instrument is how a transient failure read as a fact.
+                    let failed = appState.market.lastError?.isEmpty == false
                     ContentUnavailableView {
-                        Label(PulseLocalization.localizedString("chart.noData"), systemImage: "chart.xyaxis.line")
+                        Label(
+                            PulseLocalization.localizedString(failed ? "chart.loadFailed" : "chart.noData",
+                                                              period.displayName),
+                            systemImage: failed ? "exclamationmark.triangle" : "chart.xyaxis.line"
+                        )
                     } description: {
-                        Text(PulseLocalization.localizedString("chart.noPeriodData", period.displayName))
+                        if failed {
+                            Text(PulseLocalization.localizedString("chart.loadFailedHint"))
+                        } else {
+                            Text(PulseLocalization.localizedString("chart.noPeriodData", period.displayName))
+                        }
                     }
                     .transition(.opacity)
                 } else if isLoading {

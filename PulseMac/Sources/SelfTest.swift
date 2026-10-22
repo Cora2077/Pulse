@@ -54,6 +54,13 @@ enum SelfTest {
             exit(passed ? 0 : 1)
         }
         #endif
+        if CommandLine.arguments.contains("--empty-state-render") {
+            Task { @MainActor in
+                do { try await DailyChartAcceptance.renderEmptyStates(); exit(0) }
+                catch { print("PULSE_EMPTY_STATE failed \(error)"); exit(1) }
+            }
+            return
+        }
         if CommandLine.arguments.contains("--research-live-selftest") {
             Task { @MainActor in
                 let passed = await FuyaoResearchAcceptance.runLive()

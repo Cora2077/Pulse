@@ -62,6 +62,27 @@ enum DailyChartAcceptance {
         }
     }
 
+    /// 空状态的渲染检查。不需要任何真实数据源：它要证明的是"取数失败"与
+    /// "确实没有数据"在界面上是两种说法，而不是数据本身。
+    @MainActor
+    static func renderEmptyStates() async throws {
+        let symbol = SymbolID(market: .sh, code: "688825")
+        let state = AppState()
+        let defaults = UserDefaults(suiteName: MainWindowDemo.userDefaultsSuite)!
+        state.sharedWatchlist.add(.init(symbol: symbol, name: "长鑫科技", type: .equity))
+        for (label, error) in [("failed", "simulated: source temporarily unavailable"), ("empty", nil)] {
+            if let error { state.market.reportError(error) } else { state.market.clearError() }
+            for scheme in [ColorScheme.light, .dark] {
+                try await render(
+                    DetailView(symbol: symbol, route: .constant(.detail(symbol)), initialPeriod: .day)
+                        .environment(state).defaultAppStorage(defaults),
+                    name: "detail-\(label)-\(scheme == .dark ? "dark" : "light")",
+                    width: 340, height: 670, scheme: scheme)
+            }
+        }
+        print("PULSE_EMPTY_STATE ok renders=4")
+    }
+
     private static func render<V: View>(_ view: V, name: String, width: CGFloat, height: CGFloat, scheme: ColorScheme) async throws {
         let frame = NSRect(x: 0, y: 0, width: width, height: height)
         let hosting = NSHostingView(rootView: view.frame(width: width, height: height)

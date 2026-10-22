@@ -731,16 +731,32 @@ struct MainInstrumentView: View {
         }
     }
 
+    /// "Nothing came back" has two very different causes, and the chart used to
+    /// report both as "this source has no data for the symbol". A failed fetch is
+    /// not a verdict about the instrument: the source may simply be rate-limited,
+    /// offline, or briefly unable to serve the basis that was asked for. Reading
+    /// the last reported error is what tells them apart.
+    private var chartLoadFailed: Bool {
+        appState.market.lastError?.isEmpty == false
+    }
+
     @ViewBuilder
     private var noDataWithPlans: some View {
         VStack(alignment: .leading, spacing: 8) {
             ContentUnavailableView {
                 Label(
-                    PulseLocalization.localizedString("chart.noData"),
-                    systemImage: "chart.xyaxis.line"
+                    PulseLocalization.localizedString(chartLoadFailed ? "chart.loadFailed" : "chart.noData",
+                                                      chartMode.period.displayName),
+                    systemImage: chartLoadFailed ? "exclamationmark.triangle" : "chart.xyaxis.line"
                 )
             } description: {
-                Text(PulseLocalization.localizedString("chart.noPeriodData", chartMode.period.displayName))
+                if chartLoadFailed {
+                    Text(PulseLocalization.localizedString("chart.loadFailed", chartMode.period.displayName))
+                    Text(PulseLocalization.localizedString("chart.loadFailedHint"))
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text(PulseLocalization.localizedString("chart.noPeriodData", chartMode.period.displayName))
+                }
             }
             let plans = noDataPlans
             if plans.isEmpty {

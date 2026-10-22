@@ -83,6 +83,14 @@ public final class MarketStore {
         lastError = message
     }
 
+    /// Clears the last reported source error without touching cached data: the
+    /// error describes the *last attempt*, not the cache, so a fresh successful
+    /// read is what normally clears it. Explicit clearing is for callers that
+    /// know the failure is gone (a retry path, a test harness).
+    public func clearError() {
+        lastError = nil
+    }
+
     // MARK: - Candle cache
 
     public func cachedCandles(for key: CandleCacheKey, maxAge: TimeInterval) -> [Candle]? {
@@ -90,6 +98,12 @@ public final class MarketStore {
             return nil
         }
         return entry.candles
+    }
+
+    /// Drops one cached series so the next read really reaches the source.
+    /// Used by explicit retries and by tests that must not race the TTL.
+    public func invalidateCandles(for key: CandleCacheKey) {
+        candleCache.removeValue(forKey: key)
     }
 
     public func cache(candles: [Candle], for key: CandleCacheKey) {
