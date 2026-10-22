@@ -31,6 +31,8 @@ struct FuyaoIntelligenceView: View {
                         }
                         if state.type == .equity {
                             Divider()
+                            FuyaoCorporateActionsView(symbol: symbol)
+                            Divider()
                             FuyaoFinancialsView(symbol: symbol)
                         }
                     }

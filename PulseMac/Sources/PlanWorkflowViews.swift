@@ -1320,6 +1320,13 @@ struct PlanWorkflowDetailView: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 titleRow(plan)
+                if let notice = appState.research.corporateActions.notice(for: plan, symbol: symbol) {
+                    FuyaoPlanPriceBasisNoticeView(notice: notice)
+                        .task(id: "\(symbol.description)-\(appState.fuyaoResearchAvailable)") {
+                            guard appState.fuyaoResearchAvailable else { return }
+                            await appState.research.corporateActions.load(symbol)
+                        }
+                }
                 progressSection(plan, progress: progress)
                 planSection(plan)
                 conditionSection(plan)

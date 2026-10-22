@@ -189,6 +189,7 @@ struct PlanListView: View {
                     .accessibilityIdentifier("plans.row.\(planID).menu")
             }
             if isWaiting {
+                FuyaoPlanPriceBasisNoticeList(symbol: entry.symbol, plans: [entry.plan])
                 waitingFooter(entry, reached: reached, currency: currency,
                               type: type, planID: planID)
             } else if canBackfill {
