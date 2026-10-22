@@ -54,6 +54,10 @@ final class AppState {
     @ObservationIgnored let binance: BinanceProvider
     @ObservationIgnored let longbridge: LongbridgeProvider
     @ObservationIgnored let fuyao: FuyaoProvider
+    @ObservationIgnored lazy var tradingDays = TradingDayCalibrationController(
+        provider: fuyao,
+        available: { [weak self] in self?.fuyaoResearchAvailable == true }
+    )
     @ObservationIgnored lazy var research = FuyaoResearchController(
         provider: fuyao,
         available: { [weak self] in self?.fuyaoResearchAvailable == true }

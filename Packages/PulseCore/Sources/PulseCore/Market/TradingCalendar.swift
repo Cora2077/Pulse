@@ -208,7 +208,7 @@ public enum TradingCalendar {
 /// read in different time zones (a trade date entered locally, a session date
 /// read in the exchange's zone) compare directly instead of being turned back
 /// into instants that would answer a different question.
-public struct CalendarDay: Comparable, Hashable, Sendable {
+public struct CalendarDay: Comparable, Hashable, Sendable, Codable {
     public var year: Int
     public var month: Int
     public var day: Int
@@ -217,6 +217,25 @@ public struct CalendarDay: Comparable, Hashable, Sendable {
         self.year = year
         self.month = month
         self.day = day
+    }
+
+    /// 编码成 `yyyy-MM-dd`：这是日期的身份，不是某一时刻，字符串形式最不含糊。
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let text = try container.decode(String.self)
+        let parts = text.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0].count == 4,
+              let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2]),
+              (1...12).contains(month), (1...31).contains(day) else {
+            throw DecodingError.dataCorruptedError(
+                in: container, debugDescription: "not a yyyy-MM-dd day: \(text)")
+        }
+        self.init(year: year, month: month, day: day)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(String(format: "%04d-%02d-%02d", year, month, day))
     }
 
     public init(_ date: Date, in timeZone: TimeZone) {

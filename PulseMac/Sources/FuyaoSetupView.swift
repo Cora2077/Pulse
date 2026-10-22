@@ -32,6 +32,9 @@ struct FuyaoSetupView: View {
                 if configured && enabled {
                     ProviderFactsCard(descriptor: appState.fuyao.descriptor)
                 }
+                if configured && enabled {
+                    tradingDayCard
+                }
                 accountCard
             }
             .padding(.horizontal, 16)
@@ -60,6 +63,28 @@ struct FuyaoSetupView: View {
         .padding(.horizontal, 10)
         .padding(.top, host == .pinnedWindow ? 2 : 8)
         .padding(.bottom, 8)
+    }
+
+    // MARK: - Trading-day calibration
+
+    /// 本地交易日历与上游的对照。
+    ///
+    /// 这一行存在的理由：本地沪深节假日表只核验到 2026 年，2027 年起会静默回退
+    /// 到"工作日"规则。差异检测只**提示**，不改任何历史成交日期；上游端点本身
+    /// 也只覆盖过去一年，所以这里明确写"不含未来"。
+    @ViewBuilder
+    private var tradingDayCard: some View {
+        TradingDayCalibrationCard(
+            calibration: appState.tradingDays.state,
+            loading: appState.tradingDays.loading,
+            discrepancy: appState.tradingDays.discrepancies(with: .sh),
+            enabled: appState.fuyaoResearchAvailable,
+            onRefresh: { Task { await appState.tradingDays.loadIfNeeded(force: true) } }
+        )
+        .task(id: "\(appState.fuyaoResearchAvailable)-\(appState.research.generation)") {
+            guard appState.fuyaoResearchAvailable else { return }
+            await appState.tradingDays.loadIfNeeded()
+        }
     }
 
     // MARK: - Account card

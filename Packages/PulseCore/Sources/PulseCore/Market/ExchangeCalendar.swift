@@ -111,7 +111,7 @@ public enum ExchangeCalendar {
 
     /// The day after `day`, by calendar rules rather than by a caller's clock,
     /// so this cannot drift across a DST change or a device's own zone.
-    static func nextDay(_ day: CalendarDay) -> CalendarDay {
+    public static func nextDay(_ day: CalendarDay) -> CalendarDay {
         guard let date = date(from: day),
               let next = gregorianUTC.date(byAdding: .day, value: 1, to: date)
         else { return day }
@@ -120,7 +120,7 @@ public enum ExchangeCalendar {
 
     /// The day before `day`, by the same rules. Used by the Shanghai metals
     /// small hours, which belong to the evening session that opened yesterday.
-    static func previousDay(_ day: CalendarDay) -> CalendarDay {
+    public static func previousDay(_ day: CalendarDay) -> CalendarDay {
         guard let date = date(from: day),
               let previous = gregorianUTC.date(byAdding: .day, value: -1, to: date)
         else { return day }
