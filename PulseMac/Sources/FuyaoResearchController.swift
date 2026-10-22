@@ -30,6 +30,11 @@ final class FuyaoResearchController {
     @ObservationIgnored lazy var holdings = FuyaoHoldingsController(provider: provider, available: available)
     @ObservationIgnored lazy var sentiment = FuyaoSentimentController(provider: provider, available: available)
     @ObservationIgnored lazy var financials = FuyaoFinancialsController(provider: provider, available: available)
+    /// 除权事件与研究缓存同生命周期：换源、换 Key、停用都会清空它。
+    @ObservationIgnored lazy var corporateActions = FuyaoCorporateActionsController(provider: provider, available: available)
+    @ObservationIgnored lazy var dragonTiger = FuyaoDragonTigerController(provider: provider, available: available)
+    @ObservationIgnored lazy var fundPerformance = FuyaoFundPerformanceController(provider: provider, available: available)
+    @ObservationIgnored lazy var ipo = FuyaoIPOController(provider: provider, available: available)
 
     init(provider: FuyaoProvider, available: @escaping () -> Bool) {
         self.provider = provider
@@ -41,6 +46,10 @@ final class FuyaoResearchController {
         holdings.reset()
         sentiment.reset()
         financials.reset()
+        corporateActions.reset()
+        dragonTiger.reset()
+        fundPerformance.reset()
+        ipo.reset()
         generation += 1
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
