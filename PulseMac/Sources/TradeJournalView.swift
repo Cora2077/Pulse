@@ -574,6 +574,10 @@ struct TradeJournalView: View {
                     FuyaoCapturedContextView(key: .init(account: entry.accountID, symbol: entry.item.symbol,
                         kind: .fill, recordID: entry.transaction.id))
 
+                    // 当日资金面：实时查询、不冻结进背景快照——龙虎榜在收盘后才发布，
+                    // 而背景快照的语义是"记录时已观察到"，混进去会伪造时点。
+                    FuyaoJournalCapitalFlow(symbol: entry.item.symbol)
+
                     if let context = planContext {
                         VStack(alignment: .leading, spacing: 5) {
                             HStack(spacing: 6) {

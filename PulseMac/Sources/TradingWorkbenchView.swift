@@ -44,6 +44,7 @@ struct TradingWorkbenchView: View {
     @State private var showsFuyaoBoards = false
     @State private var showsFuyaoHoldings = false
     @State private var showsFuyaoSentiment = false
+    @State private var showsFuyaoCapitalFlow = false
 
     /// Test seam: lets a DEBUG render harness open the workbench in a known
     /// phase with a known market scope and selection. Production never passes it,
@@ -104,6 +105,7 @@ struct TradingWorkbenchView: View {
         .sheet(isPresented: $showsFuyaoBoards) { FuyaoBoardsView(onSelect: onSelect) }
         .sheet(isPresented: $showsFuyaoHoldings) { FuyaoPortfolioLookThroughView() }
         .sheet(isPresented: $showsFuyaoSentiment) { FuyaoSentimentView(onSelect: onSelect) }
+        .sheet(isPresented: $showsFuyaoCapitalFlow) { FuyaoCapitalFlowView(onSelect: onSelect) }
         .sheet(item: $executionEntry) { entry in
             PlanExecutionSheet(entry: entry, account: appState.watchlist.activeBrokerageAccountID,
                                onClose: { executionEntry = nil })
@@ -155,7 +157,19 @@ struct TradingWorkbenchView: View {
             VStack(alignment: .leading, spacing: 14) {
                 header(now: now, board: board)
                 if appState.fuyaoResearchAvailable && (effectiveScope.contains(.sh) || effectiveScope.contains(.sz)) {
-                    FuyaoSentimentCard { showsFuyaoSentiment = true }
+                    // 两张研究卡并排时高度差太大（情绪卡有档位明细，资金卡只有几行），
+                    // 强行等高会留白。这里让它们各自保持自然高度、顶对齐并排；窄窗口
+                    // 由 ViewThatFits 折成纵向。卡片本身很矮，不会把任务区挤下去。
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 14) {
+                            FuyaoSentimentCard { showsFuyaoSentiment = true }
+                            FuyaoCapitalFlowCard { showsFuyaoCapitalFlow = true }
+                        }
+                        VStack(alignment: .leading, spacing: 14) {
+                            FuyaoSentimentCard { showsFuyaoSentiment = true }
+                            FuyaoCapitalFlowCard { showsFuyaoCapitalFlow = true }
+                        }
+                    }
                 }
                 stageHeader(stage)
                 countBar(board, stage: stage)
@@ -202,6 +216,7 @@ struct TradingWorkbenchView: View {
                 Button { showsFuyaoBoards = true } label: { Label("板块强弱", systemImage: "square.grid.3x3") }
                 Button { showsFuyaoHoldings = true } label: { Label("ETF 穿透", systemImage: "square.stack.3d.up") }
                 Button { showsFuyaoSentiment = true } label: { Label("市场情绪", systemImage: "waveform.path.ecg") }
+                Button { showsFuyaoCapitalFlow = true } label: { Label("资金与监管", systemImage: "arrow.left.arrow.right") }
             }.controlSize(.small)
         }
     }
