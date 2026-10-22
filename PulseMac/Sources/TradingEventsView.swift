@@ -83,6 +83,13 @@ struct TradingEventsView: View {
             if appState.tradingEvents.isRefreshing {
                 ProgressView().controlSize(.small).padding(.bottom, 8)
             }
+            // 打新是唯一一类"标的不在自选里但用户关心"的事件，因此放在事件页
+            // 作为独立分组，与按标的的事件并列，而不再混进持仓范围。
+            if appState.fuyaoResearchAvailable {
+                FuyaoIPOListView(onSelect: onSelect)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+            }
             if showsTimeline, !visibleItems.isEmpty {
                 TradingEventTimeline(
                     items: visibleItems, entries: entries, onSelect: onSelect,
