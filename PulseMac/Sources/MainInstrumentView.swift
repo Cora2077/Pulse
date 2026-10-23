@@ -731,13 +731,12 @@ struct MainInstrumentView: View {
         }
     }
 
-    /// "Nothing came back" has two very different causes, and the chart used to
-    /// report both as "this source has no data for the symbol". A failed fetch is
-    /// not a verdict about the instrument: the source may simply be rate-limited,
-    /// offline, or briefly unable to serve the basis that was asked for. Reading
-    /// the last reported error is what tells them apart.
-    private var chartLoadFailed: Bool {
-        appState.market.lastError?.isEmpty == false
+    /// "Nothing came back" has two very different causes: this request failed, or
+    /// the instrument genuinely has no bars for this period. The failure is read
+    /// per request key so another symbol's error — or a successful quote round —
+    /// cannot decide what this chart says.
+    private var chartLoadFailure: String? {
+        appState.market.candleError(for: chartRequest)
     }
 
     @ViewBuilder
@@ -745,13 +744,13 @@ struct MainInstrumentView: View {
         VStack(alignment: .leading, spacing: 8) {
             ContentUnavailableView {
                 Label(
-                    PulseLocalization.localizedString(chartLoadFailed ? "chart.loadFailed" : "chart.noData",
+                    PulseLocalization.localizedString(chartLoadFailure == nil ? "chart.noData" : "chart.loadFailed",
                                                       chartMode.period.displayName),
-                    systemImage: chartLoadFailed ? "exclamationmark.triangle" : "chart.xyaxis.line"
+                    systemImage: chartLoadFailure == nil ? "chart.xyaxis.line" : "exclamationmark.triangle"
                 )
             } description: {
-                if chartLoadFailed {
-                    Text(PulseLocalization.localizedString("chart.loadFailed", chartMode.period.displayName))
+                if let failure = chartLoadFailure {
+                    Text(failure)
                     Text(PulseLocalization.localizedString("chart.loadFailedHint"))
                         .font(.caption).foregroundStyle(.secondary)
                 } else {

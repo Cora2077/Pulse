@@ -298,16 +298,15 @@ public final class RefreshEngine {
             let candles = try await provider.candles(for: symbol, period: period, count: count, adjustment: adjustment)
             let synchronized = synchronizeIntradayTrend(candles, for: symbol, period: period)
             store.cache(candles: synchronized, for: key)
-            // The error describes the last attempt, so a successful one retires it.
-            // Leaving it in place would make every later empty answer read as a
-            // failure, long after the source recovered.
-            store.clearError()
+            // This failure belongs to this request, so its own success retires it.
+            // A quote round elsewhere must not be able to clear it.
+            store.clearCandleError(for: key)
             return synchronized
         } catch is CancellationError {
             let cached = store.cachedCandles(for: key, maxAge: .infinity) ?? []
             return synchronizeIntradayTrend(cached, for: symbol, period: period)
         } catch {
-            store.reportError(String(describing: error))
+            store.reportCandleError(Self.candleFailureMessage(error), for: key)
             let cached = store.cachedCandles(for: key, maxAge: .infinity) ?? []
             return synchronizeIntradayTrend(cached, for: symbol, period: period)
         }
@@ -322,6 +321,19 @@ public final class RefreshEngine {
         let profile = try await provider.profile(for: symbol)
         store.cache(profile: profile, for: symbol)
         return profile
+    }
+
+    /// What a failed chart request should say. Kept short and free of backend
+    /// jargon: the chart already explains what it could not draw.
+    static func candleFailureMessage(_ error: any Error) -> String {
+        guard let error = error as? ProviderError else { return "加载失败" }
+        return switch error {
+        case .rateLimited: "请求受限"
+        case .unsupported: "当前数据源没有该周期"
+        case .symbolNotFound: "该数据源未收录此标的"
+        case .clientError(let status, _): status == 403 ? "当前接口权限不可用" : "请求未被来源接受"
+        default: "加载失败"
+        }
     }
 
     private func synchronizeIntradayTrend(

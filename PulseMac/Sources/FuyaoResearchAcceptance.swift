@@ -471,9 +471,12 @@ enum FuyaoResearchAcceptance {
             guard result.value != nil else { throw ProviderError.badResponse("empty valuation") }
             return "metrics=5"
         }
-        print("PULSE_RESEARCH_LIVE \(failures.isEmpty ? "ok" : "failed") failures=\(failures.joined(separator: ",")) throttled=\(throttled.joined(separator: ","))")
-        // 只有真实失败才让这一轮判负；限流单独报告，供人判断是否需要重跑。
-        return failures.isEmpty
+        // 限流说明这一轮没验完，既不是通过也不是失败。它必须让这一轮不判 ok，
+        // 否则"没验到的接口"会被读成"验过了"。
+        let passed = failures.isEmpty && throttled.isEmpty
+        let status = passed ? "ok" : (failures.isEmpty ? "incomplete" : "failed")
+        print("PULSE_RESEARCH_LIVE \(status) failures=\(failures.joined(separator: ",")) throttled=\(throttled.joined(separator: ","))")
+        return passed
     }
 }
 #endif

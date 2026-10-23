@@ -62,28 +62,34 @@ struct MarketErrorLifecycleTests {
         [Candle(time: Date(timeIntervalSince1970: 1_792_000_000), open: 10, high: 11, low: 9, close: 10.5, volume: 100)]
     }
 
-    @Test("A failed candle load records an error")
+    @Test("A failed candle load records an error for that request only")
     func failureIsRecorded() async {
         let provider = SwitchableProvider(fails: true, candles: bars)
         let (engine, store) = makeEngine(provider)
         let loaded = await engine.loadCandles(for: symbol, period: .day, count: 60)
         #expect(loaded.isEmpty)
-        #expect(store.lastError != nil)
+        let key = CandleCacheKey(symbol: symbol, period: .day, adjustment: .none)
+        #expect(store.candleError(for: key) != nil)
+        // A chart failure is not a quote-round failure, so it must not become the
+        // store-wide message that a successful quote round would clear.
+        #expect(store.lastError == nil)
+        #expect(store.candleError(for: CandleCacheKey(symbol: symbol, period: .week, adjustment: .none)) == nil)
     }
 
-    @Test("A later success retires the earlier error")
+    @Test("A later success retires only its own request's error")
     func successClearsError() async {
         let provider = SwitchableProvider(fails: true, candles: bars)
         let (engine, store) = makeEngine(provider)
+        let key = CandleCacheKey(symbol: symbol, period: .day, adjustment: .none)
         _ = await engine.loadCandles(for: symbol, period: .day, count: 60)
-        #expect(store.lastError != nil)
+        #expect(store.candleError(for: key) != nil)
 
         provider.fails = false
         // Drop the cached (empty) answer so the retry really reaches the provider.
-        store.invalidateCandles(for: CandleCacheKey(symbol: symbol, period: .day, adjustment: .none))
+        store.invalidateCandles(for: key)
         let recovered = await engine.loadCandles(for: symbol, period: .day, count: 60)
         #expect(recovered.count == 1)
-        #expect(store.lastError == nil, "a successful read must retire the last failure")
+        #expect(store.candleError(for: key) == nil, "a successful read retires its own failure")
     }
 
     @Test("Clearing the error leaves cached data alone")
@@ -92,9 +98,9 @@ struct MarketErrorLifecycleTests {
         let (_, store) = makeEngine(provider)
         let key = CandleCacheKey(symbol: symbol, period: .day, adjustment: .none)
         store.cache(candles: bars, for: key)
-        store.reportError("something went wrong")
-        store.clearError()
-        #expect(store.lastError == nil)
+        store.reportCandleError("something went wrong", for: key)
+        store.clearCandleError(for: key)
+        #expect(store.candleError(for: key) == nil)
         #expect(store.cachedCandles(for: key, maxAge: .infinity)?.count == 1)
     }
 }

@@ -25,9 +25,6 @@ final class FuyaoFinancialsController {
     /// 指标每个报告期一次请求，单码端点不能批取。上限压在 4 期：
     /// 更早的期次对"看趋势"没有增量，却会按几何级数消耗请求预算。
     static let indicatorReportLimit = 4
-    /// 指标缓存 24 小时：财报按季更新，一天一次足够。
-    static let indicatorTTL: TimeInterval = 24 * 60 * 60
-
     func reset() { epoch += 1; tasks.values.forEach { $0.cancel() }; tasks = [:]; states = [:] }
     private func valid(_ value: Int) -> Bool { value == epoch && available() && !Task.isCancelled }
     func load(_ symbol: SymbolID, force: Bool = false) async {
@@ -76,26 +73,27 @@ extension FuyaoFinancialsController {
             .compactMap { FuyaoIndicatorCatalog.report(fiscalYear: $0.fiscalYear, fiscalPeriod: $0.fiscalPeriod) }
             .prefix(Self.indicatorReportLimit)
             .map { $0 }
+        // Only a report period that actually landed is remembered. A failed fetch
+        // is retried the next time the section opens instead of being marked done.
         let pending = reports.filter { force || !state.attemptedReports.contains($0) }
         guard !pending.isEmpty else { return }
         let captured = epoch
-        states[symbol]?.attemptedReports.formUnion(pending)
         for report in pending {
             do {
                 let set = try await provider.financialIndicators(for: symbol, report: report)
                 guard valid(captured) else { return }
-                // 同一报告期只保留一份；按报告期降序插入。
                 var rows = states[symbol]?.indicators ?? []
                 rows.removeAll { $0.report == set.report }
                 rows.append(set)
                 rows.sort { $0.report > $1.report }
                 states[symbol]?.indicators = rows
+                states[symbol]?.attemptedReports.insert(set.report)
+                states[symbol]?.errors["指标 \(report)"] = nil
             } catch is CancellationError {
                 return
             } catch {
                 guard valid(captured) else { return }
-                let message = FuyaoResearchController.message(error)
-                states[symbol]?.errors["指标 \(report)"] = message
+                states[symbol]?.errors["指标 \(report)"] = FuyaoResearchController.message(error)
                 // 限流后停止后续期次，不再制造请求风暴。
                 if case ProviderError.rateLimited = error { return }
             }

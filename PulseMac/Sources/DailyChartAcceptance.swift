@@ -70,8 +70,12 @@ enum DailyChartAcceptance {
         let state = AppState()
         let defaults = UserDefaults(suiteName: MainWindowDemo.userDefaultsSuite)!
         state.sharedWatchlist.add(.init(symbol: symbol, name: "长鑫科技", type: .equity))
-        for (label, error) in [("failed", "simulated: source temporarily unavailable"), ("empty", nil)] {
-            if let error { state.market.reportError(error) } else { state.market.clearError() }
+        // DetailView's chart request uses the chart's basis (see chartAdjustment),
+        // not the accounting default; keying the fixture on `.none` would paint an
+        // unrelated state and prove nothing.
+        let key = CandleCacheKey(symbol: symbol, period: .day, adjustment: .forward)
+        for (label, error) in [("failed", "加载失败"), ("empty", nil)] {
+            if let error { state.market.reportCandleError(error, for: key) } else { state.market.clearCandleError(for: key) }
             for scheme in [ColorScheme.light, .dark] {
                 try await render(
                     DetailView(symbol: symbol, route: .constant(.detail(symbol)), initialPeriod: .day)

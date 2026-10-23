@@ -1047,18 +1047,18 @@ struct DetailView: View {
                     //
                     // "Nothing came back" is not the same as "the source has no
                     // data for this symbol": a rate-limited or briefly unavailable
-                    // source also answers empty. Reporting both as a verdict about
-                    // the instrument is how a transient failure read as a fact.
-                    let failed = appState.market.lastError?.isEmpty == false
+                    // source also answers empty. The failure is read per request
+                    // key, so another symbol's error cannot speak for this chart.
+                    let failure = appState.market.candleError(for: chartRequest)
                     ContentUnavailableView {
                         Label(
-                            PulseLocalization.localizedString(failed ? "chart.loadFailed" : "chart.noData",
+                            PulseLocalization.localizedString(failure == nil ? "chart.noData" : "chart.loadFailed",
                                                               period.displayName),
-                            systemImage: failed ? "exclamationmark.triangle" : "chart.xyaxis.line"
+                            systemImage: failure == nil ? "chart.xyaxis.line" : "exclamationmark.triangle"
                         )
                     } description: {
-                        if failed {
-                            Text(PulseLocalization.localizedString("chart.loadFailedHint"))
+                        if let failure {
+                            Text(failure)
                         } else {
                             Text(PulseLocalization.localizedString("chart.noPeriodData", period.displayName))
                         }

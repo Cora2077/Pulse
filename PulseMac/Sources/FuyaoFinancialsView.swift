@@ -9,7 +9,12 @@ struct FuyaoFinancialsView: View {
     private var state: FuyaoFinancialsController.State { appState.research.financials.states[symbol] ?? .init() }
     var body: some View {
         DisclosureGroup("财报与估值", isExpanded: $expanded) {
-            FuyaoFinancialsContent(state: state) { Task { await appState.research.financials.load(symbol, force: true) } }
+            FuyaoFinancialsContent(state: state) {
+                Task {
+                    await appState.research.financials.load(symbol, force: true)
+                    await appState.research.financials.loadIndicators(symbol, force: true)
+                }
+            }
                 .padding(.top, 8)
         }.font(.system(size: 12, weight: .medium))
             .task(id: "\(symbol.description)-\(expanded)-\(appState.fuyaoResearchAvailable)-\(appState.research.generation)") {
@@ -113,7 +118,6 @@ struct FuyaoIndicatorSection: View {
     var loading = false
 
     private var latest: FuyaoIndicatorSet? { indicators.first }
-    private var previous: FuyaoIndicatorSet? { indicators.dropFirst().first }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -128,7 +132,7 @@ struct FuyaoIndicatorSection: View {
             }
             if let latest {
                 ForEach(latest.nonEmptyGroups) { group in
-                    groupRows(group, latest: latest, previous: previous)
+                    groupRows(group)
                 }
                 footnote
             } else {
@@ -137,8 +141,11 @@ struct FuyaoIndicatorSection: View {
         }
     }
 
+    /// One period and its values. No period-over-period column: the same index id
+    /// is not guaranteed to be a comparable span across reports, so subtracting
+    /// two rows would state a change the data does not support.
     @ViewBuilder
-    private func groupRows(_ group: FuyaoIndicatorGroup, latest: FuyaoIndicatorSet, previous: FuyaoIndicatorSet?) -> some View {
+    private func groupRows(_ group: FuyaoIndicatorGroup) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(group.ability.title).font(.caption2).foregroundStyle(.secondary).padding(.top, 3)
             ForEach(group.displayable) { row in
@@ -146,16 +153,6 @@ struct FuyaoIndicatorSection: View {
                     Text(row.definition?.title ?? row.indexID)
                         .font(.caption).lineLimit(1)
                     Spacer(minLength: 6)
-                    // 上一期值与其变化方向；缺失时留空，不显示 0 或"— 变化"。
-                    if let previousValue = previous?.value(of: row.indexID), let current = row.value,
-                       let definition = row.definition {
-                        Text(changeText(current: current, previous: previousValue, unit: definition.unit))
-                            .font(.system(size: 10)).monospacedDigit()
-                            .foregroundStyle(changeColor(current: current, previous: previousValue))
-                            .frame(width: 74, alignment: .trailing)
-                    } else {
-                        Color.clear.frame(width: 74, height: 1)
-                    }
                     Text(row.displayText ?? "—")
                         .font(.system(size: 12, weight: .medium)).monospacedDigit()
                         .frame(width: 78, alignment: .trailing)
@@ -164,32 +161,8 @@ struct FuyaoIndicatorSection: View {
         }
     }
 
-    /// 变化量：百分数指标用"百分点"，其他用自身单位。没有上一期就是空。
-    private func changeText(current: Double, previous: Double, unit: FuyaoIndicatorUnit) -> String {
-        let delta = current - previous
-        guard delta.isFinite else { return "" }
-        let sign = delta > 0 ? "+" : (delta < 0 ? "−" : "±")
-        let magnitude = abs(delta)
-        let text = FuyaoIndicatorCatalog.trimmed(magnitude, digits: 2)
-        // 百分数指标的变化单位是"百分点"，与指标本身的 % 不是一回事：
-        // 从 15% 到 15.19% 是 +0.19 个百分点，不是 +0.19%。
-        return switch unit {
-        case .percent: "\(sign)\(text) 点"
-        case .multiple: "\(sign)\(text)"
-        case .times: "\(sign)\(text)次"
-        }
-    }
-
-    /// 只用方向着色，不暗示好坏：有些指标升是好事，有些不是。
-    private func changeColor(current: Double, previous: Double) -> AnyShapeStyle {
-        let delta = current - previous
-        if delta > 0 { return AnyShapeStyle(.secondary) }
-        if delta < 0 { return AnyShapeStyle(.secondary) }
-        return AnyShapeStyle(.tertiary)
-    }
-
     private var footnote: some View {
-        Text("指标单位按契约：带 % 的为百分数值（上游已乘 100，此处不再换算），周转率按次，其余为倍数。变化列只表示与上一期的差（百分数指标的单位是百分点），不判断方向好坏；上游未定义单位的指标不展示。")
+        Text("指标单位按契约：带 % 的为百分数值（上游已乘 100，此处不再换算），周转率按次，其余为倍数。上游未定义单位的指标不展示；来源未声明可比口径的期间，不做跨期相减。")
             .font(.caption2).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }

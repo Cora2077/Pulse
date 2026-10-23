@@ -271,31 +271,13 @@ public struct TencentProvider: QuoteProvider {
             throw ProviderError.badResponse("tencent history: code \(response.code)")
         }
         let series = response.data?[wireSymbol]?.series
-        // Fail closed if the requested basis is absent. An unadjusted series
-        // must never masquerade as a successful forward-adjusted fallback.
-        //
-        // One case is not a masquerade. When a share has had no corporate action
-        // since listing, the endpoint omits `qfqday` entirely and answers with the
-        // plain `day` series — Tencent only emits an adjusted series when there is
-        // something to adjust. The two series are then identical by construction,
-        // which the response itself demonstrates: the only series present is the
-        // unadjusted one *and* no adjusted one was offered at all. A result that
-        // carried both `day` and `qfqday` and let us fall back would be a real
-        // substitution, and that stays an error.
+        // Fail closed when the requested basis is absent. An unadjusted series
+        // must never stand in for a forward-adjusted one: a missing `qfq` key is
+        // not proof that this instrument never paid a dividend — the response can
+        // also be incomplete. Let the composite try a source that can prove the
+        // basis instead of charting prices under the wrong label.
         let wanted = (adjustment == .forward ? "qfq" : "") + interval
-        let rows: [HistoryRow]
-        if let adjusted = series?[wanted] {
-            rows = adjusted
-        } else if adjustment == .forward,
-                  let plain = series?[interval],
-                  // The substitution is only sound when this response carries no
-                  // adjusted series at all. If any `qfq*` key exists, the source
-                  // *does* adjust this instrument and a missing `qfq<interval>`
-                  // means the request itself went wrong.
-                  (series?.keys.contains { $0.hasPrefix("qfq") } ?? false) == false {
-            // Never adjusted (no corporate action since listing): forward = actual.
-            rows = plain
-        } else {
+        guard let rows = series?[wanted] else {
             throw ProviderError.symbolNotFound(symbol)
         }
 

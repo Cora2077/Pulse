@@ -100,25 +100,29 @@ struct CandleAdjustmentTests {
             #expect(raw.first?.volume == adjusted.first?.volume)
             #expect(abs((321.43 - 1.5) / 1.4 - adjusted[0].close) < 0.01)
         }
-        // A share that has never had a corporate action gets no qfq series at all:
-        // the endpoint then answers with the plain `day` series, which is identical
-        // to the forward-adjusted one by construction. Verified live on 2026-10-22:
-        // 001309 and 600519 (both have ex-rights history) return `qfqday`, while a
-        // newly listed share returns only `day`.
-        let neverAdjusted = #"{"code":0,"data":{"sz001309":{"day":[["2026-10-12","332.53","321.43","333","321","61903"]]}}}"#
-        let plain = try TencentProvider.parseHistoricalCandles(
-            Data(neverAdjusted.utf8), symbol: symbol, wireSymbol: "sz001309", period: .day, adjustment: .forward)
-        #expect(plain.map(\.close) == [321.43])
+        // An absent `qfq` key is never evidence of "no corporate action": the
+        // response may simply be incomplete. Forward requests fail closed so the
+        // composite can reach a source that can prove the basis, rather than
+        // charting unadjusted prices under a forward-adjusted label.
+        let unadjustedOnly = #"{"code":0,"data":{"sz001309":{"day":[["2026-10-12","332.53","321.43","333","321","61903"]]}}}"#
+        #expect(throws: ProviderError.self) {
+            try TencentProvider.parseHistoricalCandles(
+                Data(unadjustedOnly.utf8), symbol: symbol, wireSymbol: "sz001309",
+                period: .day, adjustment: .forward)
+        }
+        // The same response still serves the unadjusted basis it actually contains.
+        let raw = try TencentProvider.parseHistoricalCandles(
+            Data(unadjustedOnly.utf8), symbol: symbol, wireSymbol: "sz001309", period: .day)
+        #expect(raw.map(\.close) == [321.43])
 
-        // The substitution stays an error when the source *does* offer an adjusted
-        // series: an absent key then means something else went wrong.
-        let bothSeriesButWrongInterval = #"""
+        // A different interval's adjusted series is not a substitute either.
+        let wrongInterval = #"""
         {"code":0,"data":{"sz001309":{"day":[["2026-10-12","332.53","321.43","333","321","61903"]],
         "qfqweek":[["2026-10-12","236.45","228.522","236.786","228.214","61903"]]}}}
         """#
         #expect(throws: ProviderError.self) {
             try TencentProvider.parseHistoricalCandles(
-                Data(bothSeriesButWrongInterval.utf8), symbol: symbol, wireSymbol: "sz001309",
+                Data(wrongInterval.utf8), symbol: symbol, wireSymbol: "sz001309",
                 period: .day, adjustment: .forward)
         }
     }

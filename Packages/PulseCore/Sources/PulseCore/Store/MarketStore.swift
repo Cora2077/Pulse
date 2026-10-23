@@ -91,6 +91,23 @@ public final class MarketStore {
         lastError = nil
     }
 
+    // MARK: - Per-request candle failures
+
+    /// Why one chart request returned nothing. Scoped by the same key the cache
+    /// uses, so a failure on symbol A cannot describe symbol B — and a successful
+    /// quote round, which says nothing about a chart, cannot clear it.
+    public private(set) var candleErrors: [CandleCacheKey: String] = [:]
+
+    public func candleError(for key: CandleCacheKey) -> String? { candleErrors[key] }
+
+    public func reportCandleError(_ message: String, for key: CandleCacheKey) {
+        candleErrors[key] = message
+    }
+
+    public func clearCandleError(for key: CandleCacheKey) {
+        candleErrors[key] = nil
+    }
+
     // MARK: - Candle cache
 
     public func cachedCandles(for key: CandleCacheKey, maxAge: TimeInterval) -> [Candle]? {
