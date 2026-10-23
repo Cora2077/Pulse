@@ -30,7 +30,14 @@ struct TradingWorkbenchView: View {
     let onShowJournal: () -> Void
     let onShowEvents: () -> Void
     var onShowPools: () -> Void = {}
+    var onOpenQuote: ((SymbolID) -> Void)?
 
+    enum Presentation: String, CaseIterable {
+        case quotes, tasks
+        var title: String { self == .quotes ? MainWorkspacePage.copy("行情", "Quotes") : MainWorkspacePage.copy("待办", "Tasks") }
+    }
+    @State private var presentation: Presentation = .quotes
+    @State private var holdingsOnly = true
     @State private var phase: WorkbenchPhase = .intraday
     @State private var initialPhaseApplied = false
     @State private var scope: WorkbenchScope = .all
@@ -54,20 +61,30 @@ struct TradingWorkbenchView: View {
         var scope: WorkbenchScope = .all
         var selectedSymbol: SymbolID?
         var showsCapitalDetail = false
+        var presentation: Presentation = .tasks
+        var holdingsOnly = true
+        var now: Date?
     }
+
+    private var previewNow: Date?
 
     init(onSelect: @escaping (SymbolID) -> Void,
          onShowPlans: @escaping () -> Void,
          onShowJournal: @escaping () -> Void,
          onShowEvents: @escaping () -> Void,
          onShowPools: @escaping () -> Void = {},
+         onOpenQuote: ((SymbolID) -> Void)? = nil,
          initial: WorkbenchInitialState? = nil) {
         self.onSelect = onSelect
         self.onShowPlans = onShowPlans
         self.onShowJournal = onShowJournal
         self.onShowEvents = onShowEvents
         self.onShowPools = onShowPools
+        self.onOpenQuote = onOpenQuote
+        self.previewNow = initial?.now
         guard let initial else { return }
+        _presentation = State(initialValue: initial.presentation)
+        _holdingsOnly = State(initialValue: initial.holdingsOnly)
         _phase = State(initialValue: initial.phase)
         _initialPhaseApplied = State(initialValue: true)
         _scope = State(initialValue: initial.scope)
@@ -98,7 +115,7 @@ struct TradingWorkbenchView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            content(now: context.date)
+            content(now: previewNow ?? context.date)
         }
         .sheet(isPresented: $showRisk) { TradeRiskCalculatorView(initialSymbol: nil) }
         .sheet(isPresented: $showSectors) { SectorExposureView() }
@@ -156,10 +173,27 @@ struct TradingWorkbenchView: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header(now: now, board: board)
+                if presentation == .quotes {
+                    quoteContent(now: now, board: board)
+                } else {
+                    stageHeader(stage)
+                    countBar(board, stage: stage)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 14) {
+                            taskColumn(board, stage: stage).frame(maxWidth: .infinity, alignment: .top)
+                            summaryColumn(board).frame(width: 340, alignment: .top)
+                        }
+                        VStack(alignment: .leading, spacing: 14) {
+                            taskColumn(board, stage: stage)
+                            summaryColumn(board)
+                        }
+                    }
+                }
                 if appState.fuyaoResearchAvailable && (effectiveScope.contains(.sh) || effectiveScope.contains(.sz)) {
-                    // 两张研究卡并排时高度差太大（情绪卡有档位明细，资金卡只有几行），
-                    // 强行等高会留白。这里让它们各自保持自然高度、顶对齐并排；窄窗口
-                    // 由 ViewThatFits 折成纵向。卡片本身很矮，不会把任务区挤下去。
+                    // 市场背景：任务处理完之后才需要看的东西。
+                    // 两张卡片高度差较大，强行等高会留白，所以各自自然高度、顶对齐
+                    // 并排；窄窗口由 ViewThatFits 折成纵向。
+                    marketContextHeader
                     ViewThatFits(in: .horizontal) {
                         HStack(alignment: .top, spacing: 14) {
                             FuyaoSentimentCard { showsFuyaoSentiment = true }
@@ -171,18 +205,6 @@ struct TradingWorkbenchView: View {
                         }
                     }
                 }
-                stageHeader(stage)
-                countBar(board, stage: stage)
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 14) {
-                        taskColumn(board, stage: stage).frame(maxWidth: .infinity, alignment: .top)
-                        summaryColumn(board).frame(width: 340, alignment: .top)
-                    }
-                    VStack(alignment: .leading, spacing: 14) {
-                        taskColumn(board, stage: stage)
-                        summaryColumn(board)
-                    }
-                }
                 summaries(now: now, board: board)
             }
             .padding(20)
@@ -192,6 +214,55 @@ struct TradingWorkbenchView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
+    private func quoteContent(now: Date, board: WorkbenchBoard) -> some View {
+        let quotes = HoldingQuoteBoard(items: items, entries: appState.watchlist.tradePlanEntries,
+                                       holdingsOnly: holdingsOnly, now: now,
+                                       quote: { appState.market.quote(for: $0) })
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Picker(MainWorkspacePage.copy("行情范围", "Quote list"), selection: $holdingsOnly) {
+                    Text(MainWorkspacePage.copy("持仓", "Holdings")).tag(true)
+                    Text(MainWorkspacePage.copy("自选", "Watchlist")).tag(false)
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 140)
+                Text(MainWorkspacePage.copy("\(quotes.rows.count) 只 · 当前账户", "\(quotes.rows.count) instruments · current account"))
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            HoldingQuoteBoardView(board: quotes, palette: appState.palette,
+                                  onSelect: onOpenQuote ?? onSelect, onShowPlans: onShowPlans)
+            if board.plansToReviewCount > 0 || board.todayReviewCount > 0 {
+                Button {
+                    presentation = .tasks
+                } label: {
+                    Label(MainWorkspacePage.copy("待核对计划 \(board.plansToReviewCount) 条 · 今日待复盘 \(board.todayReviewCount) 笔",
+                                                "\(board.plansToReviewCount) plans to check · \(board.todayReviewCount) fills to review"),
+                          systemImage: "checklist")
+                        .font(.caption)
+                }.buttonStyle(.plain).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var marketContextHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            Text(MainWorkspacePage.copy("市场背景", "Market context"))
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+            researchLinks
+        }
+        .padding(.top, 4)
+    }
+
+    private var researchLinks: some View {
+        HStack(spacing: 10) {
+            Button { showsFuyaoBoards = true } label: { Label("板块强弱", systemImage: "square.grid.3x3") }
+            Button { showsFuyaoHoldings = true } label: { Label("ETF 穿透", systemImage: "square.stack.3d.up") }
+            Button { showsFuyaoSentiment = true } label: { Label("市场情绪", systemImage: "waveform.path.ecg") }
+            Button { showsFuyaoCapitalFlow = true } label: { Label("资金与监管", systemImage: "arrow.left.arrow.right") }
+        }.controlSize(.small)
+    }
+
     // MARK: - Header
 
     private func header(now: Date, board: WorkbenchBoard) -> some View {
@@ -199,26 +270,28 @@ struct TradingWorkbenchView: View {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     title
+                    presentationPicker
                     Spacer(minLength: 8)
                     scopePicker
-                    phasePicker
+                    if presentation == .tasks { phasePicker }
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    title
+                    HStack(spacing: 12) { title; presentationPicker }
                     HStack(spacing: 8) {
                         scopePicker
-                        phasePicker
+                        if presentation == .tasks { phasePicker }
                     }
                 }
             }
             marketDayLine(now: now, board: board)
-            HStack(spacing: 10) {
-                Button { showsFuyaoBoards = true } label: { Label("板块强弱", systemImage: "square.grid.3x3") }
-                Button { showsFuyaoHoldings = true } label: { Label("ETF 穿透", systemImage: "square.stack.3d.up") }
-                Button { showsFuyaoSentiment = true } label: { Label("市场情绪", systemImage: "waveform.path.ecg") }
-                Button { showsFuyaoCapitalFlow = true } label: { Label("资金与监管", systemImage: "arrow.left.arrow.right") }
-            }.controlSize(.small)
         }
+    }
+
+    private var presentationPicker: some View {
+        Picker(MainWorkspacePage.copy("今日视图", "Today view"), selection: $presentation) {
+            ForEach(Presentation.allCases, id: \.self) { option in Text(option.title).tag(option) }
+        }
+        .pickerStyle(.segmented).labelsHidden().frame(width: 134)
     }
 
     private var title: some View {
@@ -282,9 +355,10 @@ struct TradingWorkbenchView: View {
 
     @ViewBuilder
     private func metadataText(dayText: String, stateText: String, phaseNote: String, singleLine: Bool) -> some View {
-        let line = PulseLocalization.localizedString(
-            "workbench.meta.line", phase.title, dayText, stateText)
-            + (phaseNote.isEmpty ? "" : " · \(phaseNote)")
+        let line = presentation == .quotes
+            ? dayText + " · " + stateText
+            : PulseLocalization.localizedString("workbench.meta.line", phase.title, dayText, stateText)
+                + (phaseNote.isEmpty ? "" : " · \(phaseNote)")
         Text(line)
             .font(.caption).foregroundStyle(.secondary)
             .lineLimit(singleLine ? 1 : 2)

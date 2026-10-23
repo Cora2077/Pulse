@@ -48,6 +48,15 @@ enum SelfTest {
     @MainActor
     static func runIfRequested() {
         #if DEBUG
+        if CommandLine.arguments.contains("--holding-quotes-selftest") {
+            guard CommandLine.arguments.contains("--main-window-demo") else {
+                print("PULSE_HOLDING_QUOTES_SELFTEST failed: isolated demo required")
+                exit(1)
+            }
+            let passed = HoldingQuoteBoardSelfTest.run()
+            fflush(stdout)
+            exit(passed ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--time-axis-selftest") {
             let passed = TimeAxisSelfTest.run()
             fflush(stdout)

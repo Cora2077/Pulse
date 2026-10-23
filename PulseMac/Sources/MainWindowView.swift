@@ -124,6 +124,8 @@ struct MainWindowView: View {
     /// than as a page of its own. Only the overlay form offers 返回来源; a
     /// watchlist row or a `.detail` route keeps the existing push behaviour.
     @State private var instrumentOverlay = false
+    /// Quote rows skip the summary inspector; Back must return to the list, not leave a new panel over it.
+    @State private var quoteDrillDown = false
     @State private var refreshGeneration = 0
     @State private var showRiskCalculator = false
     @State private var positionPoolsPreparationError: String?
@@ -438,7 +440,12 @@ struct MainWindowView: View {
                 onShowPlans: { showOverview(.plans) },
                 onShowJournal: { showOverview(.journal) },
                 onShowEvents: { showOverview(.events) },
-                onShowPools: { showOverview(.positionPools) })
+                onShowPools: { showOverview(.positionPools) },
+                onOpenQuote: { symbol in
+                    inspect(symbol, from: .workbench)
+                    quoteDrillDown = true
+                    openInstrumentOverlay(symbol)
+                })
         } else if overview == .events {
             TradingEventsView(onSelect: { inspect($0, from: .events) })
         } else if overview == .positionPools {
@@ -586,6 +593,7 @@ struct MainWindowView: View {
     /// A list inside a global page asks to inspect a symbol instead of leaving:
     /// the page stays put and the summary inspector opens beside it.
     private func inspect(_ symbol: SymbolID, from page: MainWorkspacePage) {
+        quoteDrillDown = false
         overview = page
         route = nil
         overviewReturn = OverviewPageReturn(page: page, symbol: symbol)
@@ -608,10 +616,16 @@ struct MainWindowView: View {
 
     private func closeInstrumentOverlay() {
         instrumentOverlay = false
+        if quoteDrillDown {
+            summarySymbol = nil
+            overviewReturn = nil
+            quoteDrillDown = false
+        }
     }
 
     private func dismissOverlay() {
         instrumentOverlay = false
+        quoteDrillDown = false
         summarySymbol = nil
         overviewReturn = nil
     }
