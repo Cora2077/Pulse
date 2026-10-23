@@ -9,12 +9,17 @@ public enum ProviderError: Error, Sendable {
     case badResponse(String)
     case unsupported(Capability)
     case symbolNotFound(SymbolID)
+    /// The source itself refused this request in a way that is not about the
+    /// instrument: a WAF/edge block, a 5xx gate, or an interstitial page served
+    /// instead of data. Distinct from `badResponse` so the UI can say "the source
+    /// is temporarily refusing" rather than "this symbol has no data".
+    case sourceRefused(detail: String)
 
     /// Whether this error should trip the circuit breaker (temporarily take the data source offline).
     /// Request-level problems (4xx, symbol not found, unsupported capability) must not trip it — otherwise a single 400 from a Chinese search would wrongly kill the whole source.
     public var shouldTripCircuit: Bool {
         switch self {
-        case .network, .rateLimited, .badResponse: true
+        case .network, .rateLimited, .badResponse, .sourceRefused: true
         case .clientError, .unsupported, .symbolNotFound: false
         }
     }

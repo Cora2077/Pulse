@@ -1249,6 +1249,7 @@ struct WatchlistView: View {
             case .rateLimited: PulseLocalization.localizedString("error.rateLimited")
             case .clientError(_, let detail): PulseLocalization.localizedString("error.client", detail)
             case .badResponse(let detail): detail
+            case .sourceRefused: PulseLocalization.localizedString("error.sourceRefused")
             case .unsupported: PulseLocalization.localizedString("error.unsupported")
             case .symbolNotFound: PulseLocalization.localizedString("error.symbolNotFound")
             }

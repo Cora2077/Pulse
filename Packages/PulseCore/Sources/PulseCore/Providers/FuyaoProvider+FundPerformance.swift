@@ -207,6 +207,7 @@ extension FuyaoProvider {
         guard let error = error as? ProviderError else { return "获取失败" }
         return switch error {
         case .rateLimited: "请求受限"
+        case .sourceRefused: "来源暂时拒绝请求"
         case .clientError(let status, _):
             switch status {
             case 401: "授权不可用"

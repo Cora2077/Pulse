@@ -49,6 +49,16 @@ public struct HTTPClient: Sendable {
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
+    /// Detects the small set of HTML shells these endpoints serve when a WAF
+    /// intercepts them, without treating every HTML error page as one.
+    static func looksLikeEdgeBlock(_ data: Data) -> Bool {
+        guard !data.isEmpty, data.count < 8_192 else { return false }
+        let head = String(decoding: data.prefix(512), as: UTF8.self).lowercased()
+        guard head.contains("html") || head.hasPrefix("<") else { return false }
+        return head.contains("waf") || head.contains("501page")
+            || head.contains("blocked") || head.contains("access denied")
+    }
+
     private func perform(_ base: URLRequest, headers: [String: String]) async throws -> Data {
         var request = base
         let url = request.url
@@ -66,8 +76,18 @@ public struct HTTPClient: Sendable {
             throw ProviderError.badResponse("non-HTTP response")
         }
         switch http.statusCode {
-        case 200..<300: return data
+        case 200..<300:
+            // A WAF often answers 200 with an interstitial HTML page instead of
+            // JSON. It is a refusal, not an empty result: callers must not cache
+            // it as "this symbol has no data".
+            if Self.looksLikeEdgeBlock(data) {
+                throw ProviderError.sourceRefused(detail: "edge block page from \(url?.host ?? "?")")
+            }
+            return data
         case 429: throw ProviderError.rateLimited
+        case 501, 502, 503, 504:
+            // Edge/WAF refusals land here; they say nothing about the instrument.
+            throw ProviderError.sourceRefused(detail: "HTTP \(http.statusCode) from \(url?.host ?? "?")")
         case 400..<500: throw ProviderError.clientError(status: http.statusCode,
                                                         detail: "HTTP \(http.statusCode) for \(url?.host ?? "?")")
         default: throw ProviderError.badResponse("HTTP \(http.statusCode) for \(url?.host ?? "?")")

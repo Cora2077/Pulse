@@ -64,6 +64,7 @@
 "error.network" = "网络不可达：%@";
 "error.rateLimited" = "数据源暂时受限，约 1 分钟内自动恢复";
 "error.symbolNotFound" = "标的不存在";
+"error.sourceRefused" = "行情源暂时拒绝请求";
 "error.unsupported" = "所有数据源都已被禁用，请在设置中开启";
 
 "language.system" = "跟随系统";

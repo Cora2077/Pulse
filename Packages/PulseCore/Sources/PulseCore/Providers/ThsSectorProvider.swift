@@ -363,6 +363,8 @@ public struct ThsSectorProvider: QuoteProvider {
         guard let error = error as? ProviderError else { return false }
         switch error {
         case .network, .badResponse: return true
+        // An edge refusal is worth one paced retry, not a tight loop.
+        case .sourceRefused: return true
         case .clientError(let status, _): return status == 404 || status == 408
         case .rateLimited, .unsupported, .symbolNotFound: return false
         }

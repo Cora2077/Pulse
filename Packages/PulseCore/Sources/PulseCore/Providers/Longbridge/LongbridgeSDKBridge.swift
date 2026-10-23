@@ -1539,7 +1539,7 @@ actor LongbridgeSDKBridge {
                 return .authentication
             case .network:
                 return .network
-            case .badResponse:
+            case .badResponse, .sourceRefused:
                 return .server
             case .unsupported, .symbolNotFound:
                 return .server
@@ -1573,6 +1573,7 @@ actor LongbridgeSDKBridge {
             case .clientError(let status, let detail): return "\(status): \(detail)"
             case .network(let underlying): return underlying
             case .badResponse(let detail): return detail
+            case .sourceRefused(let detail): return detail
             case .rateLimited: return "rate limited"
             case .unsupported(let capability): return "unsupported: \(capability)"
             case .symbolNotFound(let symbol): return "symbol not found: \(symbol)"

@@ -328,8 +328,11 @@ public final class RefreshEngine {
     static func candleFailureMessage(_ error: any Error) -> String {
         guard let error = error as? ProviderError else { return "加载失败" }
         return switch error {
-        case .rateLimited: "请求受限"
-        case .unsupported: "当前数据源没有该周期"
+        case .rateLimited: "请求过于频繁，稍后会自动重试"
+        // The chart's data is incomplete because the source refused the request,
+        // not because the instrument lacks history. Say which one it is.
+        case .sourceRefused: "行情源暂时拒绝请求，历史数据可能缺一段"
+        case .unsupported: "当前数据源不提供该周期"
         case .symbolNotFound: "该数据源未收录此标的"
         case .clientError(let status, _): status == 403 ? "当前接口权限不可用" : "请求未被来源接受"
         default: "加载失败"

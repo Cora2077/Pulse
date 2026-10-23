@@ -484,7 +484,9 @@ struct ProviderContractTests {
             Self.assertCandleContract(candles)
         } catch let error as ProviderError {
             switch error {
-            case .rateLimited, .network:
+            case .rateLimited, .network, .sourceRefused:
+                // An unofficial endpoint blocking us is a source condition, not
+                // a contract violation; only a real decode/contract break fails.
                 break
             case .badResponse, .clientError, .unsupported, .symbolNotFound:
                 throw error
