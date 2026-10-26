@@ -269,17 +269,29 @@ public final class RefreshEngine {
                       !self.writesHeld, self.writeEpoch == writes else { return }
                 self.lastSparklineAt[symbol] = self.now()
                 let count = IntradayTrendSnapshot.recommendedCandleCount(for: symbol.market)
-                let candles = try? await self.provider.refreshCandles(for: symbol, period: .minute1, count: count)
+                let key = CandleCacheKey(symbol: symbol, period: .minute1)
+                let candles: [Candle]
+                do {
+                    candles = try await self.provider.refreshCandles(for: symbol, period: .minute1, count: count)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard !Task.isCancelled, self.generation == epoch else { return }
+                    guard !self.writesHeld, self.writeEpoch == writes else {
+                        self.lastSparklineAt[symbol] = nil
+                        return
+                    }
+                    self.store.reportCandleError(Self.candleFailureMessage(error), for: key)
+                    continue
+                }
                 guard !Task.isCancelled, self.generation == epoch else { return }
                 guard !self.writesHeld, self.writeEpoch == writes else {
                     self.lastSparklineAt[symbol] = nil
                     return
                 }
-                if let candles {
-                    self.applyIntradayTrend(candles, for: symbol)
-                    self.store.cache(candles: candles.sorted { $0.time < $1.time },
-                                     for: CandleCacheKey(symbol: symbol, period: .minute1))
-                }
+                self.applyIntradayTrend(candles, for: symbol)
+                self.store.cache(candles: candles.sorted { $0.time < $1.time }, for: key)
+                self.store.clearCandleError(for: key)
                 if index < batch.count - 1 { try? await Task.sleep(for: .milliseconds(350)) }
             }
         }

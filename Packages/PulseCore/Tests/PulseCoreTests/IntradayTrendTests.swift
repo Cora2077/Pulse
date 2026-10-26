@@ -24,6 +24,16 @@ struct IntradayTrendTests {
         #expect(trend.session.totalMinutes == 240)
     }
 
+    @Test("The collapsed lunch boundary reads as the afternoon open")
+    func lunchBoundaryUsesAfternoon() throws {
+        let calendar = exchangeCalendar(.sh)
+        let day = try #require(calendar.date(from: DateComponents(year: 2026, month: 7, day: 15)))
+        let session = IntradayTradingSession(market: .sh, referenceDate: day)
+
+        #expect(session.date(forMinute: session.morningMinutes) == session.afternoonStart)
+        #expect(session.date(forMinute: session.morningMinutes - 0.01) == session.morningEnd?.addingTimeInterval(-0.6))
+    }
+
     @Test("Uses one full day of minute data for every market")
     func recommendedCounts() {
         #expect(IntradayTrendSnapshot.recommendedCandleCount(for: .sh) == 400)

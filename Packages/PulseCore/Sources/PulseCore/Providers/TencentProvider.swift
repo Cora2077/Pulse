@@ -173,7 +173,7 @@ public struct TencentProvider: QuoteProvider {
         guard let tencentSymbol = Self.tencentSymbol(for: symbol) else {
             throw ProviderError.symbolNotFound(symbol)
         }
-        var components = URLComponents(string: "https://web.ifzq.gtimg.cn/appstock/app/minute/query")!
+        var components = URLComponents(string: "https://ifzq.gtimg.cn/appstock/app/minute/query")!
         components.queryItems = [.init(name: "code", value: tencentSymbol)]
         let data = try await http.get(components.url!, headers: ["Referer": "https://gu.qq.com/"])
         let response: MinuteResponse

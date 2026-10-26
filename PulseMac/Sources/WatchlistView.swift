@@ -909,7 +909,7 @@ struct WatchlistView: View {
     }
 
     private var footerShowsFallback: Bool {
-        if appState.market.lastError != nil { return true }
+        if appState.market.lastError != nil || !appState.market.candleErrors.isEmpty { return true }
         guard appState.longbridgeConfigured,
               appState.isProviderEnabled(LongbridgeProvider.providerID) else { return false }
         if case .failed = appState.longbridgeConnectionStatus { return true }

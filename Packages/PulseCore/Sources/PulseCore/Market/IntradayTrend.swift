@@ -355,7 +355,7 @@ public struct IntradayTradingSession: Sendable, Hashable {
             let fraction = min(max((minute - totalMinutes) / postAxisMinutes, 0), 1)
             return close.addingTimeInterval(fraction * postClose.timeIntervalSince(close))
         }
-        if let afternoonStart, minute > morningMinutes {
+        if let afternoonStart, minute >= morningMinutes {
             return afternoonStart.addingTimeInterval((minute - morningMinutes) * 60)
         }
         return open.addingTimeInterval(minute * 60)
